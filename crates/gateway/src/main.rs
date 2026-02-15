@@ -110,6 +110,12 @@ async fn main() -> anyhow::Result<()> {
     ));
     tracing::info!("node registry + tool router ready");
 
+    // ── Session locks (per-session concurrency) ──────────────────────
+    let session_locks = Arc::new(
+        sa_gateway::runtime::session_lock::SessionLockMap::new(),
+    );
+    tracing::info!("session lock map ready");
+
     // ── App state ────────────────────────────────────────────────────
     let state = AppState {
         config: config.clone(),
@@ -125,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
         processes: processes.clone(),
         nodes: nodes.clone(),
         tool_router,
+        session_locks,
     };
 
     // ── Periodic session flush ───────────────────────────────────────

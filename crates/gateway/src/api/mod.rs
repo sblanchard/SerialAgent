@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod clawhub;
 pub mod context;
 pub mod dashboard;
@@ -38,6 +39,9 @@ pub fn router() -> Router<AppState> {
         .route("/v1/sessions", get(sessions::list_sessions))
         .route("/v1/sessions/resolve", post(sessions::resolve_session))
         .route("/v1/sessions/reset", post(sessions::reset_session))
+        // Chat (core runtime)
+        .route("/v1/chat", post(chat::chat))
+        .route("/v1/chat/stream", post(chat::chat_stream))
         // Tools (exec / process)
         .route("/v1/tools/exec", post(tools::exec_tool))
         .route("/v1/tools/process", post(tools::process_tool))

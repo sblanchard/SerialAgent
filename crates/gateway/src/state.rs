@@ -9,6 +9,7 @@ use sa_tools::ProcessManager;
 
 use crate::nodes::registry::NodeRegistry;
 use crate::nodes::router::ToolRouter;
+use crate::runtime::session_lock::SessionLockMap;
 use crate::workspace::bootstrap::BootstrapTracker;
 use crate::workspace::files::WorkspaceReader;
 
@@ -28,4 +29,5 @@ pub struct AppState {
     pub processes: Arc<ProcessManager>,
     pub nodes: Arc<NodeRegistry>,
     pub tool_router: Arc<ToolRouter>,
+    pub session_locks: Arc<SessionLockMap>,
 }

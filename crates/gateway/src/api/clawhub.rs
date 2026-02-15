@@ -30,6 +30,9 @@ pub struct PackRef {
     pub repo: String,
     #[serde(default = "default_version")]
     pub version: String,
+    /// Git ref to pin (branch, tag, or commit SHA). Defaults to version if unset.
+    #[serde(default)]
+    pub git_ref: Option<String>,
     /// Optional subdirectory within the repo (e.g. "skills/sonoscli").
     #[serde(default)]
     pub subdir: Option<String>,
@@ -61,6 +64,8 @@ pub async fn install_pack(
                 "skill_dir": result.skill_dir,
                 "manifest_found": result.manifest_found,
                 "origin": result.origin,
+                "changed_files": result.changed_files,
+                "scripts_changed": result.scripts_changed,
             }))
             .into_response()
         }
@@ -94,6 +99,8 @@ pub async fn update_pack(
                 "skill_dir": result.skill_dir,
                 "manifest_found": result.manifest_found,
                 "origin": result.origin,
+                "changed_files": result.changed_files,
+                "scripts_changed": result.scripts_changed,
             }))
             .into_response()
         }
@@ -165,15 +172,17 @@ async fn download_and_install(
     skills_root: &std::path::Path,
     pack: &PackRef,
 ) -> Result<sa_skills::installer::InstallResult, String> {
-    // Use GitHub tarball API: GET /repos/{owner}/{repo}/tarball/{ref}
-    let git_ref = if pack.version == "latest" {
-        "HEAD"
-    } else {
-        &pack.version
-    };
+    // Determine the git ref to fetch.
+    let effective_ref = pack.git_ref.as_deref().unwrap_or(
+        if pack.version == "latest" {
+            "HEAD"
+        } else {
+            &pack.version
+        },
+    );
 
     let url = format!(
-        "https://api.github.com/repos/{}/{}/tarball/{git_ref}",
+        "https://api.github.com/repos/{}/{}/tarball/{effective_ref}",
         pack.owner, pack.repo
     );
 
@@ -206,15 +215,9 @@ async fn download_and_install(
         .await
         .map_err(|e| format!("failed to read tarball: {e}"))?;
 
-    // Extract to a temp directory.
+    // Extract safely to a temp directory using safe_untar.
     let tmp_dir = tempfile::tempdir().map_err(|e| format!("tempdir failed: {e}"))?;
-
-    // Decompress gzip + untar.
-    let decoder = flate2::read::GzDecoder::new(&bytes[..]);
-    let mut archive = tar::Archive::new(decoder);
-    archive
-        .unpack(tmp_dir.path())
-        .map_err(|e| format!("tar extraction failed: {e}"))?;
+    sa_skills::installer::safe_untar(&bytes, tmp_dir.path())?;
 
     // GitHub tarballs extract to a directory like "{owner}-{repo}-{sha}/".
     // Find the first directory in tmp_dir.
@@ -237,8 +240,8 @@ async fn download_and_install(
         None => extracted_root,
     };
 
-    // Compute a simple hash of the extracted files for bookkeeping.
-    let hash = compute_dir_hash(&source_dir);
+    // Compute content hash for change detection.
+    let hash = sa_skills::installer::compute_dir_hash(&source_dir);
 
     sa_skills::installer::install_from_dir(
         skills_root,
@@ -246,52 +249,8 @@ async fn download_and_install(
         &pack.repo,
         &source_dir,
         &pack.version,
+        Some(effective_ref.to_string()),
         Some(hash),
     )
     .map_err(|e| format!("install failed: {e}"))
-}
-
-/// Simple hash of all file names + sizes in a directory (for change detection).
-fn compute_dir_hash(dir: &std::path::Path) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-
-    if let Ok(entries) = walkdir(dir) {
-        for (rel_path, size) in entries {
-            hasher.update(rel_path.as_bytes());
-            hasher.update(size.to_le_bytes());
-        }
-    }
-
-    format!("{:x}", hasher.finalize())
-}
-
-fn walkdir(dir: &std::path::Path) -> std::io::Result<Vec<(String, u64)>> {
-    let mut entries = Vec::new();
-    walkdir_inner(dir, dir, &mut entries)?;
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(entries)
-}
-
-fn walkdir_inner(
-    root: &std::path::Path,
-    current: &std::path::Path,
-    entries: &mut Vec<(String, u64)>,
-) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(current)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            walkdir_inner(root, &path, entries)?;
-        } else {
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string();
-            let size = entry.metadata()?.len();
-            entries.push((rel, size));
-        }
-    }
-    Ok(())
 }
