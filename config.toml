@@ -1,0 +1,27 @@
+# SerialAssistant Configuration
+# All values shown are defaults — uncomment and modify as needed.
+
+[context]
+# bootstrap_max_chars = 20000      # Max chars per workspace file before truncation
+# bootstrap_total_max_chars = 24000 # Max total chars across all injected files
+# user_facts_max_chars = 4000      # Max chars for USER_FACTS from SerialMemory
+# skills_index_max_chars = 2000    # Max chars for compact skills index
+
+[serial_memory]
+base_url = "http://localhost:5000"
+# api_key = "sm_your_api_key"      # Your SerialMemory API key
+# timeout_secs = 30
+# max_retries = 3
+# workspace_id = "serial-assistant" # Set to isolate from VS Code tenant, or omit to share
+# default_user_id = "default_user"
+
+[server]
+port = 3210
+host = "0.0.0.0"
+
+[workspace]
+path = "./workspace"
+state_path = "./data/state"
+
+[skills]
+path = "./skills"
