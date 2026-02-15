@@ -2,6 +2,7 @@ pub mod context;
 pub mod dashboard;
 pub mod memory;
 pub mod providers;
+pub mod sessions;
 pub mod skills;
 
 use axum::routing::{delete, get, post, put};
@@ -26,9 +27,13 @@ pub fn router() -> Router<AppState> {
         .route("/v1/memory/health", get(memory::health))
         .route("/v1/memory/:id", put(memory::update_entry))
         .route("/v1/memory/:id", delete(memory::delete_entry))
-        // Session
+        // Legacy session proxy (SerialMemory)
         .route("/v1/session/init", post(memory::init_session))
         .route("/v1/session/end", post(memory::end_session))
+        // Session management (gateway-owned, OpenClaw model)
+        .route("/v1/sessions", get(sessions::list_sessions))
+        .route("/v1/sessions/resolve", post(sessions::resolve_session))
+        .route("/v1/sessions/reset", post(sessions::reset_session))
         // Providers / Models
         .route("/v1/models", get(providers::list_providers))
         .route("/v1/models/roles", get(providers::list_roles))

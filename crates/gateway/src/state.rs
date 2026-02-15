@@ -3,6 +3,7 @@ use std::sync::Arc;
 use sa_domain::config::Config;
 use sa_memory::provider::SerialMemoryProvider;
 use sa_providers::registry::ProviderRegistry;
+use sa_sessions::{IdentityResolver, LifecycleManager, SessionStore, TranscriptWriter};
 use sa_skills::registry::SkillsRegistry;
 
 use crate::workspace::bootstrap::BootstrapTracker;
@@ -17,4 +18,8 @@ pub struct AppState {
     pub workspace: Arc<WorkspaceReader>,
     pub bootstrap: Arc<BootstrapTracker>,
     pub llm: Arc<ProviderRegistry>,
+    pub sessions: Arc<SessionStore>,
+    pub identity: Arc<IdentityResolver>,
+    pub lifecycle: Arc<LifecycleManager>,
+    pub transcripts: Arc<TranscriptWriter>,
 }
