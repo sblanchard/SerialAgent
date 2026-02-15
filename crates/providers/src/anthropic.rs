@@ -165,9 +165,7 @@ fn user_msg_to_anthropic(msg: &Message) -> Value {
                         "text": text,
                     })),
                     ContentPart::Image { url, media_type } => {
-                        let mt = media_type
-                            .as_deref()
-                            .unwrap_or("image/png");
+                        let mt = media_type.as_deref().unwrap_or("image/png");
                         Some(serde_json::json!({
                             "type": "image",
                             "source": {
@@ -293,7 +291,10 @@ fn parse_anthropic_response(body: &Value) -> Result<ChatResponse> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let arguments = block.get("input").cloned().unwrap_or(Value::Object(Default::default()));
+                let arguments = block
+                    .get("input")
+                    .cloned()
+                    .unwrap_or(Value::Object(Default::default()));
                 tool_calls.push(ToolCall {
                     call_id,
                     tool_name,
@@ -387,10 +388,7 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Vec<Result<Stream
         }
 
         "content_block_start" => {
-            let idx = v
-                .get("index")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            let idx = v.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
             if let Some(block) = v.get("content_block") {
                 let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 if block_type == "tool_use" {
@@ -416,10 +414,7 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Vec<Result<Stream
         }
 
         "content_block_delta" => {
-            let idx = v
-                .get("index")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            let idx = v.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
             if let Some(delta) = v.get("delta") {
                 let delta_type = delta.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 match delta_type {
@@ -433,9 +428,7 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Vec<Result<Stream
                         }
                     }
                     "input_json_delta" => {
-                        if let Some(partial) =
-                            delta.get("partial_json").and_then(|v| v.as_str())
-                        {
+                        if let Some(partial) = delta.get("partial_json").and_then(|v| v.as_str()) {
                             if let Some(tc) = state.active_tool_calls.get_mut(&idx) {
                                 tc.2.push_str(partial);
                                 events.push(Ok(StreamEvent::ToolCallDelta {
@@ -451,13 +444,10 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Vec<Result<Stream
         }
 
         "content_block_stop" => {
-            let idx = v
-                .get("index")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            let idx = v.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
             if let Some((call_id, tool_name, args_str)) = state.active_tool_calls.remove(&idx) {
-                let arguments: Value = serde_json::from_str(&args_str)
-                    .unwrap_or(Value::Object(Default::default()));
+                let arguments: Value =
+                    serde_json::from_str(&args_str).unwrap_or(Value::Object(Default::default()));
                 events.push(Ok(StreamEvent::ToolCallFinished {
                     call_id,
                     tool_name,
@@ -525,10 +515,7 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Vec<Result<Stream
 
 /// Drain complete SSE events from the buffer. Anthropic SSE uses
 /// `event: <type>\ndata: <json>\n\n`.
-fn drain_anthropic_sse(
-    buffer: &mut String,
-    state: &mut StreamState,
-) -> Vec<Result<StreamEvent>> {
+fn drain_anthropic_sse(buffer: &mut String, state: &mut StreamState) -> Vec<Result<StreamEvent>> {
     let mut all_events = Vec::new();
 
     while let Some(pos) = buffer.find("\n\n") {

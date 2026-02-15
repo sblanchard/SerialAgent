@@ -110,7 +110,10 @@ pub struct ServerConfig {
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        Self { port: 3210, host: "0.0.0.0".into() }
+        Self {
+            port: 3210,
+            host: "0.0.0.0".into(),
+        }
     }
 }
 
@@ -147,7 +150,9 @@ pub struct SkillsConfig {
 
 impl Default for SkillsConfig {
     fn default() -> Self {
-        Self { path: PathBuf::from("./skills") }
+        Self {
+            path: PathBuf::from("./skills"),
+        }
     }
 }
 
@@ -266,20 +271,54 @@ pub enum AuthMode {
 // Default value helpers (serde)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-fn d_20000() -> usize { 20_000 }
-fn d_24000() -> usize { 24_000 }
-fn d_4000() -> usize { 4_000 }
-fn d_2000() -> usize { 2_000 }
-fn d_sm_url() -> String { "http://localhost:5000".into() }
-fn d_sm_transport() -> SmTransport { SmTransport::Rest }
-fn d_8000() -> u64 { 8000 }
-fn d_3() -> u32 { 3 }
-fn d_user() -> String { "default_user".into() }
-fn d_3210() -> u16 { 3210 }
-fn d_host() -> String { "0.0.0.0".into() }
-fn d_ws_path() -> PathBuf { PathBuf::from("./workspace") }
-fn d_state_path() -> PathBuf { PathBuf::from("./data/state") }
-fn d_skills_path() -> PathBuf { PathBuf::from("./skills") }
-fn d_capability() -> RouterMode { RouterMode::Capability }
-fn d_20000u() -> u64 { 20_000 }
-fn d_2() -> u32 { 2 }
+fn d_20000() -> usize {
+    20_000
+}
+fn d_24000() -> usize {
+    24_000
+}
+fn d_4000() -> usize {
+    4_000
+}
+fn d_2000() -> usize {
+    2_000
+}
+fn d_sm_url() -> String {
+    "http://localhost:5000".into()
+}
+fn d_sm_transport() -> SmTransport {
+    SmTransport::Rest
+}
+fn d_8000() -> u64 {
+    8000
+}
+fn d_3() -> u32 {
+    3
+}
+fn d_user() -> String {
+    "default_user".into()
+}
+fn d_3210() -> u16 {
+    3210
+}
+fn d_host() -> String {
+    "0.0.0.0".into()
+}
+fn d_ws_path() -> PathBuf {
+    PathBuf::from("./workspace")
+}
+fn d_state_path() -> PathBuf {
+    PathBuf::from("./data/state")
+}
+fn d_skills_path() -> PathBuf {
+    PathBuf::from("./skills")
+}
+fn d_capability() -> RouterMode {
+    RouterMode::Capability
+}
+fn d_20000u() -> u64 {
+    20_000
+}
+fn d_2() -> u32 {
+    2
+}

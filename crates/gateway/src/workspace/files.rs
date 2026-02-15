@@ -71,7 +71,12 @@ impl WorkspaceReader {
 
         self.cache.write().insert(
             name.to_string(),
-            CachedFile { content: content.clone(), hash, modified, size },
+            CachedFile {
+                content: content.clone(),
+                hash,
+                modified,
+                size,
+            },
         );
 
         TraceEvent::WorkspaceFileRead {
@@ -109,10 +114,17 @@ impl WorkspaceReader {
 
     pub fn list_present_files(&self) -> Vec<String> {
         let names = [
-            "AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md",
-            "TOOLS.md", "HEARTBEAT.md", "BOOTSTRAP.md", "MEMORY.md",
+            "AGENTS.md",
+            "SOUL.md",
+            "USER.md",
+            "IDENTITY.md",
+            "TOOLS.md",
+            "HEARTBEAT.md",
+            "BOOTSTRAP.md",
+            "MEMORY.md",
         ];
-        names.iter()
+        names
+            .iter()
             .filter(|&&name| self.root.join(name).exists())
             .map(|&s| s.to_string())
             .collect()
@@ -120,7 +132,10 @@ impl WorkspaceReader {
 
     pub fn file_hash(&self, name: &str) -> Option<FileHash> {
         let cache = self.cache.read();
-        cache.get(name).map(|c| FileHash { sha256: c.hash.clone(), size: c.size })
+        cache.get(name).map(|c| FileHash {
+            sha256: c.hash.clone(),
+            size: c.size,
+        })
     }
 
     pub fn root(&self) -> &Path {

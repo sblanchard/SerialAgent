@@ -41,8 +41,9 @@ impl ProviderRegistry {
                     OpenAiCompatProvider::from_config(pc)
                         .map(|p| Arc::new(p) as Arc<dyn LlmProvider>)
                 }
-                ProviderKind::Anthropic => AnthropicProvider::from_config(pc)
-                    .map(|p| Arc::new(p) as Arc<dyn LlmProvider>),
+                ProviderKind::Anthropic => {
+                    AnthropicProvider::from_config(pc).map(|p| Arc::new(p) as Arc<dyn LlmProvider>)
+                }
                 ProviderKind::Google => {
                     GoogleProvider::from_config(pc).map(|p| Arc::new(p) as Arc<dyn LlmProvider>)
                 }

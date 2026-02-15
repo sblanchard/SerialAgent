@@ -32,7 +32,11 @@ impl SkillsRegistry {
 
     pub fn render_index(&self) -> String {
         let entries = self.entries.read();
-        entries.iter().map(|e| e.render_index_line()).collect::<Vec<_>>().join("\n")
+        entries
+            .iter()
+            .map(|e| e.render_index_line())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     pub fn read_doc(&self, skill_name: &str) -> Result<String> {
