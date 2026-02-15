@@ -5,6 +5,7 @@ use sa_memory::provider::SerialMemoryProvider;
 use sa_providers::registry::ProviderRegistry;
 use sa_sessions::{IdentityResolver, LifecycleManager, SessionStore, TranscriptWriter};
 use sa_skills::registry::SkillsRegistry;
+use sa_tools::ProcessManager;
 
 use crate::workspace::bootstrap::BootstrapTracker;
 use crate::workspace::files::WorkspaceReader;
@@ -22,4 +23,5 @@ pub struct AppState {
     pub identity: Arc<IdentityResolver>,
     pub lifecycle: Arc<LifecycleManager>,
     pub transcripts: Arc<TranscriptWriter>,
+    pub processes: Arc<ProcessManager>,
 }

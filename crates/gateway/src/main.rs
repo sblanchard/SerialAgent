@@ -13,6 +13,7 @@ use sa_memory::RestSerialMemoryClient;
 use sa_providers::registry::ProviderRegistry;
 use sa_sessions::{IdentityResolver, LifecycleManager, SessionStore, TranscriptWriter};
 use sa_skills::registry::SkillsRegistry;
+use sa_tools::ProcessManager;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -93,6 +94,10 @@ async fn main() -> anyhow::Result<()> {
         "session management ready"
     );
 
+    // ── Process manager (exec/process tools) ───────────────────────
+    let processes = Arc::new(ProcessManager::new(config.tools.exec.clone()));
+    tracing::info!("process manager ready");
+
     // ── App state ────────────────────────────────────────────────────
     let state = AppState {
         config: config.clone(),
@@ -105,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
         identity,
         lifecycle,
         transcripts,
+        processes: processes.clone(),
     };
 
     // ── Periodic session flush ───────────────────────────────────────
@@ -119,6 +125,20 @@ async fn main() -> anyhow::Result<()> {
                 if let Err(e) = sessions.flush() {
                     tracing::warn!(error = %e, "session store flush failed");
                 }
+            }
+        });
+    }
+
+    // ── Periodic process cleanup ──────────────────────────────────
+    {
+        let processes = processes.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                std::time::Duration::from_secs(60),
+            );
+            loop {
+                interval.tick().await;
+                processes.cleanup_stale();
             }
         });
     }
