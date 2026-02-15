@@ -32,3 +32,4 @@ anyhow = { workspace = true }
 parking_lot = { workspace = true }
 sha2 = { workspace = true }
 async-trait = { workspace = true }
+futures-util = { workspace = true }

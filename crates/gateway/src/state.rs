@@ -7,6 +7,8 @@ use sa_sessions::{IdentityResolver, LifecycleManager, SessionStore, TranscriptWr
 use sa_skills::registry::SkillsRegistry;
 use sa_tools::ProcessManager;
 
+use crate::nodes::registry::NodeRegistry;
+use crate::nodes::router::ToolRouter;
 use crate::workspace::bootstrap::BootstrapTracker;
 use crate::workspace::files::WorkspaceReader;
 
@@ -24,4 +26,6 @@ pub struct AppState {
     pub lifecycle: Arc<LifecycleManager>,
     pub transcripts: Arc<TranscriptWriter>,
     pub processes: Arc<ProcessManager>,
+    pub nodes: Arc<NodeRegistry>,
+    pub tool_router: Arc<ToolRouter>,
 }

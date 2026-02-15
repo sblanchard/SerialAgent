@@ -15,6 +15,9 @@ use sa_sessions::{IdentityResolver, LifecycleManager, SessionStore, TranscriptWr
 use sa_skills::registry::SkillsRegistry;
 use sa_tools::ProcessManager;
 
+use sa_gateway::nodes::registry::NodeRegistry;
+use sa_gateway::nodes::router::ToolRouter;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // ── Tracing ──────────────────────────────────────────────────────
@@ -98,6 +101,14 @@ async fn main() -> anyhow::Result<()> {
     let processes = Arc::new(ProcessManager::new(config.tools.exec.clone()));
     tracing::info!("process manager ready");
 
+    // ── Node registry + tool router ──────────────────────────────────
+    let nodes = Arc::new(NodeRegistry::new());
+    let tool_router = Arc::new(ToolRouter::new(
+        nodes.clone(),
+        config.tools.exec.timeout_sec,
+    ));
+    tracing::info!("node registry + tool router ready");
+
     // ── App state ────────────────────────────────────────────────────
     let state = AppState {
         config: config.clone(),
@@ -111,6 +122,8 @@ async fn main() -> anyhow::Result<()> {
         lifecycle,
         transcripts,
         processes: processes.clone(),
+        nodes: nodes.clone(),
+        tool_router,
     };
 
     // ── Periodic session flush ───────────────────────────────────────
@@ -139,6 +152,21 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 interval.tick().await;
                 processes.cleanup_stale();
+            }
+        });
+    }
+
+    // ── Periodic stale node pruning ─────────────────────────────────
+    {
+        let nodes = nodes.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                std::time::Duration::from_secs(30),
+            );
+            loop {
+                interval.tick().await;
+                // Remove nodes not seen for 120 seconds.
+                nodes.prune_stale(120);
             }
         });
     }

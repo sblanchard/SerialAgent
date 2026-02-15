@@ -17,13 +17,14 @@ toml = "0.8"
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 futures-core = "0.3"
+futures-util = "0.3"
 async-stream = "0.3"
 
 # HTTP
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 
 # Web framework
-axum = { version = "0.7", features = ["json"] }
+axum = { version = "0.7", features = ["json", "ws"] }
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # Observability
