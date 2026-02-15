@@ -1,0 +1,16 @@
+[package]
+name = "sa-memory"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sa-domain = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

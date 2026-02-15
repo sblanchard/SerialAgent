@@ -1,27 +1,30 @@
-[package]
-name = "serial-assistant"
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "AI Assistant orchestrator with SerialMemory backend — context pack builder, skills registry, and introspection API"
 authors = ["sblanchard"]
 
-[dependencies]
-# Web framework
-axum = { version = "0.7", features = ["json"] }
-tokio = { version = "1", features = ["full"] }
-tower = "0.5"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
-
-# HTTP client (SerialMemory REST API)
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-
+[workspace.dependencies]
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 
-# Hashing (file cache integrity)
-sha2 = "0.10"
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures-core = "0.3"
+async-stream = "0.3"
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
+
+# Web framework
+axum = { version = "0.7", features = ["json"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # Observability
 tracing = "0.1"
@@ -33,3 +36,12 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 thiserror = "1"
 parking_lot = "0.12"
+sha2 = "0.10"
+
+# Internal crates
+sa-domain = { path = "crates/domain" }
+sa-contextpack = { path = "crates/contextpack" }
+sa-skills = { path = "crates/skills" }
+sa-memory = { path = "crates/serialmemory-client" }
+sa-providers = { path = "crates/providers" }
+sa-protocol = { path = "crates/node-protocol" }
