@@ -74,15 +74,8 @@ impl OpenAiCompatProvider {
             .header
             .clone()
             .unwrap_or_else(|| "Authorization".into());
-        let auth_prefix = cfg
-            .auth
-            .prefix
-            .clone()
-            .unwrap_or_else(|| "Bearer ".into());
-        let default_model = cfg
-            .default_model
-            .clone()
-            .unwrap_or_else(|| "gpt-4o".into());
+        let auth_prefix = cfg.auth.prefix.clone().unwrap_or_else(|| "Bearer ".into());
+        let default_model = cfg.default_model.clone().unwrap_or_else(|| "gpt-4o".into());
 
         let capabilities = LlmCapabilities {
             supports_tools: sa_domain::capability::ToolSupport::StrictJson,

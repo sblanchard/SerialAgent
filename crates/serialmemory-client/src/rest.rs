@@ -151,10 +151,7 @@ impl RestSerialMemoryClient {
                     return Ok(resp);
                 }
                 Err(e) => {
-                    let status = e
-                        .status()
-                        .map(|s| s.as_u16())
-                        .unwrap_or(0);
+                    let status = e.status().map(|s| s.as_u16()).unwrap_or(0);
 
                     TraceEvent::SerialMemoryCall {
                         endpoint: endpoint.to_owned(),
@@ -170,9 +167,8 @@ impl RestSerialMemoryClient {
             }
         }
 
-        Err(last_err.unwrap_or_else(|| {
-            Error::SerialMemory(format!("{endpoint}: all retries exhausted"))
-        }))
+        Err(last_err
+            .unwrap_or_else(|| Error::SerialMemory(format!("{endpoint}: all retries exhausted"))))
     }
 }
 
@@ -185,12 +181,10 @@ impl SerialMemoryProvider for RestSerialMemoryClient {
     async fn search(&self, req: RagSearchRequest) -> Result<RagSearchResponse> {
         let url = self.url("/api/rag/search");
         let resp = self
-            .execute_with_retry("POST /api/rag/search", || {
-                self.http.post(&url).json(&req)
-            })
+            .execute_with_retry("POST /api/rag/search", || self.http.post(&url).json(&req))
             .await?;
 
-        let body = resp.text().await.map_err(|e| from_reqwest(e))?;
+        let body = resp.text().await.map_err(from_reqwest)?;
         serde_json::from_str(&body).map_err(|e| {
             Error::SerialMemory(format!("failed to parse search response: {e}: {body}"))
         })
@@ -199,12 +193,10 @@ impl SerialMemoryProvider for RestSerialMemoryClient {
     async fn answer(&self, req: RagAnswerRequest) -> Result<RagAnswerResponse> {
         let url = self.url("/api/rag/answer");
         let resp = self
-            .execute_with_retry("POST /api/rag/answer", || {
-                self.http.post(&url).json(&req)
-            })
+            .execute_with_retry("POST /api/rag/answer", || self.http.post(&url).json(&req))
             .await?;
 
-        let body = resp.text().await.map_err(|e| from_reqwest(e))?;
+        let body = resp.text().await.map_err(from_reqwest)?;
         serde_json::from_str(&body).map_err(|e| {
             Error::SerialMemory(format!("failed to parse answer response: {e}: {body}"))
         })
@@ -213,12 +205,10 @@ impl SerialMemoryProvider for RestSerialMemoryClient {
     async fn ingest(&self, req: MemoryIngestRequest) -> Result<IngestResponse> {
         let url = self.url("/api/memories");
         let resp = self
-            .execute_with_retry("POST /api/memories", || {
-                self.http.post(&url).json(&req)
-            })
+            .execute_with_retry("POST /api/memories", || self.http.post(&url).json(&req))
             .await?;
 
-        let body = resp.text().await.map_err(|e| from_reqwest(e))?;
+        let body = resp.text().await.map_err(from_reqwest)?;
         serde_json::from_str(&body).map_err(|e| {
             Error::SerialMemory(format!("failed to parse ingest response: {e}: {body}"))
         })
@@ -230,7 +220,7 @@ impl SerialMemoryProvider for RestSerialMemoryClient {
             .execute_with_retry("GET /api/persona", || self.http.get(&url))
             .await?;
 
-        let body = resp.text().await.map_err(|e| from_reqwest(e))?;
+        let body = resp.text().await.map_err(from_reqwest)?;
         serde_json::from_str(&body).map_err(|e| {
             Error::SerialMemory(format!("failed to parse persona response: {e}: {body}"))
         })
@@ -238,22 +228,18 @@ impl SerialMemoryProvider for RestSerialMemoryClient {
 
     async fn set_persona(&self, req: UserPersonaRequest) -> Result<()> {
         let url = self.url("/api/persona");
-        self.execute_with_retry("POST /api/persona", || {
-            self.http.post(&url).json(&req)
-        })
-        .await?;
+        self.execute_with_retry("POST /api/persona", || self.http.post(&url).json(&req))
+            .await?;
         Ok(())
     }
 
     async fn init_session(&self, req: SessionRequest) -> Result<serde_json::Value> {
         let url = self.url("/api/sessions");
         let resp = self
-            .execute_with_retry("POST /api/sessions", || {
-                self.http.post(&url).json(&req)
-            })
+            .execute_with_retry("POST /api/sessions", || self.http.post(&url).json(&req))
             .await?;
 
-        let body = resp.text().await.map_err(|e| from_reqwest(e))?;
+        let body = resp.text().await.map_err(from_reqwest)?;
         serde_json::from_str(&body).map_err(|e| {
             Error::SerialMemory(format!("failed to parse session response: {e}: {body}"))
         })
@@ -272,11 +258,13 @@ impl SerialMemoryProvider for RestSerialMemoryClient {
         let url = self.url("/api/graph");
         let resp = self
             .execute_with_retry("GET /api/graph", || {
-                self.http.get(&url).query(&[("hops", hops), ("limit", limit)])
+                self.http
+                    .get(&url)
+                    .query(&[("hops", hops), ("limit", limit)])
             })
             .await?;
 
-        let body = resp.text().await.map_err(|e| from_reqwest(e))?;
+        let body = resp.text().await.map_err(from_reqwest)?;
         serde_json::from_str(&body).map_err(|e| {
             Error::SerialMemory(format!("failed to parse graph response: {e}: {body}"))
         })
@@ -288,7 +276,7 @@ impl SerialMemoryProvider for RestSerialMemoryClient {
             .execute_with_retry("GET /api/stats", || self.http.get(&url))
             .await?;
 
-        let body = resp.text().await.map_err(|e| from_reqwest(e))?;
+        let body = resp.text().await.map_err(from_reqwest)?;
         serde_json::from_str(&body).map_err(|e| {
             Error::SerialMemory(format!("failed to parse stats response: {e}: {body}"))
         })
@@ -299,24 +287,22 @@ impl SerialMemoryProvider for RestSerialMemoryClient {
         let health_url = self.url("/admin/health");
 
         // Try /admin/health first, fall back to /admin/status.
-        let resp = self
+        let resp = match self
             .execute_with_retry("GET /admin/health", || self.http.get(&health_url))
             .await
-            .or_else(|_| {
-                // Return a future-compatible error; we'll try the status endpoint
-                // synchronously below — but we need an async block.
-                Err::<Response, Error>(Error::SerialMemory("health endpoint failed".into()))
-            });
-
-        let resp = match resp {
+        {
             Ok(r) => r,
-            Err(_) => {
-                self.execute_with_retry("GET /admin/status", || self.http.get(&status_url))
-                    .await?
-            }
+            Err(_) => self
+                .execute_with_retry("GET /admin/status", || self.http.get(&status_url))
+                .await
+                .map_err(|e| {
+                    Error::SerialMemory(format!(
+                        "health endpoint failed; status fallback also failed: {e}"
+                    ))
+                })?,
         };
 
-        let body = resp.text().await.map_err(|e| from_reqwest(e))?;
+        let body = resp.text().await.map_err(from_reqwest)?;
         serde_json::from_str(&body).map_err(|e| {
             Error::SerialMemory(format!("failed to parse health response: {e}: {body}"))
         })

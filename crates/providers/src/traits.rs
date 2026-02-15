@@ -1,14 +1,14 @@
 use sa_domain::capability::LlmCapabilities;
 use sa_domain::error::Result;
+use sa_domain::stream::Usage;
 use sa_domain::stream::{BoxStream, StreamEvent};
 use sa_domain::tool::{Message, ToolCall, ToolDefinition};
-use sa_domain::stream::Usage;
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Request / Response types
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// A provider-agnostic chat completion request.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ChatRequest {
     /// The conversation messages to send.
     pub messages: Vec<Message>,
@@ -22,19 +22,6 @@ pub struct ChatRequest {
     pub json_mode: bool,
     /// Model identifier override. When `None`, the provider uses its default.
     pub model: Option<String>,
-}
-
-impl Default for ChatRequest {
-    fn default() -> Self {
-        Self {
-            messages: Vec::new(),
-            tools: Vec::new(),
-            temperature: None,
-            max_tokens: None,
-            json_mode: false,
-            model: None,
-        }
-    }
 }
 
 /// A provider-agnostic chat completion response.

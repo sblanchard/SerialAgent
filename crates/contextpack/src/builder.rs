@@ -3,13 +3,7 @@ use crate::report::{ContextReport, FileReport};
 use crate::truncation::{self, Section};
 
 /// Ordered list of workspace context files to inject every session.
-const DEFAULT_FILES: &[&str] = &[
-    "AGENTS.md",
-    "SOUL.md",
-    "USER.md",
-    "IDENTITY.md",
-    "TOOLS.md",
-];
+const DEFAULT_FILES: &[&str] = &["AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md", "TOOLS.md"];
 
 /// Conditional files.
 const BOOTSTRAP_FILE: &str = "BOOTSTRAP.md";
@@ -47,7 +41,10 @@ pub struct ContextPackBuilder {
 
 impl ContextPackBuilder {
     pub fn new(max_per_file: usize, total_max: usize) -> Self {
-        Self { max_per_file, total_max }
+        Self {
+            max_per_file,
+            total_max,
+        }
     }
 
     /// Build the context pack.

@@ -110,8 +110,7 @@ impl GoogleProvider {
         }
 
         if !req.tools.is_empty() {
-            let function_declarations: Vec<Value> =
-                req.tools.iter().map(tool_to_gemini).collect();
+            let function_declarations: Vec<Value> = req.tools.iter().map(tool_to_gemini).collect();
             body["tools"] = serde_json::json!([{
                 "functionDeclarations": function_declarations,
             }]);
@@ -128,7 +127,7 @@ impl GoogleProvider {
         if req.json_mode {
             gen_config["responseMimeType"] = serde_json::json!("application/json");
         }
-        if gen_config.as_object().map_or(false, |o| !o.is_empty()) {
+        if gen_config.as_object().is_some_and(|o| !o.is_empty()) {
             body["generationConfig"] = gen_config;
         }
 

@@ -29,9 +29,15 @@ impl BootstrapTracker {
             }
         }
 
-        tracing::info!(completed_count = completed.len(), "bootstrap tracker initialized");
+        tracing::info!(
+            completed_count = completed.len(),
+            "bootstrap tracker initialized"
+        );
 
-        Ok(Self { state_path, completed: RwLock::new(completed) })
+        Ok(Self {
+            state_path,
+            completed: RwLock::new(completed),
+        })
     }
 
     pub fn is_first_run(&self, workspace_id: &str) -> bool {
@@ -39,13 +45,17 @@ impl BootstrapTracker {
     }
 
     pub fn mark_complete(&self, workspace_id: &str) -> Result<()> {
-        let marker_path = self.state_path
+        let marker_path = self
+            .state_path
             .join("bootstrap")
             .join(format!("{workspace_id}.done"));
         let timestamp = chrono::Utc::now().to_rfc3339();
         std::fs::write(&marker_path, timestamp)?;
         self.completed.write().insert(workspace_id.to_string());
-        TraceEvent::BootstrapCompleted { workspace_id: workspace_id.to_string() }.emit();
+        TraceEvent::BootstrapCompleted {
+            workspace_id: workspace_id.to_string(),
+        }
+        .emit();
         Ok(())
     }
 
@@ -54,7 +64,8 @@ impl BootstrapTracker {
     }
 
     pub fn reset(&self, workspace_id: &str) -> Result<()> {
-        let marker_path = self.state_path
+        let marker_path = self
+            .state_path
             .join("bootstrap")
             .join(format!("{workspace_id}.done"));
         if marker_path.exists() {

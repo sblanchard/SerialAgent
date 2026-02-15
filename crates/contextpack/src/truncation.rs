@@ -39,7 +39,10 @@ pub fn apply_total_cap(sections: &mut [Section], total_max_chars: usize) {
         } else if accumulated < total_max_chars {
             let remaining = total_max_chars - accumulated;
             let boundary = section.content.floor_char_boundary(remaining);
-            section.content = format!("{}\n\n[TRUNCATED_TOTAL_CAP]\n", &section.content[..boundary]);
+            section.content = format!(
+                "{}\n\n[TRUNCATED_TOTAL_CAP]\n",
+                &section.content[..boundary]
+            );
             section.truncated_total_cap = true;
             accumulated = total_max_chars;
         } else {
