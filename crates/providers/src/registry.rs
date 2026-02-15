@@ -70,9 +70,21 @@ impl ProviderRegistry {
         }
 
         if providers.is_empty() && !config.providers.is_empty() {
-            return Err(Error::Config(
-                "all configured LLM providers failed to initialize".into(),
-            ));
+            // Dev-friendly default: allow the gateway to boot even if no
+            // providers are ready (dashboard/context/nodes/sessions still
+            // work).  For fail-fast in prod, set SA_REQUIRE_LLM=1.
+            let require = std::env::var("SA_REQUIRE_LLM")
+                .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+                .unwrap_or(false);
+            if require {
+                return Err(Error::Config(
+                    "all configured LLM providers failed to initialize".into(),
+                ));
+            }
+            tracing::warn!(
+                "no LLM providers initialized; LLM endpoints will fail \
+                 until auth is configured"
+            );
         }
 
         let mut roles = HashMap::new();
