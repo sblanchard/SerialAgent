@@ -114,10 +114,14 @@ mode = "off"                   # "off" or "cache-ttl"
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # LLM Provider System
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# require_provider: if true, abort startup when no LLM providers init.
+#   Default false — gateway boots without API keys (dashboard/nodes/
+#   sessions still work). Override with SA_REQUIRE_LLM=1 env var.
 # router_mode: "capability" (auto-select based on requirements) or "fixed"
 # Each role maps to "provider_id/model_name"
 
 [llm]
+require_provider = false
 router_mode = "capability"
 default_timeout_ms = 20000
 max_retries = 2
