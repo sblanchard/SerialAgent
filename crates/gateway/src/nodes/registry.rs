@@ -170,10 +170,36 @@ impl NodeRegistry {
     ///    (most specific handler).
     /// 3. Tie-break: lexicographic `node_id` (deterministic, stable).
     pub fn find_for_tool(&self, tool_name: &str) -> Option<(String, NodeSink)> {
+        self.find_for_tool_with_affinity(tool_name, &[])
+    }
+
+    /// Like `find_for_tool` but with optional node affinity hints.
+    ///
+    /// When `affinity` is non-empty and multiple nodes match with the same
+    /// specificity, nodes whose `node_id` or `node_type` starts with any
+    /// affinity prefix are preferred. This allows skill manifests to express
+    /// "prefer macOS nodes for this tool".
+    ///
+    /// Ranking: (1) longest prefix, (2) affinity match, (3) lexicographic node_id.
+    pub fn find_for_tool_with_affinity(
+        &self,
+        tool_name: &str,
+        affinity: &[String],
+    ) -> Option<(String, NodeSink)> {
         let nodes = self.nodes.read();
-        let mut best: Option<(usize, &str, NodeSink)> = None;
+        // Score: (specificity, has_affinity, node_id_for_tiebreak)
+        let mut best: Option<(usize, bool, &str, NodeSink)> = None;
 
         for node in nodes.values() {
+            let has_affinity = if affinity.is_empty() {
+                false
+            } else {
+                affinity.iter().any(|a| {
+                    node.node_id.starts_with(a.as_str())
+                        || node.node_type.starts_with(a.as_str())
+                })
+            };
+
             for cap in &node.capabilities {
                 let matches = tool_name == cap.name
                     || tool_name.starts_with(&format!("{}.", cap.name));
@@ -182,19 +208,22 @@ impl NodeRegistry {
                 }
                 let specificity = cap.name.len();
                 let dominated = match &best {
-                    Some((best_len, best_nid, _)) => {
+                    Some((best_len, best_affinity, best_nid, _)) => {
                         specificity > *best_len
-                            || (specificity == *best_len && node.node_id.as_str() < *best_nid)
+                            || (specificity == *best_len && has_affinity && !best_affinity)
+                            || (specificity == *best_len
+                                && has_affinity == *best_affinity
+                                && node.node_id.as_str() < *best_nid)
                     }
                     None => true,
                 };
                 if dominated {
-                    best = Some((specificity, &node.node_id, node.sink.clone()));
+                    best = Some((specificity, has_affinity, &node.node_id, node.sink.clone()));
                 }
             }
         }
 
-        best.map(|(_, nid, sink)| (nid.to_owned(), sink))
+        best.map(|(_, _, nid, sink)| (nid.to_owned(), sink))
     }
 
     /// Get the sink for a specific node.
@@ -438,6 +467,51 @@ mod tests {
             sink: tx,
         });
         assert_eq!(reg.list()[0].capabilities.len(), 3);
+    }
+
+    #[test]
+    fn affinity_prefers_matching_node() {
+        let reg = NodeRegistry::new();
+
+        // Two nodes with the same capability, different types.
+        let (tx_lin, _) = mpsc::channel(1);
+        reg.register(ConnectedNode {
+            node_id: "linux-box".into(),
+            node_type: "linux".into(),
+            capabilities: vec![make_cap("fs")],
+            version: "0.1.0".into(),
+            session_id: "s1".into(),
+            connected_at: Utc::now(),
+            last_seen: Utc::now(),
+            sink: tx_lin,
+        });
+        let (tx_mac, _) = mpsc::channel(1);
+        reg.register(ConnectedNode {
+            node_id: "mac-mini".into(),
+            node_type: "macos".into(),
+            capabilities: vec![make_cap("fs")],
+            version: "0.1.0".into(),
+            session_id: "s2".into(),
+            connected_at: Utc::now(),
+            last_seen: Utc::now(),
+            sink: tx_mac,
+        });
+
+        // Without affinity: picks "linux-box" (lexicographically first).
+        let (nid, _) = reg.find_for_tool("fs.read_text").unwrap();
+        assert_eq!(nid, "linux-box");
+
+        // With macOS affinity: picks "mac-mini" despite losing lexicographic tie-break.
+        let (nid, _) = reg
+            .find_for_tool_with_affinity("fs.read_text", &["macos".into()])
+            .unwrap();
+        assert_eq!(nid, "mac-mini");
+
+        // With linux affinity: picks "linux-box" (matches affinity).
+        let (nid, _) = reg
+            .find_for_tool_with_affinity("fs.read_text", &["linux".into()])
+            .unwrap();
+        assert_eq!(nid, "linux-box");
     }
 
     #[test]

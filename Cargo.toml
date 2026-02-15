@@ -40,6 +40,9 @@ anyhow = "1"
 thiserror = "1"
 parking_lot = "0.12"
 sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+tempfile = "3"
 
 # Internal crates
 sa-domain = { path = "crates/domain" }

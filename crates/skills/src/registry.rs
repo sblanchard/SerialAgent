@@ -36,6 +36,8 @@ impl SkillsRegistry {
         }
     }
 
+    /// Render the full index (all skills, including blocked ones).
+    /// Used for dashboard / debug views.
     pub fn render_index(&self) -> String {
         let entries = self.entries.read();
         entries
@@ -43,6 +45,31 @@ impl SkillsRegistry {
             .map(|e| e.render_index_line())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Render the index for LLM injection — only ready skills, plus a
+    /// one-line summary of blocked skills (keeps prompts tight).
+    pub fn render_ready_index(&self) -> String {
+        let entries = self.entries.read();
+        let mut lines = Vec::new();
+        let mut blocked = 0usize;
+
+        for entry in entries.iter() {
+            if entry.is_ready() {
+                lines.push(entry.render_index_line());
+            } else {
+                blocked += 1;
+            }
+        }
+
+        if blocked > 0 {
+            lines.push(format!(
+                "({blocked} additional skill{} not shown — missing deps or unsupported platform)",
+                if blocked == 1 { "" } else { "s" }
+            ));
+        }
+
+        lines.join("\n")
     }
 
     pub fn read_doc(&self, skill_name: &str) -> Result<String> {
