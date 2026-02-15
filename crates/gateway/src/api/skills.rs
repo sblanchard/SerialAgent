@@ -21,11 +21,13 @@ pub async fn read_skill_doc(
             "skill": name,
             "doc": doc,
             "chars": doc.len(),
-        })).into_response(),
+        }))
+        .into_response(),
         Err(e) => (
             axum::http::StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": e.to_string() })),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
@@ -34,10 +36,12 @@ pub async fn reload_skills(State(state): State<AppState>) -> impl IntoResponse {
         Ok(count) => Json(serde_json::json!({
             "reloaded": true,
             "skills_count": count,
-        })).into_response(),
+        }))
+        .into_response(),
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }

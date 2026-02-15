@@ -47,7 +47,8 @@ impl<'a> UserFactsBuilder<'a> {
 
     /// Add multiple contextual search queries.
     pub fn with_queries(mut self, queries: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.search_queries.extend(queries.into_iter().map(|q| q.into()));
+        self.search_queries
+            .extend(queries.into_iter().map(|q| q.into()));
         self
     }
 
@@ -202,7 +203,10 @@ impl<'a> UserFactsBuilder<'a> {
                     .unwrap_or("");
                 if !value.is_empty() {
                     if key.is_empty() {
-                        groups.entry(attr_type).or_default().push(format!("- {value}"));
+                        groups
+                            .entry(attr_type)
+                            .or_default()
+                            .push(format!("- {value}"));
                     } else {
                         groups
                             .entry(attr_type)
@@ -220,7 +224,10 @@ impl<'a> UserFactsBuilder<'a> {
             // Remaining groups
             for (group_key, lines) in groups {
                 let heading_owned = title_case(&group_key);
-                result.push(("Other", format!("**{heading_owned}**\n{}", lines.join("\n"))));
+                result.push((
+                    "Other",
+                    format!("**{heading_owned}**\n{}", lines.join("\n")),
+                ));
             }
         }
 

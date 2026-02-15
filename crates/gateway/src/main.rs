@@ -27,14 +27,12 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("SerialAgent starting");
 
     // ── Config ───────────────────────────────────────────────────────
-    let config_path = std::env::var("SA_CONFIG")
-        .unwrap_or_else(|_| "config.toml".into());
+    let config_path = std::env::var("SA_CONFIG").unwrap_or_else(|_| "config.toml".into());
 
     let config: Config = if std::path::Path::new(&config_path).exists() {
         let raw = std::fs::read_to_string(&config_path)
             .with_context(|| format!("reading {config_path}"))?;
-        toml::from_str(&raw)
-            .with_context(|| format!("parsing {config_path}"))?
+        toml::from_str(&raw).with_context(|| format!("parsing {config_path}"))?
     } else {
         tracing::warn!(path = %config_path, "config file not found, using defaults");
         Config::default()
@@ -53,10 +51,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // ── Skills ───────────────────────────────────────────────────────
-    let skills = Arc::new(
-        SkillsRegistry::load(&config.skills.path)
-            .context("loading skills")?,
-    );
+    let skills = Arc::new(SkillsRegistry::load(&config.skills.path).context("loading skills")?);
     tracing::info!(skills_count = skills.list().len(), "skills loaded");
 
     // ── SerialMemory client ──────────────────────────────────────────
@@ -67,14 +62,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(url = %config.serial_memory.base_url, "SerialMemory client ready");
 
     // ── LLM providers ────────────────────────────────────────────────
-    let llm = Arc::new(
-        ProviderRegistry::from_config(&config.llm)
-            .context("initializing LLM providers")?,
-    );
-    tracing::info!(
-        providers = llm.len(),
-        "LLM provider registry ready"
-    );
+    let llm =
+        Arc::new(ProviderRegistry::from_config(&config.llm).context("initializing LLM providers")?);
+    tracing::info!(providers = llm.len(), "LLM provider registry ready");
 
     // ── App state ────────────────────────────────────────────────────
     let state = AppState {

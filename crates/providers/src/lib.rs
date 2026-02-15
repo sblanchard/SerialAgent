@@ -8,6 +8,4 @@ pub mod traits;
 // Re-exports for convenience.
 pub use registry::ProviderRegistry;
 pub use router::LlmRouter;
-pub use traits::{
-    ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider,
-};
+pub use traits::{ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider};
