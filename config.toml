@@ -1,19 +1,21 @@
-# SerialAssistant Configuration
+# SerialAgent Configuration
 # All values shown are defaults — uncomment and modify as needed.
 
 [context]
-# bootstrap_max_chars = 20000      # Max chars per workspace file before truncation
-# bootstrap_total_max_chars = 24000 # Max total chars across all injected files
-# user_facts_max_chars = 4000      # Max chars for USER_FACTS from SerialMemory
-# skills_index_max_chars = 2000    # Max chars for compact skills index
+bootstrap_max_chars = 20000         # Max chars per workspace file before truncation
+bootstrap_total_max_chars = 24000   # Max total chars across all injected files
+user_facts_max_chars = 4000         # Max chars for USER_FACTS from SerialMemory
+skills_index_max_chars = 2000       # Max chars for compact skills index
 
 [serial_memory]
 base_url = "http://localhost:5000"
-# api_key = "sm_your_api_key"      # Your SerialMemory API key
-# timeout_secs = 30
-# max_retries = 3
-# workspace_id = "serial-assistant" # Set to isolate from VS Code tenant, or omit to share
-# default_user_id = "default_user"
+# api_key = "sm_your_api_key"       # Your SerialMemory API key
+transport = "rest"                   # rest | mcp | hybrid
+# mcp_endpoint = "stdio://serialmemory-mcp"
+# workspace_id = "serial-assistant"  # Set to isolate from VS Code tenant
+timeout_ms = 8000
+max_retries = 3
+default_user_id = "default_user"
 
 [server]
 port = 3210
@@ -25,3 +27,209 @@ state_path = "./data/state"
 
 [skills]
 path = "./skills"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# LLM Provider System
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# router_mode: "capability" (auto-select based on requirements) or "fixed"
+# Each role maps to "provider_id/model_name"
+
+[llm]
+router_mode = "capability"
+default_timeout_ms = 20000
+max_retries = 2
+
+# ── Role assignments ──────────────────────────────────────────────────
+# Format: "provider_id/model_name"
+# The router resolves provider_id to the matching [[llm.providers]] entry.
+
+[llm.roles.planner]
+model = "openai/gpt-4o"
+require_tools = true
+require_streaming = true
+
+[llm.roles.executor]
+model = "openai/gpt-4o"
+require_tools = true
+require_streaming = true
+[[llm.roles.executor.fallbacks]]
+model = "anthropic/claude-sonnet-4-20250514"
+require_tools = true
+
+[llm.roles.summarizer]
+model = "openai/gpt-4o-mini"
+require_tools = false
+require_streaming = false
+
+[llm.roles.embedder]
+model = "openai/text-embedding-3-small"
+require_tools = false
+require_streaming = false
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Provider Registry
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# kind: openai_compat | anthropic | google | openai_codex_oauth
+# auth.mode: api_key | query_param | aws_sigv4 | oauth_device | none
+# auth.env: environment variable name containing the API key
+# auth.key: direct key (prefer auth.env or auth profiles in production)
+
+# ── OpenAI ────────────────────────────────────────────────────────────
+[[llm.providers]]
+id = "openai"
+kind = "openai_compat"
+base_url = "https://api.openai.com/v1"
+default_model = "gpt-4o"
+[llm.providers.auth]
+mode = "api_key"
+env = "OPENAI_API_KEY"
+
+# ── Anthropic ─────────────────────────────────────────────────────────
+[[llm.providers]]
+id = "anthropic"
+kind = "anthropic"
+base_url = "https://api.anthropic.com"
+default_model = "claude-sonnet-4-20250514"
+[llm.providers.auth]
+mode = "api_key"
+header = "x-api-key"
+prefix = ""
+env = "ANTHROPIC_API_KEY"
+
+# ── Google Gemini ─────────────────────────────────────────────────────
+[[llm.providers]]
+id = "google"
+kind = "google"
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+default_model = "gemini-2.0-flash"
+[llm.providers.auth]
+mode = "api_key"
+env = "GOOGLE_API_KEY"
+
+# ── OpenRouter (OpenAI-compatible) ────────────────────────────────────
+# [[llm.providers]]
+# id = "openrouter"
+# kind = "openai_compat"
+# base_url = "https://openrouter.ai/api/v1"
+# default_model = "openai/gpt-4o"
+# [llm.providers.auth]
+# mode = "api_key"
+# env = "OPENROUTER_API_KEY"
+
+# ── Together AI ───────────────────────────────────────────────────────
+# [[llm.providers]]
+# id = "together"
+# kind = "openai_compat"
+# base_url = "https://api.together.xyz/v1"
+# default_model = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
+# [llm.providers.auth]
+# mode = "api_key"
+# env = "TOGETHER_API_KEY"
+
+# ── Chutes ────────────────────────────────────────────────────────────
+# [[llm.providers]]
+# id = "chutes"
+# kind = "openai_compat"
+# base_url = "https://llm.chutes.ai/v1"
+# default_model = "deepseek-ai/DeepSeek-V3-0324"
+# [llm.providers.auth]
+# mode = "api_key"
+# env = "CHUTES_API_KEY"
+
+# ── xAI (Grok) ───────────────────────────────────────────────────────
+# [[llm.providers]]
+# id = "xai"
+# kind = "openai_compat"
+# base_url = "https://api.x.ai/v1"
+# default_model = "grok-3"
+# [llm.providers.auth]
+# mode = "api_key"
+# env = "XAI_API_KEY"
+
+# ── Ollama (local) ────────────────────────────────────────────────────
+# [[llm.providers]]
+# id = "ollama"
+# kind = "openai_compat"
+# base_url = "http://localhost:11434/v1"
+# default_model = "llama3.1:8b"
+# [llm.providers.auth]
+# mode = "none"
+
+# ── vLLM (local) ──────────────────────────────────────────────────────
+# [[llm.providers]]
+# id = "vllm"
+# kind = "openai_compat"
+# base_url = "http://localhost:8000/v1"
+# default_model = "meta-llama/Meta-Llama-3.1-70B-Instruct"
+# [llm.providers.auth]
+# mode = "none"
+
+# ── Qwen (Alibaba) ───────────────────────────────────────────────────
+# [[llm.providers]]
+# id = "qwen"
+# kind = "openai_compat"
+# base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# default_model = "qwen-plus"
+# [llm.providers.auth]
+# mode = "api_key"
+# env = "DASHSCOPE_API_KEY"
+
+# ── MiniMax ───────────────────────────────────────────────────────────
+# [[llm.providers]]
+# id = "minimax"
+# kind = "openai_compat"
+# base_url = "https://api.minimax.chat/v1"
+# default_model = "abab6.5s-chat"
+# [llm.providers.auth]
+# mode = "api_key"
+# env = "MINIMAX_API_KEY"
+
+# ── Moonshot ──────────────────────────────────────────────────────────
+# [[llm.providers]]
+# id = "moonshot"
+# kind = "openai_compat"
+# base_url = "https://api.moonshot.cn/v1"
+# default_model = "moonshot-v1-8k"
+# [llm.providers.auth]
+# mode = "api_key"
+# env = "MOONSHOT_API_KEY"
+
+# ── HuggingFace Inference ────────────────────────────────────────────
+# [[llm.providers]]
+# id = "huggingface"
+# kind = "openai_compat"
+# base_url = "https://api-inference.huggingface.co/v1"
+# default_model = "meta-llama/Meta-Llama-3.1-70B-Instruct"
+# [llm.providers.auth]
+# mode = "api_key"
+# env = "HF_TOKEN"
+
+# ── Venice AI ─────────────────────────────────────────────────────────
+# [[llm.providers]]
+# id = "venice"
+# kind = "openai_compat"
+# base_url = "https://api.venice.ai/api/v1"
+# default_model = "llama-3.3-70b"
+# [llm.providers.auth]
+# mode = "api_key"
+# env = "VENICE_API_KEY"
+
+# ── LiteLLM proxy ────────────────────────────────────────────────────
+# [[llm.providers]]
+# id = "litellm"
+# kind = "openai_compat"
+# base_url = "http://localhost:4000/v1"
+# default_model = "gpt-4o"
+# [llm.providers.auth]
+# mode = "api_key"
+# env = "LITELLM_API_KEY"
+
+# ── Cloudflare Workers AI ────────────────────────────────────────────
+# [[llm.providers]]
+# id = "cloudflare"
+# kind = "openai_compat"
+# base_url = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+# default_model = "@cf/meta/llama-3.1-70b-instruct"
+# [llm.providers.auth]
+# mode = "api_key"
+# env = "CLOUDFLARE_API_KEY"
