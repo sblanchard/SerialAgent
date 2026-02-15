@@ -4,6 +4,7 @@ pub mod memory;
 pub mod providers;
 pub mod sessions;
 pub mod skills;
+pub mod tools;
 
 use axum::routing::{delete, get, post, put};
 use axum::Router;
@@ -34,6 +35,9 @@ pub fn router() -> Router<AppState> {
         .route("/v1/sessions", get(sessions::list_sessions))
         .route("/v1/sessions/resolve", post(sessions::resolve_session))
         .route("/v1/sessions/reset", post(sessions::reset_session))
+        // Tools (exec / process)
+        .route("/v1/tools/exec", post(tools::exec_tool))
+        .route("/v1/tools/process", post(tools::process_tool))
         // Providers / Models
         .route("/v1/models", get(providers::list_providers))
         .route("/v1/models/roles", get(providers::list_roles))
