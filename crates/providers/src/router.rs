@@ -73,9 +73,10 @@ impl LlmRouter {
         mut req: ChatRequest,
     ) -> Result<ChatResponse> {
         let role_str = role_to_string(role);
-        let role_cfg = self.role_configs.get(&role_str).ok_or_else(|| {
-            Error::Config(format!("no role config for '{}'", role_str))
-        })?;
+        let role_cfg = self
+            .role_configs
+            .get(&role_str)
+            .ok_or_else(|| Error::Config(format!("no role config for '{}'", role_str)))?;
 
         // Attempt primary model.
         let (provider_id, model_name) = resolve_model(&role_cfg.model);

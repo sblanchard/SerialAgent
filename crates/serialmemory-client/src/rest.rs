@@ -151,10 +151,7 @@ impl RestSerialMemoryClient {
                     return Ok(resp);
                 }
                 Err(e) => {
-                    let status = e
-                        .status()
-                        .map(|s| s.as_u16())
-                        .unwrap_or(0);
+                    let status = e.status().map(|s| s.as_u16()).unwrap_or(0);
 
                     TraceEvent::SerialMemoryCall {
                         endpoint: endpoint.to_owned(),
@@ -170,9 +167,8 @@ impl RestSerialMemoryClient {
             }
         }
 
-        Err(last_err.unwrap_or_else(|| {
-            Error::SerialMemory(format!("{endpoint}: all retries exhausted"))
-        }))
+        Err(last_err
+            .unwrap_or_else(|| Error::SerialMemory(format!("{endpoint}: all retries exhausted"))))
     }
 }
 
@@ -185,9 +181,7 @@ impl SerialMemoryProvider for RestSerialMemoryClient {
     async fn search(&self, req: RagSearchRequest) -> Result<RagSearchResponse> {
         let url = self.url("/api/rag/search");
         let resp = self
-            .execute_with_retry("POST /api/rag/search", || {
-                self.http.post(&url).json(&req)
-            })
+            .execute_with_retry("POST /api/rag/search", || self.http.post(&url).json(&req))
             .await?;
 
         let body = resp.text().await.map_err(from_reqwest)?;
@@ -199,9 +193,7 @@ impl SerialMemoryProvider for RestSerialMemoryClient {
     async fn answer(&self, req: RagAnswerRequest) -> Result<RagAnswerResponse> {
         let url = self.url("/api/rag/answer");
         let resp = self
-            .execute_with_retry("POST /api/rag/answer", || {
-                self.http.post(&url).json(&req)
-            })
+            .execute_with_retry("POST /api/rag/answer", || self.http.post(&url).json(&req))
             .await?;
 
         let body = resp.text().await.map_err(from_reqwest)?;
@@ -213,9 +205,7 @@ impl SerialMemoryProvider for RestSerialMemoryClient {
     async fn ingest(&self, req: MemoryIngestRequest) -> Result<IngestResponse> {
         let url = self.url("/api/memories");
         let resp = self
-            .execute_with_retry("POST /api/memories", || {
-                self.http.post(&url).json(&req)
-            })
+            .execute_with_retry("POST /api/memories", || self.http.post(&url).json(&req))
             .await?;
 
         let body = resp.text().await.map_err(from_reqwest)?;
@@ -238,19 +228,15 @@ impl SerialMemoryProvider for RestSerialMemoryClient {
 
     async fn set_persona(&self, req: UserPersonaRequest) -> Result<()> {
         let url = self.url("/api/persona");
-        self.execute_with_retry("POST /api/persona", || {
-            self.http.post(&url).json(&req)
-        })
-        .await?;
+        self.execute_with_retry("POST /api/persona", || self.http.post(&url).json(&req))
+            .await?;
         Ok(())
     }
 
     async fn init_session(&self, req: SessionRequest) -> Result<serde_json::Value> {
         let url = self.url("/api/sessions");
         let resp = self
-            .execute_with_retry("POST /api/sessions", || {
-                self.http.post(&url).json(&req)
-            })
+            .execute_with_retry("POST /api/sessions", || self.http.post(&url).json(&req))
             .await?;
 
         let body = resp.text().await.map_err(from_reqwest)?;
@@ -272,7 +258,9 @@ impl SerialMemoryProvider for RestSerialMemoryClient {
         let url = self.url("/api/graph");
         let resp = self
             .execute_with_retry("GET /api/graph", || {
-                self.http.get(&url).query(&[("hops", hops), ("limit", limit)])
+                self.http
+                    .get(&url)
+                    .query(&[("hops", hops), ("limit", limit)])
             })
             .await?;
 

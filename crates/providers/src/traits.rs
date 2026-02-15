@@ -1,8 +1,8 @@
 use sa_domain::capability::LlmCapabilities;
 use sa_domain::error::Result;
+use sa_domain::stream::Usage;
 use sa_domain::stream::{BoxStream, StreamEvent};
 use sa_domain::tool::{Message, ToolCall, ToolDefinition};
-use sa_domain::stream::Usage;
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Request / Response types
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

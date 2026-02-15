@@ -110,8 +110,7 @@ impl GoogleProvider {
         }
 
         if !req.tools.is_empty() {
-            let function_declarations: Vec<Value> =
-                req.tools.iter().map(tool_to_gemini).collect();
+            let function_declarations: Vec<Value> = req.tools.iter().map(tool_to_gemini).collect();
             body["tools"] = serde_json::json!([{
                 "functionDeclarations": function_declarations,
             }]);

@@ -71,13 +71,22 @@ pub enum ContentPart {
 
 impl Message {
     pub fn system(text: impl Into<String>) -> Self {
-        Self { role: Role::System, content: MessageContent::Text(text.into()) }
+        Self {
+            role: Role::System,
+            content: MessageContent::Text(text.into()),
+        }
     }
     pub fn user(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: MessageContent::Text(text.into()) }
+        Self {
+            role: Role::User,
+            content: MessageContent::Text(text.into()),
+        }
     }
     pub fn assistant(text: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, content: MessageContent::Text(text.into()) }
+        Self {
+            role: Role::Assistant,
+            content: MessageContent::Text(text.into()),
+        }
     }
     pub fn tool_result(tool_use_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
