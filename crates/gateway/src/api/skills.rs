@@ -1,13 +1,15 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Json};
 
 use crate::state::AppState;
 
 pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
     let entries = state.skills.list();
+    let summary = state.skills.readiness_summary();
     Json(serde_json::json!({
         "skills": entries,
         "count": entries.len(),
+        "readiness": summary,
         "index_preview": state.skills.render_index(),
     }))
 }
@@ -31,13 +33,52 @@ pub async fn read_skill_doc(
     }
 }
 
-pub async fn reload_skills(State(state): State<AppState>) -> impl IntoResponse {
-    match state.skills.reload() {
-        Ok(count) => Json(serde_json::json!({
-            "reloaded": true,
-            "skills_count": count,
+/// Query params for resource endpoint.
+#[derive(serde::Deserialize)]
+pub struct ResourceQuery {
+    pub path: String,
+}
+
+/// Read a bundled resource from a skill's references/, scripts/, or assets/ dir.
+pub async fn read_skill_resource(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Query(query): Query<ResourceQuery>,
+) -> impl IntoResponse {
+    match state.skills.read_resource(&name, &query.path) {
+        Ok(content) => Json(serde_json::json!({
+            "skill": name,
+            "path": query.path,
+            "content": content,
+            "chars": content.len(),
         }))
         .into_response(),
+        Err(e) => {
+            let status = if e.to_string().contains("not found") {
+                axum::http::StatusCode::NOT_FOUND
+            } else {
+                axum::http::StatusCode::FORBIDDEN
+            };
+            (
+                status,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn reload_skills(State(state): State<AppState>) -> impl IntoResponse {
+    match state.skills.reload() {
+        Ok(count) => {
+            let summary = state.skills.readiness_summary();
+            Json(serde_json::json!({
+                "reloaded": true,
+                "skills_count": count,
+                "readiness": summary,
+            }))
+            .into_response()
+        }
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),

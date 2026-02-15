@@ -21,6 +21,7 @@ pub fn router() -> Router<AppState> {
         // Skills
         .route("/v1/skills", get(skills::list_skills))
         .route("/v1/skills/:name/doc", get(skills::read_skill_doc))
+        .route("/v1/skills/:name/resource", get(skills::read_skill_resource))
         .route("/v1/skills/reload", post(skills::reload_skills))
         // Memory (proxy to SerialMemoryServer)
         .route("/v1/memory/search", post(memory::search))

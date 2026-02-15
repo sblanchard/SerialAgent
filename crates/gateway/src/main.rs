@@ -103,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Node registry + tool router ──────────────────────────────────
     let nodes = Arc::new(NodeRegistry::new());
+    nodes.load_allowlists_from_env();
     let tool_router = Arc::new(ToolRouter::new(
         nodes.clone(),
         config.tools.exec.timeout_sec,

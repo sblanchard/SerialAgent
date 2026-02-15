@@ -37,8 +37,16 @@ pub struct NodeInfo {
 }
 
 /// Thread-safe registry of all connected nodes.
+///
+/// Supports optional per-node capability allowlists. When configured,
+/// a node can only advertise capabilities whose names start with one
+/// of its allowed prefixes. This prevents rogue nodes from claiming
+/// capabilities they shouldn't have.
 pub struct NodeRegistry {
     nodes: RwLock<HashMap<String, ConnectedNode>>,
+    /// Per-node allowlists: node_id → allowed capability prefixes.
+    /// If a node_id has no entry, all capabilities are allowed.
+    allowlists: RwLock<HashMap<String, Vec<String>>>,
 }
 
 impl Default for NodeRegistry {
@@ -51,13 +59,85 @@ impl NodeRegistry {
     pub fn new() -> Self {
         Self {
             nodes: RwLock::new(HashMap::new()),
+            allowlists: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Configure per-node capability allowlists from `SA_NODE_CAPS` env var.
+    ///
+    /// Format: `node1:prefix1+prefix2,node2:prefix3`
+    /// Example: `mac1:macos.notes+macos.calendar,pi:home.lights`
+    ///
+    /// Nodes not listed are unrestricted.
+    pub fn load_allowlists_from_env(&self) {
+        if let Ok(val) = std::env::var("SA_NODE_CAPS") {
+            let mut lists = HashMap::new();
+            for entry in val.split(',') {
+                let entry = entry.trim();
+                if let Some((node_id, prefixes)) = entry.split_once(':') {
+                    let caps: Vec<String> = prefixes
+                        .split('+')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !caps.is_empty() {
+                        lists.insert(node_id.trim().to_string(), caps);
+                    }
+                }
+            }
+            if !lists.is_empty() {
+                tracing::info!(
+                    node_count = lists.len(),
+                    "loaded per-node capability allowlists from SA_NODE_CAPS"
+                );
+                *self.allowlists.write() = lists;
+            }
+        }
+    }
+
+    /// Filter capabilities against the node's allowlist.
+    /// Returns only capabilities whose names start with an allowed prefix.
+    fn filter_capabilities(
+        &self,
+        node_id: &str,
+        capabilities: Vec<NodeCapability>,
+    ) -> Vec<NodeCapability> {
+        let allowlists = self.allowlists.read();
+        let Some(allowed) = allowlists.get(node_id) else {
+            return capabilities; // No allowlist = unrestricted.
+        };
+
+        let original_count = capabilities.len();
+        let filtered: Vec<NodeCapability> = capabilities
+            .into_iter()
+            .filter(|cap| {
+                allowed.iter().any(|prefix| {
+                    cap.name == *prefix || cap.name.starts_with(&format!("{prefix}."))
+                })
+            })
+            .collect();
+
+        let rejected = original_count - filtered.len();
+        if rejected > 0 {
+            tracing::warn!(
+                node_id = %node_id,
+                rejected,
+                allowed_prefixes = ?allowed,
+                "filtered capabilities by allowlist"
+            );
+        }
+
+        filtered
     }
 
     /// Register a new node connection. Replaces any existing node with the
     /// same `node_id` (reconnect scenario).
-    pub fn register(&self, node: ConnectedNode) {
+    ///
+    /// Capabilities are filtered against the node's allowlist if one exists.
+    pub fn register(&self, mut node: ConnectedNode) {
         let id = node.node_id.clone();
+        // Apply capability allowlist.
+        node.capabilities = self.filter_capabilities(&id, node.capabilities);
         tracing::info!(
             node_id = %id,
             node_type = %node.node_type,
@@ -303,6 +383,61 @@ mod tests {
         });
         assert_eq!(reg.len(), 1);
         assert_eq!(reg.list()[0].capabilities.len(), 2);
+    }
+
+    #[test]
+    fn capability_allowlist_filters() {
+        let reg = NodeRegistry::new();
+
+        // Manually set an allowlist (simulating SA_NODE_CAPS=mac1:macos.notes).
+        reg.allowlists
+            .write()
+            .insert("mac1".into(), vec!["macos.notes".into()]);
+
+        let (tx, _rx) = mpsc::channel(1);
+        reg.register(ConnectedNode {
+            node_id: "mac1".into(),
+            node_type: "macos".into(),
+            capabilities: vec![
+                make_cap("macos.notes"),    // allowed
+                make_cap("macos.calendar"), // NOT allowed
+                make_cap("macos.notes.search"), // allowed (sub-prefix)
+            ],
+            version: "0.1.0".into(),
+            session_id: "s1".into(),
+            connected_at: Utc::now(),
+            last_seen: Utc::now(),
+            sink: tx,
+        });
+
+        let info = &reg.list()[0];
+        assert_eq!(info.capabilities.len(), 2); // notes + notes.search
+        assert!(info.capabilities.iter().any(|c| c.name == "macos.notes"));
+        assert!(info
+            .capabilities
+            .iter()
+            .any(|c| c.name == "macos.notes.search"));
+        assert!(!info
+            .capabilities
+            .iter()
+            .any(|c| c.name == "macos.calendar"));
+    }
+
+    #[test]
+    fn no_allowlist_means_unrestricted() {
+        let reg = NodeRegistry::new();
+        let (tx, _rx) = mpsc::channel(1);
+        reg.register(ConnectedNode {
+            node_id: "unrestricted".into(),
+            node_type: "t".into(),
+            capabilities: vec![make_cap("a"), make_cap("b"), make_cap("c")],
+            version: "0.1.0".into(),
+            session_id: "s1".into(),
+            connected_at: Utc::now(),
+            last_seen: Utc::now(),
+            sink: tx,
+        });
+        assert_eq!(reg.list()[0].capabilities.len(), 3);
     }
 
     #[test]
