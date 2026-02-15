@@ -4,10 +4,12 @@
 //! This module provides a bidirectional alias map so that skill manifests
 //! authored with OpenClaw-style tool names work seamlessly in SerialAgent.
 //!
-//! Example mappings:
-//!   bash     → exec
-//!   files.read → fs.read_text
-//!   web.fetch  → web.search
+//! Semantic rules:
+//!   - Aliases must be semantically equivalent to their canonical form.
+//!   - `web.fetch` (HTTP GET) ≠ `web.search` (search engine results).
+//!     These are separate canonicals — never alias one to the other.
+//!   - Canonicals that don't exist yet locally resolve to `Unknown` at
+//!     dispatch time, which is correct: a node may provide them later.
 
 use std::collections::HashMap;
 
@@ -40,23 +42,40 @@ impl ToolAliasMap {
     }
 
     /// Build the default OpenClaw ↔ SerialAgent alias map.
+    ///
+    /// Canonical tool names used by SerialAgent:
+    ///   exec          – run a shell command (foreground / auto-background)
+    ///   process       – manage background process sessions
+    ///   fs.read_text  – read file contents (may be provided by a node)
+    ///   fs.write_text – write file contents (may be provided by a node)
+    ///   fs.list       – list directory entries (may be provided by a node)
+    ///   http.request  – raw HTTP fetch (GET/POST/etc, returns body)
+    ///   web.search    – search engine / SERP query (returns results list)
     pub fn default_openclaw() -> Self {
         Self::from_pairs(&[
-            // Shell execution
+            // ── Shell execution ─────────────────────────────────
             ("exec", "bash"),
             ("exec", "shell"),
             ("exec", "run"),
-            // File operations
+            // ── File operations ─────────────────────────────────
             ("fs.read_text", "files.read"),
             ("fs.read_text", "read_file"),
             ("fs.write_text", "files.write"),
             ("fs.write_text", "write_file"),
             ("fs.list", "files.list"),
             ("fs.list", "ls"),
-            // Web
-            ("web.search", "web.fetch"),
+            // ── HTTP fetch (raw content) ────────────────────────
+            // web.fetch / fetch / http.get are all "get me this URL's body".
+            // This is NOT the same as web.search.
+            ("http.request", "web.fetch"),
+            ("http.request", "fetch"),
+            ("http.request", "http.get"),
+            // ── Search (SERP / knowledge) ───────────────────────
+            // search / serp are "find information about X".
+            // Semantically distinct from http.request.
             ("web.search", "search"),
-            // Process management
+            ("web.search", "serp"),
+            // ── Process management ──────────────────────────────
             ("process", "background"),
             ("process", "proc"),
         ])
@@ -83,6 +102,11 @@ impl ToolAliasMap {
     pub fn matches(&self, tool_name: &str, canonical: &str) -> bool {
         tool_name == canonical || self.resolve(tool_name) == canonical
     }
+
+    /// List all canonical tool names known to this map.
+    pub fn canonicals(&self) -> Vec<&str> {
+        self.to_aliases.keys().map(|s| s.as_str()).collect()
+    }
 }
 
 impl Default for ToolAliasMap {
@@ -102,7 +126,28 @@ mod tests {
         assert_eq!(map.resolve("shell"), "exec");
         assert_eq!(map.resolve("files.read"), "fs.read_text");
         assert_eq!(map.resolve("read_file"), "fs.read_text");
-        assert_eq!(map.resolve("web.fetch"), "web.search");
+    }
+
+    #[test]
+    fn web_fetch_resolves_to_http_request_not_search() {
+        let map = ToolAliasMap::default_openclaw();
+        // web.fetch is raw HTTP — must NOT resolve to web.search.
+        assert_eq!(map.resolve("web.fetch"), "http.request");
+        assert_eq!(map.resolve("fetch"), "http.request");
+        assert_eq!(map.resolve("http.get"), "http.request");
+        // search / serp resolve to web.search.
+        assert_eq!(map.resolve("search"), "web.search");
+        assert_eq!(map.resolve("serp"), "web.search");
+    }
+
+    #[test]
+    fn http_request_and_web_search_are_distinct() {
+        let map = ToolAliasMap::default_openclaw();
+        // These two canonicals must never resolve to each other.
+        assert!(!map.matches("web.fetch", "web.search"));
+        assert!(!map.matches("search", "http.request"));
+        assert!(map.matches("web.fetch", "http.request"));
+        assert!(map.matches("search", "web.search"));
     }
 
     #[test]
@@ -110,6 +155,8 @@ mod tests {
         let map = ToolAliasMap::default_openclaw();
         assert_eq!(map.resolve("exec"), "exec");
         assert_eq!(map.resolve("fs.read_text"), "fs.read_text");
+        assert_eq!(map.resolve("http.request"), "http.request");
+        assert_eq!(map.resolve("web.search"), "web.search");
     }
 
     #[test]
@@ -121,10 +168,15 @@ mod tests {
     #[test]
     fn aliases_for_canonical() {
         let map = ToolAliasMap::default_openclaw();
-        let aliases = map.aliases_for("exec");
-        assert!(aliases.contains(&"bash".to_string()));
-        assert!(aliases.contains(&"shell".to_string()));
-        assert!(aliases.contains(&"run".to_string()));
+        let exec_aliases = map.aliases_for("exec");
+        assert!(exec_aliases.contains(&"bash".to_string()));
+        assert!(exec_aliases.contains(&"shell".to_string()));
+        assert!(exec_aliases.contains(&"run".to_string()));
+
+        let http_aliases = map.aliases_for("http.request");
+        assert!(http_aliases.contains(&"web.fetch".to_string()));
+        assert!(http_aliases.contains(&"fetch".to_string()));
+        assert!(!http_aliases.contains(&"search".to_string()));
     }
 
     #[test]

@@ -46,7 +46,7 @@ pub async fn get_context(
     );
 
     let ws_files = state.workspace.read_all_context_files();
-    let skills_index = state.skills.render_index();
+    let skills_index = state.skills.render_ready_index();
     let skills_idx = if skills_index.is_empty() {
         None
     } else {
@@ -91,7 +91,7 @@ pub async fn get_assembled(
     );
 
     let ws_files = state.workspace.read_all_context_files();
-    let skills_index = state.skills.render_index();
+    let skills_index = state.skills.render_ready_index();
     let skills_idx = if skills_index.is_empty() {
         None
     } else {

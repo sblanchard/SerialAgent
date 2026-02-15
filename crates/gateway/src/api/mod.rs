@@ -1,3 +1,4 @@
+pub mod clawhub;
 pub mod context;
 pub mod dashboard;
 pub mod memory;
@@ -43,6 +44,12 @@ pub fn router() -> Router<AppState> {
         // Nodes
         .route("/v1/nodes", get(nodes::list_nodes))
         .route("/v1/nodes/ws", get(crate::nodes::ws::node_ws))
+        // ClawHub (third-party skill packs)
+        .route("/v1/clawhub/installed", get(clawhub::list_installed))
+        .route("/v1/clawhub/skill/:owner/:repo", get(clawhub::show_pack))
+        .route("/v1/clawhub/install", post(clawhub::install_pack))
+        .route("/v1/clawhub/update", post(clawhub::update_pack))
+        .route("/v1/clawhub/uninstall", post(clawhub::uninstall_pack))
         // Providers / Models
         .route("/v1/models", get(providers::list_providers))
         .route("/v1/models/roles", get(providers::list_roles))
