@@ -144,9 +144,9 @@ impl<'a> UserFactsBuilder<'a> {
     ///   - An array of attribute objects `[{ attributeType, attributeKey, attributeValue }]`.
     ///
     /// We handle both and produce titled sub-sections.
-    fn extract_persona_sections<'b>(
+    fn extract_persona_sections(
         &self,
-        persona: &'b serde_json::Value,
+        persona: &serde_json::Value,
     ) -> Vec<(&'static str, String)> {
         let mut result = Vec::new();
 
