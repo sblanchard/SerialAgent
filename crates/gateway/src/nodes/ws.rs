@@ -30,6 +30,8 @@ use crate::state::AppState;
 pub struct WsQuery {
     /// Pre-shared token for node authentication.
     pub token: Option<String>,
+    /// Optional node_id hint (for per-node token validation).
+    pub node_id: Option<String>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -37,14 +39,38 @@ pub struct WsQuery {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// GET /v1/nodes/ws — upgrade to WebSocket.
+///
+/// Authentication (checked in priority order):
+/// 1. `SA_NODE_TOKENS` env: `"node1:tokA,node2:tokB"` — per-node tokens.
+///    The `node_id` query param selects which token to check.
+/// 2. `SA_NODE_TOKEN` env: single global token for all nodes.
+/// 3. Neither set → unauthenticated (open access, dev mode).
 pub async fn node_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     Query(query): Query<WsQuery>,
 ) -> impl IntoResponse {
-    // Token validation: if SA_NODE_TOKEN is set, require it.
-    if let Ok(expected) = std::env::var("SA_NODE_TOKEN") {
-        let provided = query.token.as_deref().unwrap_or("");
+    let provided = query.token.as_deref().unwrap_or("");
+
+    // Per-node tokens: SA_NODE_TOKENS="node1:tokA,node2:tokB"
+    if let Ok(tokens_raw) = std::env::var("SA_NODE_TOKENS") {
+        let node_hint = query.node_id.as_deref().unwrap_or("");
+        let valid = tokens_raw.split(',').any(|pair| {
+            if let Some((nid, tok)) = pair.trim().split_once(':') {
+                (node_hint.is_empty() || nid == node_hint) && tok == provided
+            } else {
+                false
+            }
+        });
+        if !valid {
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                "invalid or missing node token",
+            )
+                .into_response();
+        }
+    } else if let Ok(expected) = std::env::var("SA_NODE_TOKEN") {
+        // Global token fallback.
         if provided != expected {
             return (
                 axum::http::StatusCode::UNAUTHORIZED,
@@ -142,10 +168,15 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     }
 
-    // Cleanup: remove node from registry, abort writer.
+    // Cleanup: fail in-flight requests, remove node, abort writer.
+    let failed = state.tool_router.fail_pending_for_node(&node_id);
     writer.abort();
     registry.remove(&node_id);
-    tracing::info!(node_id = %node_id, "node disconnected");
+    tracing::info!(
+        node_id = %node_id,
+        failed_in_flight = failed,
+        "node disconnected"
+    );
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -211,7 +242,14 @@ async fn handle_inbound(
             success,
             result,
             error,
+            truncated,
         } => {
+            if truncated {
+                tracing::debug!(
+                    request_id = %request_id,
+                    "tool response was truncated by node"
+                );
+            }
             // Forward the tool response to the pending request tracker.
             state.tool_router.complete_request(
                 &request_id,
