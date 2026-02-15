@@ -174,6 +174,11 @@ pub struct LlmConfig {
     pub default_timeout_ms: u64,
     #[serde(default = "d_2")]
     pub max_retries: u32,
+    /// If true, abort startup when no providers initialize.
+    /// Default false (dev-friendly: dashboard/nodes/sessions still work).
+    /// Can also be forced via `SA_REQUIRE_LLM=1` env var.
+    #[serde(default)]
+    pub require_provider: bool,
     /// Model roles: planner, executor, summarizer, embedder (+ custom).
     #[serde(default)]
     pub roles: HashMap<String, RoleConfig>,
@@ -188,6 +193,7 @@ impl Default for LlmConfig {
             router_mode: RouterMode::Capability,
             default_timeout_ms: 20_000,
             max_retries: 2,
+            require_provider: false,
             roles: HashMap::new(),
             providers: Vec::new(),
         }
