@@ -1,6 +1,7 @@
 pub mod context;
 pub mod dashboard;
 pub mod memory;
+pub mod nodes;
 pub mod providers;
 pub mod sessions;
 pub mod skills;
@@ -38,6 +39,9 @@ pub fn router() -> Router<AppState> {
         // Tools (exec / process)
         .route("/v1/tools/exec", post(tools::exec_tool))
         .route("/v1/tools/process", post(tools::process_tool))
+        // Nodes
+        .route("/v1/nodes", get(nodes::list_nodes))
+        .route("/v1/nodes/ws", get(crate::nodes::ws::node_ws))
         // Providers / Models
         .route("/v1/models", get(providers::list_providers))
         .route("/v1/models/roles", get(providers::list_roles))
