@@ -1,0 +1,32 @@
+[package]
+name = "sa-gateway"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "serialagent"
+path = "src/main.rs"
+
+[dependencies]
+sa-domain = { workspace = true }
+sa-contextpack = { workspace = true }
+sa-skills = { workspace = true }
+sa-memory = { workspace = true }
+sa-providers = { workspace = true }
+sa-protocol = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+parking_lot = { workspace = true }
+sha2 = { workspace = true }
+async-trait = { workspace = true }
