@@ -74,6 +74,44 @@ daily_reset_hour = 4
 # peer_ids = ["discord:456", "slack:U12345"]
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Tools (exec / process)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# exec: spawn commands foreground or auto-background after yield time
+# process: manage background sessions (list/poll/log/write/kill/clear/remove)
+
+[tools.exec]
+background_ms = 10000          # ms before auto-backgrounding (0 = always foreground)
+timeout_sec = 1800             # hard timeout for foreground commands
+cleanup_ms = 1800000           # TTL for finished sessions before cleanup (30 min)
+max_output_chars = 1000000     # max output chars kept per process session
+# pending_max_output_chars = 500000
+notify_on_exit = true          # notify when background process exits
+# notify_on_exit_empty_success = false
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Context Pruning (OpenClaw cache-ttl model)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Trims oversized tool results before sending to the LLM.
+# mode: "off" (disabled) or "cache-ttl" (prune stale tool results)
+# Only prunes Tool-role messages; never touches user/assistant content.
+# Protects tool results for the last N assistant messages.
+
+[pruning]
+mode = "off"                   # "off" or "cache-ttl"
+# ttl_seconds = 300            # skip pruning if last LLM call was recent
+# keep_last_assistants = 3     # protect tool results for N recent assistants
+# min_prunable_chars = 50000   # only prune results longer than this
+
+# [pruning.soft_trim]
+# max_chars = 4000             # max chars after soft-trim
+# head_chars = 1500            # chars to keep from head
+# tail_chars = 1500            # chars to keep from tail
+
+# [pruning.hard_clear]
+# enabled = true
+# placeholder = "[Old tool result content cleared]"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # LLM Provider System
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # router_mode: "capability" (auto-select based on requirements) or "fixed"
