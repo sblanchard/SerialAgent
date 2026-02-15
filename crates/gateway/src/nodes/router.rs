@@ -56,6 +56,7 @@ pub enum LocalTool {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 struct PendingRequest {
+    node_id: String,
     tx: oneshot::Sender<(bool, Value, Option<String>)>,
 }
 
@@ -65,7 +66,7 @@ struct PendingRequest {
 
 pub struct ToolRouter {
     nodes: Arc<NodeRegistry>,
-    /// Map of request_id → pending oneshot sender.
+    /// Map of request_id → pending oneshot sender + owning node_id.
     pending: Mutex<HashMap<String, PendingRequest>>,
     /// Timeout for node tool requests.
     timeout: Duration,
@@ -103,6 +104,7 @@ impl ToolRouter {
         node_id: &str,
         tool_name: &str,
         arguments: Value,
+        session_key: Option<String>,
     ) -> ToolRouteResult {
         let request_id = uuid::Uuid::new_v4().to_string();
 
@@ -110,7 +112,10 @@ impl ToolRouter {
         let (tx, rx) = oneshot::channel();
         self.pending.lock().insert(
             request_id.clone(),
-            PendingRequest { tx },
+            PendingRequest {
+                node_id: node_id.to_string(),
+                tx,
+            },
         );
 
         // Send tool_request to the node.
@@ -118,6 +123,7 @@ impl ToolRouter {
             request_id: request_id.clone(),
             tool_name: tool_name.to_string(),
             arguments,
+            session_key,
         };
 
         let sink = match self.nodes.get_sink(node_id) {
@@ -194,6 +200,39 @@ impl ToolRouter {
         }
     }
 
+    /// Fail all pending requests for a given node (called on node disconnect).
+    /// Returns the number of requests failed.
+    pub fn fail_pending_for_node(&self, node_id: &str) -> usize {
+        let mut pending = self.pending.lock();
+        let mut failed = Vec::new();
+
+        for (req_id, pr) in pending.iter() {
+            if pr.node_id == node_id {
+                failed.push(req_id.clone());
+            }
+        }
+
+        let count = failed.len();
+        for req_id in failed {
+            if let Some(pr) = pending.remove(&req_id) {
+                let _ = pr.tx.send((
+                    false,
+                    Value::Null,
+                    Some(format!("node {node_id} disconnected")),
+                ));
+            }
+        }
+
+        if count > 0 {
+            tracing::warn!(
+                node_id = %node_id,
+                failed_requests = count,
+                "failed in-flight tool requests for disconnected node"
+            );
+        }
+        count
+    }
+
     /// Number of pending (in-flight) tool requests.
     pub fn pending_count(&self) -> usize {
         self.pending.lock().len()
@@ -262,7 +301,10 @@ mod tests {
         let request_id = "req-1".to_string();
         router.pending.lock().insert(
             request_id.clone(),
-            PendingRequest { tx },
+            PendingRequest {
+                node_id: "n1".into(),
+                tx,
+            },
         );
 
         router.complete_request(
@@ -277,5 +319,27 @@ mod tests {
         assert_eq!(result, serde_json::json!({"result": "ok"}));
         assert!(error.is_none());
         assert_eq!(router.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn fail_pending_for_node_drains_all() {
+        let (_, router) = make_router();
+
+        // Insert 2 requests for node "n1" and 1 for "n2".
+        for (id, nid) in [("r1", "n1"), ("r2", "n1"), ("r3", "n2")] {
+            let (tx, _rx) = oneshot::channel();
+            router.pending.lock().insert(
+                id.into(),
+                PendingRequest {
+                    node_id: nid.into(),
+                    tx,
+                },
+            );
+        }
+        assert_eq!(router.pending_count(), 3);
+
+        let failed = router.fail_pending_for_node("n1");
+        assert_eq!(failed, 2);
+        assert_eq!(router.pending_count(), 1); // only n2's request remains
     }
 }

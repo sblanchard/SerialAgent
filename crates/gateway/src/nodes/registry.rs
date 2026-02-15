@@ -81,20 +81,40 @@ impl NodeRegistry {
         }
     }
 
-    /// Find a node that advertises a capability matching the given tool name.
+    /// Find the best node for a given tool name using longest-prefix matching.
     ///
-    /// Matching logic: a node's capability `name` is a prefix of the tool name.
-    /// For example, capability `"macos.notes"` matches tool `"macos.notes.search"`.
+    /// Matching rules:
+    /// 1. A capability matches if `tool_name == cap.name` or
+    ///    `tool_name` starts with `cap.name.` (dot-separated prefix).
+    /// 2. Among all matches, the **longest** capability name wins
+    ///    (most specific handler).
+    /// 3. Tie-break: lexicographic `node_id` (deterministic, stable).
     pub fn find_for_tool(&self, tool_name: &str) -> Option<(String, NodeSink)> {
         let nodes = self.nodes.read();
+        let mut best: Option<(usize, &str, NodeSink)> = None;
+
         for node in nodes.values() {
             for cap in &node.capabilities {
-                if tool_name == cap.name || tool_name.starts_with(&format!("{}.", cap.name)) {
-                    return Some((node.node_id.clone(), node.sink.clone()));
+                let matches = tool_name == cap.name
+                    || tool_name.starts_with(&format!("{}.", cap.name));
+                if !matches {
+                    continue;
+                }
+                let specificity = cap.name.len();
+                let dominated = match &best {
+                    Some((best_len, best_nid, _)) => {
+                        specificity > *best_len
+                            || (specificity == *best_len && node.node_id.as_str() < *best_nid)
+                    }
+                    None => true,
+                };
+                if dominated {
+                    best = Some((specificity, &node.node_id, node.sink.clone()));
                 }
             }
         }
-        None
+
+        best.map(|(_, nid, sink)| (nid.to_owned(), sink))
     }
 
     /// Get the sink for a specific node.
@@ -179,6 +199,78 @@ mod tests {
         // No match
         assert!(reg.find_for_tool("web.fetch").is_none());
         assert!(reg.find_for_tool("macos.reminders").is_none());
+    }
+
+    #[test]
+    fn longest_prefix_wins() {
+        let reg = NodeRegistry::new();
+
+        // Node A: broad "macos" capability
+        let (tx_a, _) = mpsc::channel(1);
+        reg.register(ConnectedNode {
+            node_id: "broad".into(),
+            node_type: "macos".into(),
+            capabilities: vec![make_cap("macos")],
+            version: "0.1.0".into(),
+            session_id: "s1".into(),
+            connected_at: Utc::now(),
+            last_seen: Utc::now(),
+            sink: tx_a,
+        });
+
+        // Node B: specific "macos.notes" capability
+        let (tx_b, _) = mpsc::channel(1);
+        reg.register(ConnectedNode {
+            node_id: "specific".into(),
+            node_type: "macos".into(),
+            capabilities: vec![make_cap("macos.notes")],
+            version: "0.1.0".into(),
+            session_id: "s2".into(),
+            connected_at: Utc::now(),
+            last_seen: Utc::now(),
+            sink: tx_b,
+        });
+
+        // "macos.notes.search" should route to "specific" (longer prefix)
+        let (nid, _) = reg.find_for_tool("macos.notes.search").unwrap();
+        assert_eq!(nid, "specific");
+
+        // "macos.calendar.list" should route to "broad" (only match)
+        let (nid, _) = reg.find_for_tool("macos.calendar.list").unwrap();
+        assert_eq!(nid, "broad");
+    }
+
+    #[test]
+    fn tie_break_is_lexicographic_node_id() {
+        let reg = NodeRegistry::new();
+
+        // Two nodes with the same capability prefix
+        let (tx_z, _) = mpsc::channel(1);
+        reg.register(ConnectedNode {
+            node_id: "z_node".into(),
+            node_type: "t".into(),
+            capabilities: vec![make_cap("shared.cap")],
+            version: "0.1.0".into(),
+            session_id: "s1".into(),
+            connected_at: Utc::now(),
+            last_seen: Utc::now(),
+            sink: tx_z,
+        });
+        let (tx_a, _) = mpsc::channel(1);
+        reg.register(ConnectedNode {
+            node_id: "a_node".into(),
+            node_type: "t".into(),
+            capabilities: vec![make_cap("shared.cap")],
+            version: "0.1.0".into(),
+            session_id: "s2".into(),
+            connected_at: Utc::now(),
+            last_seen: Utc::now(),
+            sink: tx_a,
+        });
+
+        // Should pick "a_node" (lexicographically first)
+        let (nid, _) = reg.find_for_tool("shared.cap.do_thing").unwrap();
+        assert_eq!(nid, "a_node");
     }
 
     #[test]
