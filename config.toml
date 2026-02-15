@@ -29,6 +29,51 @@ state_path = "./data/state"
 path = "./skills"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Session Management (OpenClaw-aligned)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Session keys follow the OpenClaw sessionKey model:
+#   agent:<agentId>:<channel>:dm:<peerId>   (per_channel_peer default)
+#   agent:<agentId>:<channel>:group:<groupId>
+#
+# dm_scope: main | per_peer | per_channel_peer | per_account_channel_peer
+#   "per_channel_peer" is the secure default for multi-user inboxes
+#   (prevents cross-user context leakage).
+#
+# Session state persists in {workspace.state_path}/sessions/
+
+[sessions]
+agent_id = "serial-agent"
+dm_scope = "per_channel_peer"
+
+# ── Session lifecycle ─────────────────────────────────────────────
+# daily_reset_hour: 0–23 (local gateway time), null disables daily reset
+# idle_minutes: reset after N minutes of inactivity, null disables
+[sessions.lifecycle]
+daily_reset_hour = 4
+# idle_minutes = 120
+
+# Per-type overrides (keys: "direct", "group", "thread")
+# [sessions.lifecycle.reset_by_type.group]
+# daily_reset_hour = 6
+# idle_minutes = 60
+
+# Per-channel overrides (keys: "discord", "telegram", "whatsapp", …)
+# [sessions.lifecycle.reset_by_channel.discord]
+# idle_minutes = 180
+
+# ── Identity linking ─────────────────────────────────────────────
+# Collapse the same person across channels into one canonical identity.
+# Peer IDs should be prefixed: telegram:123, discord:987, whatsapp:+33…
+#
+# [[sessions.identity_links]]
+# canonical = "alice"
+# peer_ids = ["telegram:123", "discord:987", "whatsapp:+33612345678"]
+#
+# [[sessions.identity_links]]
+# canonical = "bob"
+# peer_ids = ["discord:456", "slack:U12345"]
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # LLM Provider System
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # router_mode: "capability" (auto-select based on requirements) or "fixed"

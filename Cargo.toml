@@ -45,3 +45,4 @@ sa-skills = { path = "crates/skills" }
 sa-memory = { path = "crates/serialmemory-client" }
 sa-providers = { path = "crates/providers" }
 sa-protocol = { path = "crates/node-protocol" }
+sa-sessions = { path = "crates/sessions" }
