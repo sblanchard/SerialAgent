@@ -11,6 +11,7 @@ authors = ["sblanchard"]
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 toml = "0.8"
 
 # Async runtime
