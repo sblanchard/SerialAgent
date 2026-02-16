@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod chat;
 pub mod clawhub;
 pub mod context;
@@ -63,6 +64,8 @@ pub fn router() -> Router<AppState> {
         .route("/v1/clawhub/install", post(clawhub::install_pack))
         .route("/v1/clawhub/update", post(clawhub::update_pack))
         .route("/v1/clawhub/uninstall", post(clawhub::uninstall_pack))
+        // Agents (audit / introspection)
+        .route("/v1/agents", get(agents::list_agents))
         // Providers / Models
         .route("/v1/models", get(providers::list_providers))
         .route("/v1/models/roles", get(providers::list_roles))

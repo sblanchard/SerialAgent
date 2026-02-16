@@ -589,6 +589,38 @@ pub struct AgentConfig {
     /// Memory isolation mode.
     #[serde(default)]
     pub memory_mode: MemoryMode,
+    /// Fan-out / recursion limits.
+    #[serde(default)]
+    pub limits: AgentLimits,
+    /// Whether auto-compaction is enabled for child sessions.
+    /// Default `false` — short-lived child sessions rarely benefit from compaction.
+    #[serde(default)]
+    pub compaction_enabled: bool,
+}
+
+/// Hard ceilings on multi-agent fan-out to prevent runaway trees.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentLimits {
+    /// Maximum nesting depth (parent → child → grandchild).
+    /// A top-level agent.run is depth=1; its child calling agent.run would be depth=2.
+    #[serde(default = "d_3")]
+    pub max_depth: u32,
+    /// Maximum number of agent.run calls within a single parent turn.
+    #[serde(default = "d_5")]
+    pub max_children_per_turn: u32,
+    /// Wall-clock timeout per child run (milliseconds). 0 = no limit.
+    #[serde(default = "d_120000")]
+    pub max_duration_ms: u64,
+}
+
+impl Default for AgentLimits {
+    fn default() -> Self {
+        Self {
+            max_depth: 3,
+            max_children_per_turn: 5,
+            max_duration_ms: 120_000,
+        }
+    }
 }
 
 /// Tool allow/deny policy — prefix-based matching similar to node capabilities.
@@ -604,10 +636,16 @@ pub struct ToolPolicy {
 
 impl ToolPolicy {
     /// Check whether the given tool name is permitted by this policy.
+    ///
+    /// Matching is **case-insensitive** — tool names are normalized to
+    /// lowercase before comparison.  Deny always wins over allow.
     pub fn allows(&self, tool_name: &str) -> bool {
+        let name = tool_name.to_ascii_lowercase();
+
         // Deny takes precedence.
         for d in &self.deny {
-            if d == "*" || tool_name == d || tool_name.starts_with(&format!("{d}.")) {
+            let d_lower = d.to_ascii_lowercase();
+            if d_lower == "*" || name == d_lower || name.starts_with(&format!("{d_lower}.")) {
                 return false;
             }
         }
@@ -617,7 +655,8 @@ impl ToolPolicy {
         }
         // Otherwise must match at least one allow entry.
         for a in &self.allow {
-            if tool_name == a || tool_name.starts_with(&format!("{a}.")) {
+            let a_lower = a.to_ascii_lowercase();
+            if name == a_lower || name.starts_with(&format!("{a_lower}.")) {
                 return true;
             }
         }
@@ -835,6 +874,12 @@ fn d_12() -> usize {
 fn d_allow() -> SendPolicyMode {
     SendPolicyMode::Allow
 }
+fn d_5() -> u32 {
+    5
+}
+fn d_120000() -> u64 {
+    120_000
+}
 
 #[cfg(test)]
 mod tests {
@@ -891,5 +936,26 @@ mod tests {
         };
         assert!(!policy.allows("exec"));
         assert!(!policy.allows("memory.search"));
+    }
+
+    #[test]
+    fn tool_policy_case_insensitive() {
+        let policy = ToolPolicy {
+            allow: vec!["Exec".into(), "Memory".into()],
+            deny: vec![],
+        };
+        assert!(policy.allows("exec"));
+        assert!(policy.allows("EXEC"));
+        assert!(policy.allows("memory.search"));
+        assert!(policy.allows("Memory.Ingest"));
+        assert!(!policy.allows("agent.run"));
+    }
+
+    #[test]
+    fn agent_limits_defaults() {
+        let limits = AgentLimits::default();
+        assert_eq!(limits.max_depth, 3);
+        assert_eq!(limits.max_children_per_turn, 5);
+        assert_eq!(limits.max_duration_ms, 120_000);
     }
 }

@@ -11,6 +11,8 @@ use sa_tools::process::{self, ProcessRequest};
 use crate::nodes::router::{LocalTool, ToolDestination};
 use crate::state::AppState;
 
+use super::agent::AgentContext;
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Tool definitions
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -195,16 +197,44 @@ pub fn build_tool_definitions(
     defs
 }
 
+/// Collect all base tool names for effective_tool_count calculations.
+pub fn all_base_tool_names(state: &AppState) -> Vec<String> {
+    let mut names = vec![
+        "exec".into(),
+        "process".into(),
+        "skill.read_doc".into(),
+        "skill.read_resource".into(),
+        "memory.search".into(),
+        "memory.ingest".into(),
+        "web.search".into(),
+        "http.request".into(),
+        "agent.run".into(),
+        "agent.list".into(),
+    ];
+    for node_info in state.nodes.list() {
+        for cap in &node_info.capabilities {
+            if !names.contains(&cap.name) {
+                names.push(cap.name.clone());
+            }
+        }
+    }
+    names
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Tool dispatch
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Dispatch a single tool call. Returns (result_content, is_error).
+///
+/// `agent_ctx` carries the parent agent's context (for depth guards,
+/// provenance metadata on memory calls, etc.).
 pub async fn dispatch_tool(
     state: &AppState,
     tool_name: &str,
     arguments: &Value,
     session_key: Option<&str>,
+    agent_ctx: Option<&AgentContext>,
 ) -> (String, bool) {
     // Handle our built-in tools first.
     match tool_name {
@@ -213,8 +243,8 @@ pub async fn dispatch_tool(
         "skill.read_doc" => dispatch_skill_read_doc(state, arguments),
         "skill.read_resource" => dispatch_skill_read_resource(state, arguments),
         "memory.search" => dispatch_memory_search(state, arguments).await,
-        "memory.ingest" => dispatch_memory_ingest(state, arguments).await,
-        "agent.run" => dispatch_agent_run(state, arguments, session_key).await,
+        "memory.ingest" => dispatch_memory_ingest(state, arguments, agent_ctx, session_key).await,
+        "agent.run" => dispatch_agent_run(state, arguments, session_key, agent_ctx).await,
         "agent.list" => dispatch_agent_list(state),
         "web.search" => stub_tool("web.search", "Web search is not yet configured. Use exec with curl or a search CLI tool as an alternative."),
         "http.request" => stub_tool("http.request", "HTTP requests are not yet configured. Use exec with curl as an alternative."),
@@ -293,7 +323,12 @@ async fn dispatch_memory_search(state: &AppState, arguments: &Value) -> (String,
     }
 }
 
-async fn dispatch_memory_ingest(state: &AppState, arguments: &Value) -> (String, bool) {
+async fn dispatch_memory_ingest(
+    state: &AppState,
+    arguments: &Value,
+    agent_ctx: Option<&AgentContext>,
+    session_key: Option<&str>,
+) -> (String, bool) {
     let content = arguments
         .get("content")
         .and_then(|v| v.as_str())
@@ -304,11 +339,18 @@ async fn dispatch_memory_ingest(state: &AppState, arguments: &Value) -> (String,
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    // Build provenance metadata for sub-agents.
+    let metadata = super::agent::provenance_metadata(
+        agent_ctx,
+        session_key.unwrap_or(""),
+        "",
+    );
+
     let req = sa_memory::MemoryIngestRequest {
         content,
         source,
         session_id: None,
-        metadata: None,
+        metadata,
         extract_entities: None,
     };
 
@@ -325,6 +367,7 @@ async fn dispatch_agent_run(
     state: &AppState,
     arguments: &Value,
     session_key: Option<&str>,
+    parent_agent: Option<&AgentContext>,
 ) -> (String, bool) {
     let agent_id = match arguments.get("agent_id").and_then(|v| v.as_str()) {
         Some(id) => id,
@@ -341,7 +384,7 @@ async fn dispatch_agent_run(
 
     let parent_key = session_key.unwrap_or("anonymous");
 
-    super::agent::run_agent(state, agent_id, task, model, parent_key).await
+    super::agent::run_agent(state, agent_id, task, model, parent_key, parent_agent).await
 }
 
 fn dispatch_agent_list(state: &AppState) -> (String, bool) {
@@ -355,19 +398,39 @@ fn dispatch_agent_list(state: &AppState) -> (String, bool) {
         }
     };
 
+    let all_tools = all_base_tool_names(state);
+    let tool_refs: Vec<&str> = all_tools.iter().map(|s| s.as_str()).collect();
+
     let agents: Vec<_> = manager
         .list()
         .into_iter()
         .map(|id| {
             let runtime = manager.get(&id);
             match runtime {
-                Some(r) => serde_json::json!({
-                    "id": id,
-                    "tools_allow": r.config.tool_policy.allow,
-                    "tools_deny": r.config.tool_policy.deny,
-                    "models": r.config.models,
-                    "memory_mode": r.config.memory_mode,
-                }),
+                Some(r) => {
+                    let effective_count = manager.effective_tool_count(&id, &tool_refs);
+                    let resolved_model = r
+                        .config
+                        .models
+                        .get("executor")
+                        .cloned()
+                        .unwrap_or_else(|| "[global default]".into());
+                    serde_json::json!({
+                        "id": id,
+                        "tools_allow": r.config.tool_policy.allow,
+                        "tools_deny": r.config.tool_policy.deny,
+                        "effective_tools_count": effective_count,
+                        "models": r.config.models,
+                        "resolved_executor": resolved_model,
+                        "memory_mode": r.config.memory_mode,
+                        "limits": {
+                            "max_depth": r.config.limits.max_depth,
+                            "max_children_per_turn": r.config.limits.max_children_per_turn,
+                            "max_duration_ms": r.config.limits.max_duration_ms,
+                        },
+                        "compaction_enabled": r.config.compaction_enabled,
+                    })
+                }
                 None => serde_json::json!({ "id": id }),
             }
         })
