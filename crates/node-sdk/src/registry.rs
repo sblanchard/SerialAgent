@@ -58,16 +58,22 @@ impl ToolRegistry {
     }
 
     /// Register an exact tool name (e.g. `"macos.clipboard.get"`).
+    ///
+    /// The name is normalized to lowercase so that registry matching is
+    /// case-insensitive and stable regardless of caller casing.
     pub fn register(&mut self, name: impl Into<String>, tool: impl NodeTool) {
-        self.tools.insert(name.into(), Arc::new(tool));
+        self.tools
+            .insert(name.into().to_ascii_lowercase(), Arc::new(tool));
     }
 
     /// Add a capability prefix (e.g. `"macos.clipboard"`).
     ///
+    /// The prefix is normalized to lowercase for stable matching.
+    ///
     /// This is advertised in `node_hello` and used by the gateway's
     /// capability router to route `tool_request`s to this node.
     pub fn add_capability_prefix(&mut self, prefix: impl Into<String>) {
-        self.capability_prefixes.push(prefix.into());
+        self.capability_prefixes.push(prefix.into().to_ascii_lowercase());
     }
 
     /// Derive capability prefixes from registered tool names.
@@ -107,9 +113,9 @@ impl ToolRegistry {
         caps
     }
 
-    /// Look up a handler by exact tool name.
+    /// Look up a handler by tool name (case-insensitive).
     pub(crate) fn get(&self, tool_name: &str) -> Option<Arc<dyn NodeTool>> {
-        self.tools.get(tool_name).cloned()
+        self.tools.get(&tool_name.to_ascii_lowercase()).cloned()
     }
 }
 
@@ -192,6 +198,23 @@ mod tests {
             .call(test_ctx("test.echo"), serde_json::json!({"x": 1}))
             .await;
         assert_eq!(result.unwrap(), serde_json::json!({"x": 1}));
+    }
+
+    #[test]
+    fn lookup_is_case_insensitive() {
+        let mut reg = ToolRegistry::new();
+        reg.register("Macos.Notes.Search", Echo);
+        // Stored lowercase; lookup with any casing should work.
+        assert!(reg.get("macos.notes.search").is_some());
+        assert!(reg.get("MACOS.NOTES.SEARCH").is_some());
+        assert!(reg.get("Macos.Notes.Search").is_some());
+    }
+
+    #[test]
+    fn capability_prefixes_normalized() {
+        let mut reg = ToolRegistry::new();
+        reg.add_capability_prefix("Macos.Notes");
+        assert_eq!(reg.capabilities(), vec!["macos.notes"]);
     }
 
     #[tokio::test]

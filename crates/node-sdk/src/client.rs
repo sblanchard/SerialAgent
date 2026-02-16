@@ -1,11 +1,12 @@
 //! Core node client — manages the WebSocket lifecycle, heartbeat, and
 //! request dispatch via [`ToolRegistry`].
 
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use sa_protocol::{NodeCapability, WsMessage};
 use tokio::sync::{mpsc, Semaphore};
 use tokio_tungstenite::tungstenite::Message;
@@ -13,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::reconnect::ReconnectBackoff;
 use crate::registry::ToolRegistry;
-use crate::types::{NodeSdkError, ToolContext};
+use crate::types::{NodeSdkError, ToolContext, ToolError};
 
 /// A fully-configured node client ready to connect to the gateway.
 ///
@@ -67,9 +68,17 @@ impl NodeClient {
             };
 
             match result {
-                Ok(()) => {
-                    tracing::info!(node_id = %self.node_id, "connection closed gracefully");
-                    attempt = 0; // reset on clean close
+                Ok(handshake_completed) => {
+                    tracing::info!(
+                        node_id = %self.node_id,
+                        handshake_completed,
+                        "connection closed gracefully"
+                    );
+                    // Only reset backoff after a successful handshake
+                    // (gateway_welcome received), not merely after TCP connect.
+                    if handshake_completed {
+                        attempt = 0;
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -120,10 +129,13 @@ impl NodeClient {
     }
 
     /// Single connection lifecycle: connect -> handshake -> message loop.
+    ///
+    /// Returns `Ok(true)` if the handshake completed (gateway_welcome received)
+    /// before the connection closed, `Ok(false)` if it closed before handshake.
     async fn connect_and_run(
         &self,
         registry: &Arc<ToolRegistry>,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<bool, anyhow::Error> {
         let url = self.build_url();
         tracing::info!(url = %url, node_id = %self.node_id, "connecting to gateway");
 
@@ -190,6 +202,9 @@ impl NodeClient {
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<WsMessage>(64);
         let tool_semaphore = Arc::new(Semaphore::new(self.max_concurrent_tools));
 
+        // Track in-flight tool tasks so we can cancel them on disconnect.
+        let inflight_cancel = CancellationToken::new();
+
         // Ping task: emit heartbeat pings.
         let ping_tx = outbound_tx.clone();
         let ping_interval = self.heartbeat_interval;
@@ -224,10 +239,24 @@ impl NodeClient {
 
         // Reader loop: dispatch inbound messages.
         let max_resp = self.max_response_bytes;
+        let max_req = self._max_request_bytes;
         while let Some(Ok(msg)) = stream.next().await {
             match msg {
-                Message::Text(text) => {
-                    match serde_json::from_str::<WsMessage>(&text) {
+                Message::Text(ref text) => {
+                    // ── Pre-parse size limit ─────────────────────────
+                    // Enforce max_request_bytes on the raw inbound JSON
+                    // message *before* parsing, so a malicious or buggy
+                    // gateway message cannot blow memory during serde.
+                    if text.len() > max_req {
+                        tracing::warn!(
+                            bytes = text.len(),
+                            max = max_req,
+                            "inbound message exceeds max_request_bytes, dropping"
+                        );
+                        continue;
+                    }
+
+                    match serde_json::from_str::<WsMessage>(text) {
                         Ok(WsMessage::ToolRequest {
                             request_id,
                             tool_name,
@@ -243,26 +272,41 @@ impl NodeClient {
                             let reg = registry.clone();
                             let tx = outbound_tx.clone();
                             let sem = tool_semaphore.clone();
+                            let tool_cancel = inflight_cancel.child_token();
 
                             tokio::spawn(async move {
                                 // Acquire concurrency permit.
                                 let _permit = sem.acquire().await;
 
-                                let cancel = CancellationToken::new();
                                 let ctx = ToolContext {
                                     request_id: request_id.clone(),
                                     tool_name: tool_name.clone(),
                                     session_key,
-                                    cancel,
+                                    cancel: tool_cancel,
                                 };
 
-                                let resp = match reg.get(&tool_name) {
+                                // Case-insensitive tool lookup: normalize
+                                // the requested name to lowercase.
+                                let normalized_name = tool_name.to_ascii_lowercase();
+
+                                let resp = match reg.get(&normalized_name) {
                                     Some(handler) => {
-                                        match handler.call(ctx, arguments).await {
-                                            Ok(result) => {
-                                                let serialized = serde_json::to_string(&result)
-                                                    .unwrap_or_default();
-                                                let truncated = serialized.len() > max_resp;
+                                        // Wrap handler invocation with
+                                        // catch_unwind so a panicking tool
+                                        // always produces a tool_response.
+                                        let call_result = AssertUnwindSafe(
+                                            handler.call(ctx, arguments),
+                                        )
+                                        .catch_unwind()
+                                        .await;
+
+                                        match call_result {
+                                            Ok(Ok(result)) => {
+                                                let serialized =
+                                                    serde_json::to_string(&result)
+                                                        .unwrap_or_default();
+                                                let truncated =
+                                                    serialized.len() > max_resp;
                                                 let result = if truncated {
                                                     serde_json::json!({
                                                         "_truncated": true,
@@ -280,13 +324,33 @@ impl NodeClient {
                                                     truncated,
                                                 }
                                             }
-                                            Err(e) => WsMessage::ToolResponse {
+                                            Ok(Err(e)) => WsMessage::ToolResponse {
                                                 request_id,
                                                 success: false,
                                                 result: serde_json::Value::Null,
                                                 error: Some(e.to_string()),
                                                 truncated: false,
                                             },
+                                            Err(_panic) => {
+                                                tracing::error!(
+                                                    tool_name = %tool_name,
+                                                    request_id = %request_id,
+                                                    "tool handler panicked"
+                                                );
+                                                WsMessage::ToolResponse {
+                                                    request_id,
+                                                    success: false,
+                                                    result: serde_json::Value::Null,
+                                                    error: Some(
+                                                        ToolError::Failed(
+                                                            "tool handler panicked"
+                                                                .into(),
+                                                        )
+                                                        .to_string(),
+                                                    ),
+                                                    truncated: false,
+                                                }
+                                            }
                                         }
                                     }
                                     None => {
@@ -333,11 +397,13 @@ impl NodeClient {
             }
         }
 
-        // Cleanup.
+        // Cleanup: cancel all in-flight tool calls so spawned subprocesses
+        // (e.g. osascript) don't keep running, and semaphore permits are freed.
+        inflight_cancel.cancel();
         ping_task.abort();
         writer_task.abort();
 
-        Ok(())
+        Ok(true) // handshake was completed
     }
 
     /// Build the full connection URL with auth params.

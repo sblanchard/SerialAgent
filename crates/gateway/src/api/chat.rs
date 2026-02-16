@@ -44,6 +44,11 @@ pub async fn chat(
     State(state): State<AppState>,
     Json(body): Json<ChatRequest>,
 ) -> impl IntoResponse {
+    // Pre-flight: reject early with 503 if no LLM providers are available.
+    if let Err(resp) = require_llm_provider(&state) {
+        return resp.into_response();
+    }
+
     let (session_key, session_id) = match resolve_session(&state, &body) {
         Ok(s) => s,
         Err(e) => {
@@ -153,6 +158,11 @@ pub async fn chat_stream(
     State(state): State<AppState>,
     Json(body): Json<ChatRequest>,
 ) -> impl IntoResponse {
+    // Pre-flight: reject early with 503 if no LLM providers are available.
+    if let Err(resp) = require_llm_provider(&state) {
+        return resp.into_response();
+    }
+
     let (session_key, session_id) = match resolve_session(&state, &body) {
         Ok(s) => s,
         Err(e) => {
@@ -230,6 +240,44 @@ fn make_sse_stream(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Session resolution
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Pre-flight check: return a structured 503 if no LLM providers are
+/// available.  This gives callers a clear, consistent signal (instead of
+/// a vague "no_provider_configured" buried inside a turn-error stream)
+/// and includes the init_errors summary so operators can diagnose the root
+/// cause without scraping logs.
+fn require_llm_provider(
+    state: &AppState,
+) -> Result<(), (axum::http::StatusCode, Json<serde_json::Value>)> {
+    if !state.llm.is_empty() {
+        return Ok(());
+    }
+
+    let init_errors: Vec<serde_json::Value> = state
+        .llm
+        .init_errors()
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "provider_id": e.provider_id,
+                "kind": e.kind,
+                "error": e.error,
+            })
+        })
+        .collect();
+
+    Err((
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({
+            "error": "no_llm_provider",
+            "reason": "No LLM providers are available. Configure at least one \
+                       provider in config.toml under [llm.providers], or check \
+                       /v1/models/readiness for details.",
+            "init_errors": init_errors,
+            "startup_policy": format!("{:?}", state.config.llm.startup_policy),
+        })),
+    ))
+}
 
 fn resolve_session(
     state: &AppState,
