@@ -185,8 +185,8 @@ async fn run_turn_inner(
                         &sid,
                     )
                     .unwrap_or_default();
-                    meta.insert("compaction".into(), serde_json::json!(true));
-                    meta.insert("session_key".into(), serde_json::json!(&sk));
+                    meta.insert("sa.compaction".into(), serde_json::json!(true));
+                    meta.insert("sa.session_key".into(), serde_json::json!(&sk));
 
                     tokio::spawn(async move {
                         let req = sa_memory::MemoryIngestRequest {
@@ -411,7 +411,7 @@ async fn run_turn_inner(
                     &sid,
                 )
                 .unwrap_or_default();
-                meta.insert("session_key".into(), serde_json::json!(&sk));
+                meta.insert("sa.session_key".into(), serde_json::json!(&sk));
 
                 tokio::spawn(async move {
                     let content = format!("User: {user_msg}\n---\nAssistant: {final_text}");

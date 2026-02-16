@@ -319,8 +319,23 @@ pub async fn run_agent(
     };
 
     if drain_result.is_err() {
-        // Timeout — cancel the child and report.
+        // Timeout — cancel the child and flush.
         state.cancel_map.cancel(&child_session_key);
+
+        // Persist a timeout marker in the child's transcript so the session
+        // is visibly ended (debuggable without grepping logs).
+        let mut line = sa_sessions::transcript::TranscriptWriter::line(
+            "system",
+            &format!("[agent '{agent_id}' timed out after {timeout_ms}ms]"),
+        );
+        line.metadata = Some(serde_json::json!({
+            "timeout": true,
+            "sa.agent_id": agent_id,
+            "sa.agent_path": &parent_path,
+            "sa.depth": child_depth,
+        }));
+        let _ = state.transcripts.append(&child_session_key, &[line]);
+
         result = format!(
             "[agent '{agent_id}' timed out after {timeout_ms}ms] partial: {result}"
         );
@@ -366,6 +381,9 @@ async fn drain_events(
 
 /// Build provenance metadata for memory ingest/search when running
 /// inside a sub-agent.  Returns `None` for the master agent.
+///
+/// All keys are namespaced with `sa.` to prevent collisions with
+/// application-level metadata and to make querying/aggregation clean.
 pub fn provenance_metadata(
     agent_ctx: Option<&AgentContext>,
     session_key: &str,
@@ -374,13 +392,13 @@ pub fn provenance_metadata(
     let ctx = agent_ctx?;
 
     let mut meta = HashMap::new();
-    meta.insert("agent_id".into(), serde_json::json!(ctx.agent_id));
-    meta.insert("agent_path".into(), serde_json::json!(ctx.agent_path));
-    meta.insert("depth".into(), serde_json::json!(ctx.depth));
-    meta.insert("session_key".into(), serde_json::json!(session_key));
-    meta.insert("session_id".into(), serde_json::json!(session_id));
+    meta.insert("sa.agent_id".into(), serde_json::json!(ctx.agent_id));
+    meta.insert("sa.agent_path".into(), serde_json::json!(ctx.agent_path));
+    meta.insert("sa.depth".into(), serde_json::json!(ctx.depth));
+    meta.insert("sa.session_key".into(), serde_json::json!(session_key));
+    meta.insert("sa.session_id".into(), serde_json::json!(session_id));
     meta.insert(
-        "memory_mode".into(),
+        "sa.memory_mode".into(),
         serde_json::json!(format!("{:?}", ctx.memory_mode)),
     );
 
@@ -460,9 +478,11 @@ mod tests {
         let ctx = rt.context(None, 2, "main>researcher");
 
         let meta = provenance_metadata(Some(&ctx), "sk-123", "sid-456").unwrap();
-        assert_eq!(meta["agent_id"], "coder");
-        assert_eq!(meta["agent_path"], "main>researcher>coder");
-        assert_eq!(meta["depth"], 2);
-        assert_eq!(meta["session_key"], "sk-123");
+        assert_eq!(meta["sa.agent_id"], "coder");
+        assert_eq!(meta["sa.agent_path"], "main>researcher>coder");
+        assert_eq!(meta["sa.depth"], 2);
+        assert_eq!(meta["sa.session_key"], "sk-123");
+        assert_eq!(meta["sa.session_id"], "sid-456");
+        assert_eq!(meta["sa.memory_mode"], "Isolated");
     }
 }
