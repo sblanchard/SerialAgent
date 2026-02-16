@@ -499,35 +499,6 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Vec<Result<Stream
     events
 }
 
-/// Drain complete SSE events from the buffer. Anthropic SSE uses
-/// `event: <type>\ndata: <json>\n\n`.
-fn drain_anthropic_sse(buffer: &mut String, state: &mut StreamState) -> Vec<Result<StreamEvent>> {
-    let mut all_events = Vec::new();
-
-    while let Some(pos) = buffer.find("\n\n") {
-        let block: String = buffer.drain(..pos).collect();
-        buffer.drain(..2); // remove the \n\n delimiter in-place
-
-        // Each block may contain multiple lines: `event:`, `data:`, etc.
-        let mut data_line: Option<String> = None;
-        for line in block.lines() {
-            let line = line.trim();
-            if let Some(data) = line.strip_prefix("data:") {
-                data_line = Some(data.trim().to_string());
-            }
-        }
-
-        if let Some(data) = data_line {
-            if !data.is_empty() {
-                let events = parse_anthropic_sse(&data, state);
-                all_events.extend(events);
-            }
-        }
-    }
-
-    all_events
-}
-
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Trait implementation
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -587,48 +558,10 @@ impl LlmProvider for AnthropicProvider {
             });
         }
 
-        let stream = async_stream::stream! {
-            let mut response = resp;
-            let mut buffer = String::new();
-            let mut state = StreamState::new();
-
-            loop {
-                match response.chunk().await {
-                    Ok(Some(bytes)) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-                        let events = drain_anthropic_sse(&mut buffer, &mut state);
-                        for event in events {
-                            yield event;
-                        }
-                    }
-                    Ok(None) => {
-                        // Flush remaining buffer.
-                        if !buffer.trim().is_empty() {
-                            buffer.push_str("\n\n");
-                            let events = drain_anthropic_sse(&mut buffer, &mut state);
-                            for event in events {
-                                yield event;
-                            }
-                        }
-                        break;
-                    }
-                    Err(e) => {
-                        yield Err(from_reqwest(e));
-                        break;
-                    }
-                }
-            }
-
-            if !state.done_emitted {
-                yield Ok(StreamEvent::Done {
-                    usage: state.usage.clone(),
-                    finish_reason: Some("stop".into()),
-                });
-            }
-        };
-
-        Ok(Box::pin(stream))
+        let mut state = StreamState::new();
+        Ok(crate::sse::sse_response_stream(resp, move |data| {
+            parse_anthropic_sse(data, &mut state)
+        }))
     }
 
     async fn embeddings(&self, _req: EmbeddingsRequest) -> Result<EmbeddingsResponse> {

@@ -385,31 +385,20 @@ fn parse_sse_data(data: &str) -> Option<Result<StreamEvent>> {
     None
 }
 
-/// Process all complete SSE events in the buffer, draining consumed data.
-/// Returns a vec of stream events parsed from `data:` lines.
-fn drain_sse_events(buffer: &mut String) -> Vec<Result<StreamEvent>> {
-    let mut events = Vec::new();
-    while let Some(pos) = buffer.find("\n\n") {
-        let event_block: String = buffer.drain(..pos).collect();
-        buffer.drain(..2); // remove the \n\n delimiter in-place
-
-        for line in event_block.lines() {
-            let line = line.trim();
-            if let Some(data) = line.strip_prefix("data:") {
-                let data = data.trim();
-                if data == "[DONE]" {
-                    // Will be handled by the caller.
-                    events.push(Ok(StreamEvent::Done {
-                        usage: None,
-                        finish_reason: Some("stop".into()),
-                    }));
-                } else if let Some(event) = parse_sse_data(data) {
-                    events.push(event);
-                }
-            }
-        }
+/// Parse a single SSE data line, handling the `[DONE]` sentinel.
+/// Returns a `Vec` for compatibility with the shared SSE infrastructure.
+fn parse_sse_data_vec(data: &str) -> Vec<Result<StreamEvent>> {
+    if data.trim() == "[DONE]" {
+        return vec![Ok(StreamEvent::Done {
+            usage: None,
+            finish_reason: Some("stop".into()),
+        })];
     }
-    events
+
+    match parse_sse_data(data) {
+        Some(event) => vec![event],
+        None => Vec::new(),
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -471,58 +460,7 @@ impl LlmProvider for OpenAiCompatProvider {
             });
         }
 
-        // Use `resp.chunk()` which returns `Option<Bytes>` and is easy to call
-        // inside async_stream without type-erasure gymnastics.
-        let stream = async_stream::stream! {
-            // `resp` is moved into this block.
-            let mut response = resp;
-            let mut buffer = String::new();
-            let mut done_emitted = false;
-
-            loop {
-                match response.chunk().await {
-                    Ok(Some(bytes)) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-                        let events = drain_sse_events(&mut buffer);
-                        for event in events {
-                            if matches!(&event, Ok(StreamEvent::Done { .. })) {
-                                done_emitted = true;
-                            }
-                            yield event;
-                        }
-                    }
-                    Ok(None) => {
-                        // Stream ended. Drain any remaining data.
-                        // Append a trailing \n\n to flush partial last event.
-                        if !buffer.trim().is_empty() {
-                            buffer.push_str("\n\n");
-                            let events = drain_sse_events(&mut buffer);
-                            for event in events {
-                                if matches!(&event, Ok(StreamEvent::Done { .. })) {
-                                    done_emitted = true;
-                                }
-                                yield event;
-                            }
-                        }
-                        break;
-                    }
-                    Err(e) => {
-                        yield Err(from_reqwest(e));
-                        break;
-                    }
-                }
-            }
-
-            if !done_emitted {
-                yield Ok(StreamEvent::Done {
-                    usage: None,
-                    finish_reason: Some("stop".into()),
-                });
-            }
-        };
-
-        Ok(Box::pin(stream))
+        Ok(crate::sse::sse_response_stream(resp, parse_sse_data_vec))
     }
 
     async fn embeddings(&self, req: EmbeddingsRequest) -> Result<EmbeddingsResponse> {

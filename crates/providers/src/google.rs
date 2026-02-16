@@ -413,29 +413,6 @@ fn parse_gemini_sse_data(data: &str, _model: &str) -> Vec<Result<StreamEvent>> {
     events
 }
 
-/// Drain complete SSE events from the buffer.
-fn drain_gemini_sse(buffer: &mut String, model: &str) -> Vec<Result<StreamEvent>> {
-    let mut all_events = Vec::new();
-
-    while let Some(pos) = buffer.find("\n\n") {
-        let block: String = buffer.drain(..pos).collect();
-        buffer.drain(..2); // remove the \n\n delimiter in-place
-
-        for line in block.lines() {
-            let line = line.trim();
-            if let Some(data) = line.strip_prefix("data:") {
-                let data = data.trim();
-                if !data.is_empty() {
-                    let events = parse_gemini_sse_data(data, model);
-                    all_events.extend(events);
-                }
-            }
-        }
-    }
-
-    all_events
-}
-
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Trait implementation
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -508,53 +485,9 @@ impl LlmProvider for GoogleProvider {
             });
         }
 
-        let stream = async_stream::stream! {
-            let mut response = resp;
-            let mut buffer = String::new();
-            let mut done_emitted = false;
-
-            loop {
-                match response.chunk().await {
-                    Ok(Some(bytes)) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-                        let events = drain_gemini_sse(&mut buffer, &model_owned);
-                        for event in events {
-                            if matches!(&event, Ok(StreamEvent::Done { .. })) {
-                                done_emitted = true;
-                            }
-                            yield event;
-                        }
-                    }
-                    Ok(None) => {
-                        if !buffer.trim().is_empty() {
-                            buffer.push_str("\n\n");
-                            let events = drain_gemini_sse(&mut buffer, &model_owned);
-                            for event in events {
-                                if matches!(&event, Ok(StreamEvent::Done { .. })) {
-                                    done_emitted = true;
-                                }
-                                yield event;
-                            }
-                        }
-                        break;
-                    }
-                    Err(e) => {
-                        yield Err(from_reqwest(e));
-                        break;
-                    }
-                }
-            }
-
-            if !done_emitted {
-                yield Ok(StreamEvent::Done {
-                    usage: None,
-                    finish_reason: Some("stop".into()),
-                });
-            }
-        };
-
-        Ok(Box::pin(stream))
+        Ok(crate::sse::sse_response_stream(resp, move |data| {
+            parse_gemini_sse_data(data, &model_owned)
+        }))
     }
 
     async fn embeddings(&self, req: EmbeddingsRequest) -> Result<EmbeddingsResponse> {
