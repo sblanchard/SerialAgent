@@ -53,6 +53,25 @@ pub enum TraceEvent {
         to_model: String,
         reason: String,
     },
+    SessionResolved {
+        session_key: String,
+        session_id: String,
+        is_new: bool,
+    },
+    SessionReset {
+        session_key: String,
+        old_session_id: String,
+        new_session_id: String,
+        reason: String,
+    },
+    TranscriptAppend {
+        session_id: String,
+        lines: usize,
+    },
+    IdentityResolved {
+        raw_peer_id: String,
+        canonical: String,
+    },
 }
 
 impl TraceEvent {
