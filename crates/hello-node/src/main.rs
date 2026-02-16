@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use sa_protocol::{NodeInfo, ToolResponseError, WsMessage, MAX_TOOL_RESPONSE_BYTES};
+use sa_protocol::{ErrorKind, NodeInfo, ToolResponseError, WsMessage, MAX_TOOL_RESPONSE_BYTES, PROTOCOL_VERSION};
 use tokio_tungstenite::tungstenite::Message;
 use tracing_subscriber::EnvFilter;
 
@@ -64,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Send node_hello.
     let hello = WsMessage::NodeHello {
+        protocol_version: PROTOCOL_VERSION,
         node: NodeInfo {
             id: node_id.clone(),
             name: "Hello Node".into(),
@@ -84,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
         if let Message::Text(text) = msg {
             if let Ok(WsMessage::GatewayWelcome {
                 gateway_version,
+                ..
             }) = serde_json::from_str(&text)
             {
                 tracing::info!(
@@ -212,7 +214,7 @@ fn handle_tool(
                     ok: false,
                     result: None,
                     error: Some(ToolResponseError {
-                        kind: "InvalidArgs".into(),
+                        kind: ErrorKind::InvalidArgs,
                         message: "missing 'path' argument".into(),
                     }),
                 };
@@ -229,7 +231,7 @@ fn handle_tool(
                         ok: false,
                         result: None,
                         error: Some(ToolResponseError {
-                            kind: "Failed".into(),
+                            kind: ErrorKind::Failed,
                             message: format!("allowed dir error: {e}"),
                         }),
                     };
@@ -243,7 +245,7 @@ fn handle_tool(
                         ok: false,
                         result: None,
                         error: Some(ToolResponseError {
-                            kind: "Failed".into(),
+                            kind: ErrorKind::Failed,
                             message: format!("file not found: {e}"),
                         }),
                     };
@@ -255,7 +257,7 @@ fn handle_tool(
                     ok: false,
                     result: None,
                     error: Some(ToolResponseError {
-                        kind: "NotAllowed".into(),
+                        kind: ErrorKind::NotAllowed,
                         message: "path traversal outside allowed directory".into(),
                     }),
                 };
@@ -288,7 +290,7 @@ fn handle_tool(
                     ok: false,
                     result: None,
                     error: Some(ToolResponseError {
-                        kind: "Failed".into(),
+                        kind: ErrorKind::Failed,
                         message: format!("read error: {e}"),
                     }),
                 },
@@ -300,7 +302,7 @@ fn handle_tool(
             ok: false,
             result: None,
             error: Some(ToolResponseError {
-                kind: "Failed".into(),
+                kind: ErrorKind::Failed,
                 message: format!("unknown tool: {tool}"),
             }),
         },

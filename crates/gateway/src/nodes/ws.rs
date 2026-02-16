@@ -17,7 +17,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-use sa_protocol::{NodeInfo, WsMessage};
+use sa_protocol::{NodeInfo, WsMessage, PROTOCOL_VERSION};
 
 use crate::nodes::registry::{ConnectedNode, NodeRegistry};
 use crate::state::AppState;
@@ -101,10 +101,30 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     };
 
     let node_id = hello.node.id.clone();
+
+    // 1b. Check protocol version compatibility.
+    if hello.protocol_version != PROTOCOL_VERSION {
+        tracing::warn!(
+            node_id = %node_id,
+            node_version = hello.protocol_version,
+            gateway_version = PROTOCOL_VERSION,
+            "protocol version mismatch — rejecting node"
+        );
+        // Send a welcome with our version so the node can log the mismatch,
+        // then close the connection.
+        let reject = WsMessage::GatewayWelcome {
+            protocol_version: PROTOCOL_VERSION,
+            gateway_version: env!("CARGO_PKG_VERSION").to_string(),
+        };
+        let _ = send_ws_message(&mut ws_sink, &reject).await;
+        return;
+    }
+
     let session_id = uuid::Uuid::new_v4().to_string();
 
     // 2. Send gateway_welcome.
     let welcome = WsMessage::GatewayWelcome {
+        protocol_version: PROTOCOL_VERSION,
         gateway_version: env!("CARGO_PKG_VERSION").to_string(),
     };
     if send_ws_message(&mut ws_sink, &welcome).await.is_err() {
@@ -123,12 +143,29 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // 3. Create a channel for outbound messages from gateway → node.
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<WsMessage>(64);
 
-    // 4. Register the node.
+    // 4. Validate and register the node.
+    let capabilities: Vec<String> = hello
+        .capabilities
+        .into_iter()
+        .filter(|cap| {
+            if let Err(reason) = sa_protocol::validate_capability(cap) {
+                tracing::warn!(
+                    node_id = %node_id,
+                    capability = %cap,
+                    reason,
+                    "rejected invalid capability"
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
     state.nodes.register(ConnectedNode {
         node_id: node_id.clone(),
         node_type: hello.node.node_type,
         name: hello.node.name,
-        capabilities: hello.capabilities,
+        capabilities,
         version: hello.node.version,
         tags: hello.node.tags,
         session_id,
@@ -185,6 +222,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 struct HelloData {
+    protocol_version: u32,
     node: NodeInfo,
     capabilities: Vec<String>,
 }
@@ -197,11 +235,13 @@ async fn wait_for_hello(
         while let Some(Ok(msg)) = stream.next().await {
             if let Message::Text(text) = msg {
                 if let Ok(WsMessage::NodeHello {
+                    protocol_version,
                     node,
                     capabilities,
                 }) = serde_json::from_str::<WsMessage>(&text)
                 {
                     return Some(HelloData {
+                        protocol_version,
                         node,
                         capabilities,
                     });
