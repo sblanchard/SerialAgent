@@ -46,6 +46,16 @@ pub trait NodeTool: Send + Sync + 'static {
 /// // reg.register("macos.clipboard.get", ClipboardGet);
 /// // reg.register("macos.notes.search", NotesSearch);
 /// ```
+///
+/// Or use the convenience constructor:
+///
+/// ```rust,no_run
+/// # use sa_node_sdk::ToolRegistry;
+/// let mut reg = ToolRegistry::with_defaults("macos");
+/// // reg.register("macos.clipboard.get", ClipboardGet);
+/// // reg.register("macos.notes.search", NotesSearch);
+/// // reg.derive_capabilities_from_tools(); // auto-derives "macos.clipboard", "macos.notes"
+/// ```
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn NodeTool>>,
@@ -57,13 +67,44 @@ impl ToolRegistry {
         Self::default()
     }
 
+    /// Create a registry pre-seeded with `node_type` as a root capability prefix.
+    ///
+    /// This is a convenience for nodes that own an entire namespace.  You can
+    /// still add more specific prefixes via [`add_capability_prefix`](Self::add_capability_prefix)
+    /// or call [`derive_capabilities_from_tools`](Self::derive_capabilities_from_tools)
+    /// after registering tools for finer-grained routing.
+    pub fn with_defaults(node_type: impl Into<String>) -> Self {
+        let mut reg = Self::new();
+        reg.add_capability_prefix(node_type);
+        reg
+    }
+
     /// Register an exact tool name (e.g. `"macos.clipboard.get"`).
     ///
     /// The name is normalized to lowercase so that registry matching is
     /// case-insensitive and stable regardless of caller casing.
-    pub fn register(&mut self, name: impl Into<String>, tool: impl NodeTool) {
+    ///
+    /// Returns `&mut Self` for method chaining.
+    pub fn register<T: NodeTool>(&mut self, name: impl Into<String>, tool: T) -> &mut Self {
         self.tools
             .insert(name.into().to_ascii_lowercase(), Arc::new(tool));
+        self
+    }
+
+    /// Register a pre-wrapped tool handler.
+    ///
+    /// Use this when you need to store tools in variables, inject wrappers,
+    /// or construct handlers dynamically.
+    ///
+    /// Returns `&mut Self` for method chaining.
+    pub fn register_boxed(
+        &mut self,
+        name: impl Into<String>,
+        tool: Arc<dyn NodeTool>,
+    ) -> &mut Self {
+        self.tools
+            .insert(name.into().to_ascii_lowercase(), tool);
+        self
     }
 
     /// Add a capability prefix (e.g. `"macos.clipboard"`).
@@ -72,15 +113,20 @@ impl ToolRegistry {
     ///
     /// This is advertised in `node_hello` and used by the gateway's
     /// capability router to route `tool_request`s to this node.
-    pub fn add_capability_prefix(&mut self, prefix: impl Into<String>) {
+    ///
+    /// Returns `&mut Self` for method chaining.
+    pub fn add_capability_prefix(&mut self, prefix: impl Into<String>) -> &mut Self {
         self.capability_prefixes.push(prefix.into().to_ascii_lowercase());
+        self
     }
 
     /// Derive capability prefixes from registered tool names.
     ///
     /// For each tool name like `"macos.notes.search"`, derives the prefix
     /// `"macos.notes"` (everything up to the last dot).  Deduplicates.
-    pub fn derive_capabilities_from_tools(&mut self) {
+    ///
+    /// Returns `&mut Self` for method chaining.
+    pub fn derive_capabilities_from_tools(&mut self) -> &mut Self {
         let mut prefixes: Vec<String> = self
             .tools
             .keys()
@@ -96,6 +142,7 @@ impl ToolRegistry {
                 self.capability_prefixes.push(p);
             }
         }
+        self
     }
 
     /// All registered tool names (sorted).
@@ -114,7 +161,7 @@ impl ToolRegistry {
     }
 
     /// Look up a handler by tool name (case-insensitive).
-    pub(crate) fn get(&self, tool_name: &str) -> Option<Arc<dyn NodeTool>> {
+    pub fn get(&self, tool_name: &str) -> Option<Arc<dyn NodeTool>> {
         self.tools.get(&tool_name.to_ascii_lowercase()).cloned()
     }
 }

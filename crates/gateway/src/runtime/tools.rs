@@ -174,12 +174,12 @@ pub fn build_tool_definitions(
     for node_info in state.nodes.list() {
         for cap in &node_info.capabilities {
             // Don't duplicate tools we already defined.
-            if defs.iter().any(|d| d.name == cap.name) {
+            if defs.iter().any(|d| d.name == *cap) {
                 continue;
             }
             defs.push(ToolDefinition {
-                name: cap.name.clone(),
-                description: cap.description.clone(),
+                name: cap.clone(),
+                description: format!("{cap} (node: {})", node_info.node_id),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -213,8 +213,8 @@ pub fn all_base_tool_names(state: &AppState) -> Vec<String> {
     ];
     for node_info in state.nodes.list() {
         for cap in &node_info.capabilities {
-            if !names.contains(&cap.name) {
-                names.push(cap.name.clone());
+            if !names.contains(cap) {
+                names.push(cap.clone());
             }
         }
     }
