@@ -4,7 +4,7 @@
 //! the Anthropic-specific message structure where system messages go in a
 //! separate top-level `system` field.
 
-use crate::openai_compat::{from_reqwest, resolve_api_key};
+use crate::util::{from_reqwest, resolve_api_key};
 use crate::traits::{
     ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider,
 };
@@ -505,8 +505,8 @@ fn drain_anthropic_sse(buffer: &mut String, state: &mut StreamState) -> Vec<Resu
     let mut all_events = Vec::new();
 
     while let Some(pos) = buffer.find("\n\n") {
-        let block = buffer[..pos].to_string();
-        *buffer = buffer[pos + 2..].to_string();
+        let block: String = buffer.drain(..pos).collect();
+        buffer.drain(..2); // remove the \n\n delimiter in-place
 
         // Each block may contain multiple lines: `event:`, `data:`, etc.
         let mut data_line: Option<String> = None;
