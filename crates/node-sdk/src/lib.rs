@@ -9,21 +9,22 @@
 //! # Architecture
 //!
 //! ```text
-//! ┌───────────────────────────────────────────────────────────┐
-//! │  Your Node (Tauri / CLI / mobile / embedded)              │
-//! │                                                           │
-//! │   let mut reg = ToolRegistry::new();                      │
-//! │   reg.register("macos.notes.search", NotesSearch);        │
-//! │   reg.derive_capabilities_from_tools();                   │
-//! │                                                           │
-//! │   NodeClientBuilder::new()                                │
-//! │       .gateway_ws_url("ws://gw:3210/v1/nodes/ws")         │
-//! │       .node_id("mac1")                                    │
-//! │       .token("secret")                                    │
-//! │       .build()?                                           │
-//! │       .run(reg, shutdown)                                 │
-//! │       .await;                                             │
-//! └───────────────────────────────────────────────────────────┘
+//! ┌──────────────────────────────────────────────────────────────┐
+//! │  Your Node (Tauri / CLI / mobile / embedded)                 │
+//! │                                                              │
+//! │   let mut reg = ToolRegistry::new();                         │
+//! │   reg.register("macos.notes.search", NotesSearch)            │
+//! │      .register("macos.clipboard.get", ClipboardGet)          │
+//! │      .derive_capabilities_from_tools();                      │
+//! │                                                              │
+//! │   NodeClientBuilder::new()                                   │
+//! │       .node_info(NodeInfo::from_env("macos", VERSION))       │
+//! │       .gateway_ws_url("ws://gw:3210/v1/nodes/ws")            │
+//! │       .token("secret")                                       │
+//! │       .build()?                                              │
+//! │       .run(reg, shutdown)                                    │
+//! │       .await;                                                │
+//! └──────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! # Connection flow (hard-coded by the SDK)
