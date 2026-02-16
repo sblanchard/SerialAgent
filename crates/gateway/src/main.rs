@@ -9,7 +9,7 @@ use sa_gateway::api;
 use sa_gateway::state::AppState;
 use sa_gateway::workspace::bootstrap::BootstrapTracker;
 use sa_gateway::workspace::files::WorkspaceReader;
-use sa_memory::RestSerialMemoryClient;
+use sa_memory::create_provider as create_memory_provider;
 use sa_providers::registry::ProviderRegistry;
 use sa_sessions::{IdentityResolver, LifecycleManager, SessionStore, TranscriptWriter};
 use sa_skills::registry::SkillsRegistry;
@@ -60,11 +60,14 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(skills_count = skills.list().len(), "skills loaded");
 
     // ── SerialMemory client ──────────────────────────────────────────
-    let memory: Arc<dyn sa_memory::SerialMemoryProvider> = Arc::new(
-        RestSerialMemoryClient::new(&config.serial_memory)
-            .context("creating SerialMemory client")?,
+    let memory: Arc<dyn sa_memory::SerialMemoryProvider> =
+        create_memory_provider(&config.serial_memory)
+            .context("creating SerialMemory client")?;
+    tracing::info!(
+        url = %config.serial_memory.base_url,
+        transport = ?config.serial_memory.transport,
+        "SerialMemory client ready"
     );
-    tracing::info!(url = %config.serial_memory.base_url, "SerialMemory client ready");
 
     // ── LLM providers ────────────────────────────────────────────────
     let llm = Arc::new(
@@ -122,6 +125,12 @@ async fn main() -> anyhow::Result<()> {
     );
     tracing::info!("cancel map ready");
 
+    // ── Dedupe store (inbound idempotency, 24h TTL) ────────────────
+    let dedupe = Arc::new(
+        sa_gateway::api::inbound::DedupeStore::new(std::time::Duration::from_secs(86_400)),
+    );
+    tracing::info!("dedupe store ready (24h TTL)");
+
     // ── App state (without agents — needed for AgentManager init) ───
     let mut state = AppState {
         config: config.clone(),
@@ -140,6 +149,7 @@ async fn main() -> anyhow::Result<()> {
         session_locks,
         cancel_map,
         agents: None,
+        dedupe,
     };
 
     // ── Agent manager (sub-agents) ──────────────────────────────────

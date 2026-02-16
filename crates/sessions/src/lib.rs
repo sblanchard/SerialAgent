@@ -12,6 +12,6 @@ pub mod transcript;
 
 pub use identity::IdentityResolver;
 pub use lifecycle::LifecycleManager;
-pub use session_key::compute_session_key;
+pub use session_key::{compute_session_key, validate_metadata, SessionKeyValidation};
 pub use store::{SessionEntry, SessionStore};
 pub use transcript::TranscriptWriter;

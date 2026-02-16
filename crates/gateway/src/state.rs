@@ -7,6 +7,7 @@ use sa_sessions::{IdentityResolver, LifecycleManager, SessionStore, TranscriptWr
 use sa_skills::registry::SkillsRegistry;
 use sa_tools::ProcessManager;
 
+use crate::api::inbound::DedupeStore;
 use crate::nodes::registry::NodeRegistry;
 use crate::nodes::router::ToolRouter;
 use crate::runtime::agent::AgentManager;
@@ -35,4 +36,6 @@ pub struct AppState {
     pub cancel_map: Arc<CancelMap>,
     /// Sub-agent manager. `None` if no agents are configured.
     pub agents: Option<Arc<AgentManager>>,
+    /// Idempotency store for inbound event deduplication.
+    pub dedupe: Arc<DedupeStore>,
 }

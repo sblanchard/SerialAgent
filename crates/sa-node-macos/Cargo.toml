@@ -1,0 +1,20 @@
+[package]
+name = "sa-node-macos"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "sa-node-macos"
+path = "src/main.rs"
+
+[dependencies]
+sa-node-sdk = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+async-trait = { workspace = true }

@@ -44,10 +44,27 @@ pub async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
     let roles = state.llm.list_roles();
     let has_executor = state.llm.for_role("executor").is_some();
 
+    // Surface provider init errors so operators can diagnose missing
+    // credentials without scraping startup logs.
+    let init_errors: Vec<serde_json::Value> = state
+        .llm
+        .init_errors()
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "provider_id": e.provider_id,
+                "kind": e.kind,
+                "error": e.error,
+            })
+        })
+        .collect();
+
     Json(serde_json::json!({
         "ready": !state.llm.is_empty(),
         "provider_count": providers.len(),
         "providers": providers,
+        "init_errors": init_errors,
+        "startup_policy": format!("{:?}", state.config.llm.startup_policy),
         "roles": roles,
         "has_executor": has_executor,
         "memory_configured": true,
