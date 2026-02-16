@@ -122,8 +122,8 @@ async fn main() -> anyhow::Result<()> {
     );
     tracing::info!("cancel map ready");
 
-    // ── App state ────────────────────────────────────────────────────
-    let state = AppState {
+    // ── App state (without agents — needed for AgentManager init) ───
+    let mut state = AppState {
         config: config.clone(),
         memory,
         skills,
@@ -139,7 +139,15 @@ async fn main() -> anyhow::Result<()> {
         tool_router,
         session_locks,
         cancel_map,
+        agents: None,
     };
+
+    // ── Agent manager (sub-agents) ──────────────────────────────────
+    if !config.agents.is_empty() {
+        let agent_mgr = sa_gateway::runtime::agent::AgentManager::from_config(&state);
+        tracing::info!(agent_count = agent_mgr.len(), "agent manager ready");
+        state.agents = Some(Arc::new(agent_mgr));
+    }
 
     // ── Periodic session flush ───────────────────────────────────────
     {

@@ -74,6 +74,7 @@ pub async fn chat(
         session_id: session_id.clone(),
         user_message: body.message,
         model: body.model,
+        agent: None,
     };
 
     let state_arc = std::sync::Arc::new(state.clone());
@@ -191,6 +192,7 @@ pub async fn chat_stream(
         session_id,
         user_message: body.message,
         model: body.model,
+        agent: None,
     };
 
     let state_arc = std::sync::Arc::new(state.clone());

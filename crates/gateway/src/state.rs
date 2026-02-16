@@ -9,6 +9,7 @@ use sa_tools::ProcessManager;
 
 use crate::nodes::registry::NodeRegistry;
 use crate::nodes::router::ToolRouter;
+use crate::runtime::agent::AgentManager;
 use crate::runtime::cancel::CancelMap;
 use crate::runtime::session_lock::SessionLockMap;
 use crate::workspace::bootstrap::BootstrapTracker;
@@ -32,4 +33,6 @@ pub struct AppState {
     pub tool_router: Arc<ToolRouter>,
     pub session_locks: Arc<SessionLockMap>,
     pub cancel_map: Arc<CancelMap>,
+    /// Sub-agent manager. `None` if no agents are configured.
+    pub agents: Option<Arc<AgentManager>>,
 }
