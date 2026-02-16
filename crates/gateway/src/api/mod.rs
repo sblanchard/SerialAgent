@@ -52,9 +52,10 @@ pub fn router() -> Router<AppState> {
         .route("/v1/chat/stream", post(chat::chat_stream))
         // Inbound (channel connector contract)
         .route("/v1/inbound", post(inbound::inbound))
-        // Tools (exec / process)
+        // Tools (exec / process / invoke)
         .route("/v1/tools/exec", post(tools::exec_tool))
         .route("/v1/tools/process", post(tools::process_tool))
+        .route("/v1/tools/invoke", post(tools::invoke_tool))
         // Nodes
         .route("/v1/nodes", get(nodes::list_nodes))
         .route("/v1/nodes/ws", get(crate::nodes::ws::node_ws))
