@@ -209,11 +209,25 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("CORS configured with wildcard origin — this is NOT recommended for production");
         CorsLayer::permissive()
     } else {
-        let origins: Vec<_> = config.server.cors.allowed_origins.iter()
-            .filter_map(|o| o.parse().ok())
-            .collect();
+        let patterns = config.server.cors.allowed_origins.clone();
         CorsLayer::new()
-            .allow_origin(AllowOrigin::list(origins))
+            .allow_origin(AllowOrigin::predicate(
+                move |origin: &axum::http::HeaderValue, _req: &_| {
+                    let Ok(origin_str) = origin.to_str() else {
+                        return false;
+                    };
+                    patterns.iter().any(|pattern| {
+                        if let Some(prefix) = pattern.strip_suffix(":*") {
+                            // Wildcard port: match "http://localhost:*" against
+                            // "http://localhost:3000"
+                            origin_str.starts_with(prefix)
+                                && origin_str[prefix.len()..].starts_with(':')
+                        } else {
+                            origin_str == pattern
+                        }
+                    })
+                },
+            ))
             .allow_methods(tower_http::cors::Any)
             .allow_headers(tower_http::cors::Any)
     };

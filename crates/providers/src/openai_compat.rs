@@ -6,48 +6,13 @@
 use crate::traits::{
     ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider,
 };
+use crate::util::{from_reqwest, resolve_api_key};
 use sa_domain::capability::LlmCapabilities;
-use sa_domain::config::{AuthConfig, ProviderConfig};
+use sa_domain::config::ProviderConfig;
 use sa_domain::error::{Error, Result};
 use sa_domain::stream::{BoxStream, StreamEvent, Usage};
 use sa_domain::tool::{ContentPart, Message, MessageContent, Role, ToolCall, ToolDefinition};
 use serde_json::Value;
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Helper: convert reqwest errors
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-pub(crate) fn from_reqwest(e: reqwest::Error) -> Error {
-    if e.is_timeout() {
-        Error::Timeout(e.to_string())
-    } else {
-        Error::Http(e.to_string())
-    }
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Auth resolution
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/// Resolve the API key from an [`AuthConfig`].
-///
-/// Precedence: `key` field > `env` field (reads environment variable) > error.
-pub fn resolve_api_key(auth: &AuthConfig) -> Result<String> {
-    if let Some(ref key) = auth.key {
-        return Ok(key.clone());
-    }
-    if let Some(ref env_var) = auth.env {
-        return std::env::var(env_var).map_err(|_| {
-            Error::Auth(format!(
-                "environment variable '{}' not set or not valid UTF-8",
-                env_var
-            ))
-        });
-    }
-    Err(Error::Auth(
-        "no API key configured: set either 'key' or 'env' in AuthConfig".into(),
-    ))
-}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Adapter struct
@@ -425,8 +390,8 @@ fn parse_sse_data(data: &str) -> Option<Result<StreamEvent>> {
 fn drain_sse_events(buffer: &mut String) -> Vec<Result<StreamEvent>> {
     let mut events = Vec::new();
     while let Some(pos) = buffer.find("\n\n") {
-        let event_block = buffer[..pos].to_string();
-        *buffer = buffer[pos + 2..].to_string();
+        let event_block: String = buffer.drain(..pos).collect();
+        buffer.drain(..2); // remove the \n\n delimiter in-place
 
         for line in event_block.lines() {
             let line = line.trim();

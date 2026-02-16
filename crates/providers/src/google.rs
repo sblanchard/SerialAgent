@@ -3,7 +3,7 @@
 //! Implements the Gemini `generateContent` and `streamGenerateContent` APIs.
 //! Auth is via an API key passed as a query parameter (`key={api_key}`).
 
-use crate::openai_compat::{from_reqwest, resolve_api_key};
+use crate::util::{from_reqwest, resolve_api_key};
 use crate::traits::{
     ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider,
 };
@@ -418,8 +418,8 @@ fn drain_gemini_sse(buffer: &mut String, model: &str) -> Vec<Result<StreamEvent>
     let mut all_events = Vec::new();
 
     while let Some(pos) = buffer.find("\n\n") {
-        let block = buffer[..pos].to_string();
-        *buffer = buffer[pos + 2..].to_string();
+        let block: String = buffer.drain(..pos).collect();
+        buffer.drain(..2); // remove the \n\n delimiter in-place
 
         for line in block.lines() {
             let line = line.trim();

@@ -35,3 +35,13 @@ allowed_origins = ["https://myapp.com", "http://localhost:3000"]
     assert_eq!(config.server.cors.allowed_origins.len(), 2);
     assert!(config.server.cors.allowed_origins.contains(&"https://myapp.com".to_string()));
 }
+
+#[test]
+fn cors_wildcard_port_preserved_in_config() {
+    let toml_str = r#"
+[server.cors]
+allowed_origins = ["http://localhost:*"]
+"#;
+    let config: Config = toml::from_str(toml_str).unwrap();
+    assert_eq!(config.server.cors.allowed_origins[0], "http://localhost:*");
+}
