@@ -97,8 +97,8 @@ impl NodeClientBuilder {
     }
 
     /// Set optional tags for grouping/filtering.
-    pub fn tags(mut self, tags: impl IntoIterator<Item = String>) -> Self {
-        self.tags = tags.into_iter().collect();
+    pub fn tags(mut self, tags: impl Into<Vec<String>>) -> Self {
+        self.tags = tags.into();
         self
     }
 
@@ -149,11 +149,11 @@ impl NodeClientBuilder {
             name: self.name,
             node_type: self.node_type,
             version: self.version,
-            _tags: self.tags,
+            tags: self.tags,
             heartbeat_interval: self.heartbeat_interval,
             reconnect_backoff: self.reconnect_backoff,
             max_concurrent_tools: self.max_concurrent_tools,
-            _max_request_bytes: self.max_request_bytes,
+            max_request_bytes: self.max_request_bytes,
             max_response_bytes: self.max_response_bytes,
         })
     }

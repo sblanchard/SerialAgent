@@ -114,7 +114,7 @@ impl ToolRegistry {
     }
 
     /// Look up a handler by tool name (case-insensitive).
-    pub(crate) fn get(&self, tool_name: &str) -> Option<Arc<dyn NodeTool>> {
+    pub fn get(&self, tool_name: &str) -> Option<Arc<dyn NodeTool>> {
         self.tools.get(&tool_name.to_ascii_lowercase()).cloned()
     }
 }
