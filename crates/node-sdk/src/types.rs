@@ -25,7 +25,8 @@ pub type ToolResult = Result<serde_json::Value, ToolError>;
 /// Errors a tool handler can return.
 ///
 /// The SDK translates these into a `tool_response` with `success: false`
-/// and the error message in the `error` field.
+/// and the error message in the `error` field.  Each variant maps 1:1 to
+/// an [`sa_protocol::ErrorKind`].
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum ToolError {
     #[error("invalid_args: {0}")]
@@ -36,6 +37,10 @@ pub enum ToolError {
     Failed(String),
     #[error("timeout: {0}")]
     Timeout(String),
+    #[error("cancelled: {0}")]
+    Cancelled(String),
+    #[error("not_found: {0}")]
+    NotFound(String),
 }
 
 /// Top-level SDK error.

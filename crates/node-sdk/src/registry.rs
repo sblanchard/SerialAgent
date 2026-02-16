@@ -84,10 +84,18 @@ impl ToolRegistry {
     /// The name is normalized to lowercase so that registry matching is
     /// case-insensitive and stable regardless of caller casing.
     ///
+    /// # Panics
+    ///
+    /// Panics if `name` fails [`sa_protocol::validate_capability`] after
+    /// normalization.
+    ///
     /// Returns `&mut Self` for method chaining.
     pub fn register<T: NodeTool>(&mut self, name: impl Into<String>, tool: T) -> &mut Self {
-        self.tools
-            .insert(name.into().to_ascii_lowercase(), Arc::new(tool));
+        let name = name.into().to_ascii_lowercase();
+        if let Err(reason) = sa_protocol::validate_capability(&name) {
+            panic!("invalid tool name \"{name}\": {reason}");
+        }
+        self.tools.insert(name, Arc::new(tool));
         self
     }
 
@@ -96,14 +104,22 @@ impl ToolRegistry {
     /// Use this when you need to store tools in variables, inject wrappers,
     /// or construct handlers dynamically.
     ///
+    /// # Panics
+    ///
+    /// Panics if `name` fails [`sa_protocol::validate_capability`] after
+    /// normalization.
+    ///
     /// Returns `&mut Self` for method chaining.
     pub fn register_boxed(
         &mut self,
         name: impl Into<String>,
         tool: Arc<dyn NodeTool>,
     ) -> &mut Self {
-        self.tools
-            .insert(name.into().to_ascii_lowercase(), tool);
+        let name = name.into().to_ascii_lowercase();
+        if let Err(reason) = sa_protocol::validate_capability(&name) {
+            panic!("invalid tool name \"{name}\": {reason}");
+        }
+        self.tools.insert(name, tool);
         self
     }
 
@@ -115,10 +131,18 @@ impl ToolRegistry {
     /// This is advertised in `node_hello` and used by the gateway's
     /// capability router to route `tool_request`s to this node.
     ///
+    /// # Panics
+    ///
+    /// Panics if the prefix (after normalization) fails
+    /// [`sa_protocol::validate_capability`].
+    ///
     /// Returns `&mut Self` for method chaining.
     pub fn add_capability_prefix(&mut self, prefix: impl Into<String>) -> &mut Self {
         let normalized = prefix.into().to_ascii_lowercase();
         let normalized = normalized.strip_suffix('.').unwrap_or(&normalized).to_string();
+        if let Err(reason) = sa_protocol::validate_capability(&normalized) {
+            panic!("invalid capability prefix \"{normalized}\": {reason}");
+        }
         self.capability_prefixes.insert(normalized);
         self
     }
