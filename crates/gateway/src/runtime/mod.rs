@@ -5,6 +5,7 @@
 //! stream of [`TurnEvent`]s suitable for SSE or non-streaming aggregation.
 
 pub mod cancel;
+pub mod compact;
 pub mod session_lock;
 pub mod tools;
 
@@ -19,7 +20,7 @@ use sa_contextpack::builder::{ContextPackBuilder, SessionMode};
 use sa_domain::stream::{StreamEvent, Usage};
 use sa_domain::tool::{Message, MessageContent, Role, ToolCall};
 use sa_memory::UserFactsBuilder;
-use sa_sessions::transcript::TranscriptWriter;
+use sa_sessions::transcript::{TranscriptLine, TranscriptWriter};
 
 use crate::state::AppState;
 
@@ -147,19 +148,67 @@ async fn run_turn_inner(
     // 2. Build system context.
     let system_prompt = build_system_context(&state).await;
 
-    // 3. Load transcript history.
-    let history = load_transcript_history(&state.transcripts, &input.session_id);
+    // 3. Load raw transcript and check compaction.
+    let mut all_lines = load_raw_transcript(&state.transcripts, &input.session_id);
 
-    // 4. Build the tool definitions.
+    if compact::should_compact(&all_lines, &state.config.compaction) {
+        // Pick the summarizer (or fall back to the executor provider).
+        let summarizer = resolve_summarizer(&state).unwrap_or_else(|| provider.clone());
+        match compact::run_compaction(
+            summarizer.as_ref(),
+            &state.transcripts,
+            &input.session_id,
+            &all_lines,
+            &state.config.compaction,
+        )
+        .await
+        {
+            Ok(summary) => {
+                // Optionally ingest the summary to long-term memory.
+                if state.config.memory_lifecycle.capture_on_compaction && !summary.is_empty() {
+                    let memory = state.memory.clone();
+                    let sk = input.session_key.clone();
+                    let sid = input.session_id.clone();
+                    tokio::spawn(async move {
+                        let req = sa_memory::MemoryIngestRequest {
+                            content: format!("Session summary (compacted):\n{summary}"),
+                            source: Some("session_summary".into()),
+                            session_id: Some(sid),
+                            metadata: Some(std::collections::HashMap::from([(
+                                "session_key".into(),
+                                serde_json::json!(sk),
+                            )])),
+                            extract_entities: Some(true),
+                        };
+                        if let Err(e) = memory.ingest(req).await {
+                            tracing::warn!(error = %e, "compaction memory ingest failed");
+                        }
+                    });
+                }
+
+                // Reload transcript (now includes the compaction marker).
+                all_lines = load_raw_transcript(&state.transcripts, &input.session_id);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "auto-compaction failed, continuing with full history");
+            }
+        }
+    }
+
+    // 4. Convert active transcript lines (after last compaction) to messages.
+    let boundary = compact::compaction_boundary(&all_lines);
+    let history = transcript_lines_to_messages(&all_lines[boundary..]);
+
+    // 5. Build the tool definitions.
     let tool_defs = tools::build_tool_definitions(&state);
 
-    // 5. Build conversation messages.
+    // 6. Build conversation messages.
     let mut messages = Vec::new();
     messages.push(Message::system(&system_prompt));
     messages.extend(history);
     messages.push(Message::user(&input.user_message));
 
-    // 6. Persist user message to transcript.
+    // 7. Persist user message to transcript.
     persist_transcript(
         &state.transcripts,
         &input.session_id,
@@ -168,7 +217,7 @@ async fn run_turn_inner(
         None,
     );
 
-    // 7. Tool loop.
+    // 8. Tool loop.
     let mut total_usage = Usage {
         prompt_tokens: 0,
         completion_tokens: 0,
@@ -331,6 +380,31 @@ async fn run_turn_inner(
                 total_usage.completion_tokens as u64,
             );
 
+            // ── Memory auto-capture (fire-and-forget) ─────────────
+            if state.config.memory_lifecycle.auto_capture {
+                let memory = state.memory.clone();
+                let user_msg = input.user_message.clone();
+                let final_text = text_buf;
+                let sk = input.session_key.clone();
+                let sid = input.session_id.clone();
+                tokio::spawn(async move {
+                    let content = format!("User: {user_msg}\n---\nAssistant: {final_text}");
+                    let req = sa_memory::MemoryIngestRequest {
+                        content,
+                        source: Some("auto_capture".into()),
+                        session_id: Some(sid),
+                        metadata: Some(std::collections::HashMap::from([(
+                            "session_key".into(),
+                            serde_json::json!(sk),
+                        )])),
+                        extract_entities: Some(true),
+                    };
+                    if let Err(e) = memory.ingest(req).await {
+                        tracing::warn!(error = %e, "auto-capture memory ingest failed");
+                    }
+                });
+            }
+
             return Ok(());
         }
 
@@ -447,6 +521,15 @@ fn resolve_provider(
         .into())
 }
 
+/// Resolve the "summarizer" role provider for compaction. Falls back to executor.
+fn resolve_summarizer(state: &AppState) -> Option<Arc<dyn sa_providers::LlmProvider>> {
+    state
+        .llm
+        .for_role("summarizer")
+        .or_else(|| state.llm.for_role("executor"))
+        .or_else(|| state.llm.iter().next().map(|(_, p)| p.clone()))
+}
+
 async fn build_system_context(state: &AppState) -> String {
     let is_first_run = state.bootstrap.is_first_run("default");
     let session_mode = if is_first_run {
@@ -494,11 +577,16 @@ async fn build_system_context(state: &AppState) -> String {
     assembled
 }
 
-fn load_transcript_history(
+fn load_raw_transcript(
     transcripts: &Arc<TranscriptWriter>,
     session_id: &str,
-) -> Vec<Message> {
-    let lines = transcripts.read(session_id).unwrap_or_default();
+) -> Vec<TranscriptLine> {
+    transcripts.read(session_id).unwrap_or_default()
+}
+
+/// Convert transcript lines to LLM messages. Respects compaction markers
+/// (they become system messages).
+fn transcript_lines_to_messages(lines: &[TranscriptLine]) -> Vec<Message> {
     let mut messages = Vec::new();
 
     for line in lines {
@@ -522,7 +610,7 @@ fn load_transcript_history(
 
         messages.push(Message {
             role,
-            content: MessageContent::Text(line.content),
+            content: MessageContent::Text(line.content.clone()),
         });
     }
 

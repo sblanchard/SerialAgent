@@ -26,6 +26,10 @@ pub struct Config {
     pub tools: ToolsConfig,
     #[serde(default)]
     pub pruning: PruningConfig,
+    #[serde(default)]
+    pub compaction: CompactionConfig,
+    #[serde(default)]
+    pub memory_lifecycle: MemoryLifecycleConfig,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -303,6 +307,10 @@ pub struct SessionsConfig {
     /// Session lifecycle rules (resets, idle timeouts).
     #[serde(default)]
     pub lifecycle: LifecycleConfig,
+
+    /// Send policy — controls whether the agent responds in different contexts.
+    #[serde(default)]
+    pub send_policy: SendPolicyConfig,
 }
 
 impl Default for SessionsConfig {
@@ -312,6 +320,7 @@ impl Default for SessionsConfig {
             dm_scope: DmScope::PerChannelPeer,
             identity_links: Vec::new(),
             lifecycle: LifecycleConfig::default(),
+            send_policy: SendPolicyConfig::default(),
         }
     }
 }
@@ -551,6 +560,96 @@ impl Default for HardClearConfig {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Send policy
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Controls whether the agent responds in different channel contexts.
+/// The secure default denies group responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendPolicyConfig {
+    /// Default policy for all channels.
+    #[serde(default = "d_allow")]
+    pub default: SendPolicyMode,
+    /// Deny responses in group chats by default (secure default).
+    #[serde(default = "d_true")]
+    pub deny_groups: bool,
+    /// Per-channel overrides.
+    #[serde(default)]
+    pub channel_overrides: HashMap<String, SendPolicyMode>,
+}
+
+impl Default for SendPolicyConfig {
+    fn default() -> Self {
+        Self {
+            default: SendPolicyMode::Allow,
+            deny_groups: true,
+            channel_overrides: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SendPolicyMode {
+    Allow,
+    Deny,
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Compaction
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Compaction collapses old conversation history into a summary so the
+/// context window doesn't overflow after many turns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionConfig {
+    /// Enable automatic compaction when turn count exceeds `max_turns`.
+    #[serde(default = "d_true")]
+    pub auto: bool,
+    /// Maximum turns (user messages) before auto-compaction triggers.
+    #[serde(default = "d_80")]
+    pub max_turns: usize,
+    /// Number of recent turns to keep verbatim after compaction.
+    #[serde(default = "d_12")]
+    pub keep_last_turns: usize,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            auto: true,
+            max_turns: 80,
+            keep_last_turns: 12,
+        }
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Memory lifecycle
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Controls automatic memory capture — the always-on behaviour that
+/// makes the agent feel alive across sessions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryLifecycleConfig {
+    /// Automatically capture each turn to long-term memory.
+    #[serde(default = "d_true")]
+    pub auto_capture: bool,
+    /// Ingest a session summary to memory when compaction runs.
+    #[serde(default = "d_true")]
+    pub capture_on_compaction: bool,
+}
+
+impl Default for MemoryLifecycleConfig {
+    fn default() -> Self {
+        Self {
+            auto_capture: true,
+            capture_on_compaction: true,
+        }
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Default value helpers (serde)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -649,4 +748,13 @@ fn d_1500() -> usize {
 }
 fn d_placeholder() -> String {
     "[Old tool result content cleared]".into()
+}
+fn d_80() -> usize {
+    80
+}
+fn d_12() -> usize {
+    12
+}
+fn d_allow() -> SendPolicyMode {
+    SendPolicyMode::Allow
 }

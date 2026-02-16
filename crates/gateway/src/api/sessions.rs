@@ -275,6 +275,72 @@ pub async fn stop_session(
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// POST /v1/sessions/:key/compact  — manual compaction
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub async fn compact_session(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> impl IntoResponse {
+    let entry = match state.sessions.get(&key) {
+        Some(e) => e,
+        None => {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "session not found" })),
+            )
+                .into_response();
+        }
+    };
+
+    // Resolve the summarizer provider.
+    let provider = match crate::runtime::compact::resolve_compaction_provider(&state) {
+        Some(p) => p,
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": "no LLM provider available for compaction"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let lines = state
+        .transcripts
+        .read(&entry.session_id)
+        .unwrap_or_default();
+    let turn_count = crate::runtime::compact::active_turn_count(&lines);
+
+    match crate::runtime::compact::run_compaction(
+        provider.as_ref(),
+        &state.transcripts,
+        &entry.session_id,
+        &lines,
+        &state.config.compaction,
+    )
+    .await
+    {
+        Ok(summary) => Json(serde_json::json!({
+            "session_key": key,
+            "session_id": entry.session_id,
+            "compacted": true,
+            "turns_before": turn_count,
+            "summary_length": summary.len(),
+        }))
+        .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("compaction failed: {e}"),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Helpers
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
