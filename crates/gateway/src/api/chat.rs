@@ -124,6 +124,9 @@ pub async fn chat(
                     "total_tokens": total_tokens,
                 }));
             }
+            TurnEvent::Stopped { content } => {
+                final_content = content;
+            }
             TurnEvent::Error { message } => errors.push(message),
             TurnEvent::AssistantDelta { .. } => { /* ignored in non-streaming */ }
         }
@@ -211,6 +214,7 @@ fn make_sse_stream(
                 TurnEvent::ToolCallEvent { .. } => "tool_call",
                 TurnEvent::ToolResult { .. } => "tool_result",
                 TurnEvent::Final { .. } => "final",
+                TurnEvent::Stopped { .. } => "stopped",
                 TurnEvent::Error { .. } => "error",
                 TurnEvent::UsageEvent { .. } => "usage",
             };
