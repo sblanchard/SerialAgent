@@ -150,6 +150,8 @@ async fn main() -> anyhow::Result<()> {
         cancel_map,
         agents: None,
         dedupe,
+        user_facts_cache: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
+        tool_defs_cache: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
     };
 
     // ── Agent manager (sub-agents) ──────────────────────────────────
@@ -168,7 +170,7 @@ async fn main() -> anyhow::Result<()> {
             );
             loop {
                 interval.tick().await;
-                if let Err(e) = sessions.flush() {
+                if let Err(e) = sessions.flush().await {
                     tracing::warn!(error = %e, "session store flush failed");
                 }
             }
