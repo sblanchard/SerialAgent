@@ -91,7 +91,7 @@ impl AnthropicProvider {
         for msg in &req.messages {
             match msg.role {
                 Role::System => {
-                    system_parts.push(extract_text(&msg.content));
+                    system_parts.push(msg.content.extract_all_text());
                 }
                 Role::User => {
                     api_messages.push(user_msg_to_anthropic(msg));
@@ -135,20 +135,6 @@ impl AnthropicProvider {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Message serialization helpers
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-fn extract_text(content: &MessageContent) -> String {
-    match content {
-        MessageContent::Text(t) => t.clone(),
-        MessageContent::Parts(parts) => parts
-            .iter()
-            .filter_map(|p| match p {
-                ContentPart::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
-}
 
 fn user_msg_to_anthropic(msg: &Message) -> Value {
     match &msg.content {
