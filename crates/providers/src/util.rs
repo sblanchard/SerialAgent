@@ -20,6 +20,10 @@ pub(crate) fn from_reqwest(e: reqwest::Error) -> Error {
 /// Precedence: `key` field > `env` field (reads environment variable) > error.
 pub fn resolve_api_key(auth: &AuthConfig) -> Result<String> {
     if let Some(ref key) = auth.key {
+        tracing::warn!(
+            "API key loaded from plaintext config field 'key' — \
+             prefer 'env' to reference an environment variable instead"
+        );
         return Ok(key.clone());
     }
     if let Some(ref env_var) = auth.env {
