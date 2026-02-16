@@ -30,6 +30,8 @@ pub struct Config {
     pub compaction: CompactionConfig,
     #[serde(default)]
     pub memory_lifecycle: MemoryLifecycleConfig,
+    #[serde(default)]
+    pub admin: AdminConfig,
     /// Sub-agent definitions (key = agent_id).
     #[serde(default)]
     pub agents: HashMap<String, AgentConfig>,
@@ -811,6 +813,30 @@ impl Default for MemoryLifecycleConfig {
             capture_on_compaction: true,
         }
     }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Admin
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminConfig {
+    /// Environment variable holding the admin bearer token.
+    /// If the env var is unset, admin endpoints are **disabled** (403).
+    #[serde(default = "d_admin_token_env")]
+    pub token_env: String,
+}
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            token_env: d_admin_token_env(),
+        }
+    }
+}
+
+fn d_admin_token_env() -> String {
+    "SA_ADMIN_TOKEN".into()
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

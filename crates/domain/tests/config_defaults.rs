@@ -45,3 +45,9 @@ allowed_origins = ["http://localhost:*"]
     let config: Config = toml::from_str(toml_str).unwrap();
     assert_eq!(config.server.cors.allowed_origins[0], "http://localhost:*");
 }
+
+#[test]
+fn admin_token_env_default() {
+    let config = Config::default();
+    assert_eq!(config.admin.token_env, "SA_ADMIN_TOKEN");
+}
