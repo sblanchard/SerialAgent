@@ -13,7 +13,7 @@
 //! - Outbound action assembly
 
 use std::collections::HashMap;
-use std::sync::Arc;
+
 use std::time::{Duration, Instant};
 
 use axum::extract::State;
@@ -461,8 +461,7 @@ pub async fn inbound(
         agent: None,
     };
 
-    let state_arc = Arc::new(state.clone());
-    let mut rx = run_turn(state_arc, input);
+    let mut rx = run_turn(state.clone(), input);
 
     // ── 9. Build outbound actions ─────────────────────────────────
     let mut actions = Vec::new();

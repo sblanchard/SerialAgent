@@ -1,6 +1,7 @@
 //! In-memory registry of connected nodes and their capabilities.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
@@ -51,6 +52,9 @@ pub struct NodeRegistry {
     /// Per-node allowlists: node_id → allowed capability prefixes.
     /// If a node_id has no entry, all capabilities are allowed.
     allowlists: RwLock<HashMap<String, Vec<String>>>,
+    /// Monotonically increasing counter, bumped on every register/remove.
+    /// Used by tool-definition caching to detect staleness.
+    generation: AtomicU64,
 }
 
 impl Default for NodeRegistry {
@@ -64,7 +68,14 @@ impl NodeRegistry {
         Self {
             nodes: RwLock::new(HashMap::new()),
             allowlists: RwLock::new(HashMap::new()),
+            generation: AtomicU64::new(0),
         }
+    }
+
+    /// Return the current generation counter. Callers can compare this
+    /// against a cached value to detect topology changes.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
     }
 
     /// Configure per-node capability allowlists from `SA_NODE_CAPS` env var.
@@ -116,7 +127,10 @@ impl NodeRegistry {
             .into_iter()
             .filter(|cap| {
                 allowed.iter().any(|prefix| {
-                    cap == prefix || cap.starts_with(&format!("{prefix}."))
+                    cap == prefix
+                        || (cap.len() > prefix.len()
+                            && cap.starts_with(prefix.as_str())
+                            && cap.as_bytes()[prefix.len()] == b'.')
                 })
             })
             .collect();
@@ -149,11 +163,13 @@ impl NodeRegistry {
             "node registered"
         );
         self.nodes.write().insert(id, node);
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Remove a node (on disconnect).
     pub fn remove(&self, node_id: &str) {
         if self.nodes.write().remove(node_id).is_some() {
+            self.generation.fetch_add(1, Ordering::Relaxed);
             tracing::info!(node_id = %node_id, "node removed");
         }
     }
@@ -206,7 +222,9 @@ impl NodeRegistry {
 
             for cap in &node.capabilities {
                 let matches = tool_name == cap.as_str()
-                    || tool_name.starts_with(&format!("{cap}."));
+                    || (tool_name.len() > cap.len()
+                        && tool_name.starts_with(cap.as_str())
+                        && tool_name.as_bytes()[cap.len()] == b'.');
                 if !matches {
                     continue;
                 }
@@ -274,6 +292,7 @@ impl NodeRegistry {
         });
         let pruned = before - nodes.len();
         if pruned > 0 {
+            self.generation.fetch_add(1, Ordering::Relaxed);
             tracing::info!(pruned, remaining = nodes.len(), "pruned stale nodes");
         }
     }
