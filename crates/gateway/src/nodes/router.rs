@@ -70,6 +70,10 @@ pub struct ToolRouter {
     pending: Mutex<HashMap<String, PendingRequest>>,
     /// Timeout for node tool requests.
     timeout: Duration,
+    /// Maximum pending requests per node (0 = unlimited).
+    max_pending_per_node: usize,
+    /// Maximum pending requests globally (0 = unlimited).
+    max_pending_global: usize,
 }
 
 impl ToolRouter {
@@ -78,6 +82,8 @@ impl ToolRouter {
             nodes,
             pending: Mutex::new(HashMap::new()),
             timeout: Duration::from_secs(timeout_secs),
+            max_pending_per_node: 50,
+            max_pending_global: 200,
         }
     }
 
@@ -99,6 +105,9 @@ impl ToolRouter {
     }
 
     /// Dispatch a tool call to a connected node and wait for the response.
+    ///
+    /// Enforces `max_pending_per_node` and `max_pending_global` to prevent
+    /// one buggy node from deadlocking the tool router.
     pub async fn dispatch_to_node(
         &self,
         node_id: &str,
@@ -106,6 +115,35 @@ impl ToolRouter {
         arguments: Value,
         session_key: Option<String>,
     ) -> ToolRouteResult {
+        // ── Bounded pending check ──────────────────────────────────
+        {
+            let pending = self.pending.lock();
+            if self.max_pending_global > 0 && pending.len() >= self.max_pending_global {
+                return ToolRouteResult {
+                    success: false,
+                    result: Value::Null,
+                    error: Some(format!(
+                        "global pending limit reached ({} requests in-flight)",
+                        pending.len()
+                    )),
+                    routed_to: format!("node:{node_id}"),
+                };
+            }
+            if self.max_pending_per_node > 0 {
+                let node_count = pending.values().filter(|pr| pr.node_id == node_id).count();
+                if node_count >= self.max_pending_per_node {
+                    return ToolRouteResult {
+                        success: false,
+                        result: Value::Null,
+                        error: Some(format!(
+                            "per-node pending limit reached ({node_count} requests in-flight for node {node_id})"
+                        )),
+                        routed_to: format!("node:{node_id}"),
+                    };
+                }
+            }
+        }
+
         let request_id = uuid::Uuid::new_v4().to_string();
 
         // Create the pending request channel.

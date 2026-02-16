@@ -152,9 +152,15 @@ async fn run_turn_inner(
     let system_prompt = build_system_context(&state, input.agent.as_ref()).await;
 
     // 3. Load raw transcript and check compaction.
+    //    Child agents have compaction disabled by default (short-lived sessions).
     let mut all_lines = load_raw_transcript(&state.transcripts, &input.session_id);
 
-    if compact::should_compact(&all_lines, &state.config.compaction) {
+    let compaction_enabled = input
+        .agent
+        .as_ref()
+        .map_or(state.config.compaction.auto, |a| a.compaction_enabled);
+
+    if compaction_enabled && compact::should_compact(&all_lines, &state.config.compaction) {
         // Pick the summarizer (or fall back to the executor provider).
         let summarizer = resolve_summarizer(&state).unwrap_or_else(|| provider.clone());
         match compact::run_compaction(
@@ -172,15 +178,22 @@ async fn run_turn_inner(
                     let memory = state.memory.clone();
                     let sk = input.session_key.clone();
                     let sid = input.session_id.clone();
+                    // Build provenance metadata (includes agent fields for child agents).
+                    let mut meta = agent::provenance_metadata(
+                        input.agent.as_ref(),
+                        &sk,
+                        &sid,
+                    )
+                    .unwrap_or_default();
+                    meta.insert("compaction".into(), serde_json::json!(true));
+                    meta.insert("session_key".into(), serde_json::json!(&sk));
+
                     tokio::spawn(async move {
                         let req = sa_memory::MemoryIngestRequest {
                             content: format!("Session summary (compacted):\n{summary}"),
                             source: Some("session_summary".into()),
                             session_id: Some(sid),
-                            metadata: Some(std::collections::HashMap::from([(
-                                "session_key".into(),
-                                serde_json::json!(sk),
-                            )])),
+                            metadata: Some(meta),
                             extract_entities: Some(true),
                         };
                         if let Err(e) = memory.ingest(req).await {
@@ -391,16 +404,22 @@ async fn run_turn_inner(
                 let final_text = text_buf;
                 let sk = input.session_key.clone();
                 let sid = input.session_id.clone();
+                // Build provenance metadata (includes agent fields for child agents).
+                let mut meta = agent::provenance_metadata(
+                    input.agent.as_ref(),
+                    &sk,
+                    &sid,
+                )
+                .unwrap_or_default();
+                meta.insert("session_key".into(), serde_json::json!(&sk));
+
                 tokio::spawn(async move {
                     let content = format!("User: {user_msg}\n---\nAssistant: {final_text}");
                     let req = sa_memory::MemoryIngestRequest {
                         content,
                         source: Some("auto_capture".into()),
                         session_id: Some(sid),
-                        metadata: Some(std::collections::HashMap::from([(
-                            "session_key".into(),
-                            serde_json::json!(sk),
-                        )])),
+                        metadata: Some(meta),
                         extract_entities: Some(true),
                     };
                     if let Err(e) = memory.ingest(req).await {
@@ -455,6 +474,7 @@ async fn run_turn_inner(
                 &tc.tool_name,
                 &tc.arguments,
                 Some(&input.session_key),
+                input.agent.as_ref(),
             )
             .await;
 
