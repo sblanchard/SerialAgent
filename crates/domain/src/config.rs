@@ -609,7 +609,8 @@ pub struct AgentLimits {
     #[serde(default = "d_5")]
     pub max_children_per_turn: u32,
     /// Wall-clock timeout per child run (milliseconds). 0 = no limit.
-    #[serde(default = "d_120000")]
+    /// Default 30s — override per-agent for batch workers that need more.
+    #[serde(default = "d_30000")]
     pub max_duration_ms: u64,
 }
 
@@ -618,7 +619,7 @@ impl Default for AgentLimits {
         Self {
             max_depth: 3,
             max_children_per_turn: 5,
-            max_duration_ms: 120_000,
+            max_duration_ms: 30_000,
         }
     }
 }
@@ -877,8 +878,8 @@ fn d_allow() -> SendPolicyMode {
 fn d_5() -> u32 {
     5
 }
-fn d_120000() -> u64 {
-    120_000
+fn d_30000() -> u64 {
+    30_000
 }
 
 #[cfg(test)]
@@ -956,6 +957,6 @@ mod tests {
         let limits = AgentLimits::default();
         assert_eq!(limits.max_depth, 3);
         assert_eq!(limits.max_children_per_turn, 5);
-        assert_eq!(limits.max_duration_ms, 120_000);
+        assert_eq!(limits.max_duration_ms, 30_000);
     }
 }

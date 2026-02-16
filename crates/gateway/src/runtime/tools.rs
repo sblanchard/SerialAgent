@@ -229,6 +229,9 @@ pub fn all_base_tool_names(state: &AppState) -> Vec<String> {
 ///
 /// `agent_ctx` carries the parent agent's context (for depth guards,
 /// provenance metadata on memory calls, etc.).
+///
+/// **Important**: ToolPolicy is enforced here at dispatch time (not just
+/// at definition time) to block hallucinated/injected tool names.
 pub async fn dispatch_tool(
     state: &AppState,
     tool_name: &str,
@@ -236,6 +239,22 @@ pub async fn dispatch_tool(
     session_key: Option<&str>,
     agent_ctx: Option<&AgentContext>,
 ) -> (String, bool) {
+    // ── Enforce ToolPolicy at dispatch time ──────────────────────
+    // Definition-time filtering is necessary but not sufficient:
+    // models can hallucinate tool names, and future code paths might
+    // call dispatch directly.
+    if let Some(ctx) = agent_ctx {
+        if !ctx.tool_policy.allows(tool_name) {
+            return (
+                format!(
+                    "tool '{}' is not permitted by this agent's tool policy (agent: {})",
+                    tool_name, ctx.agent_id
+                ),
+                true,
+            );
+        }
+    }
+
     // Handle our built-in tools first.
     match tool_name {
         "exec" => dispatch_exec(state, arguments).await,
