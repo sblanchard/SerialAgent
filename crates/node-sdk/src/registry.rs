@@ -109,14 +109,17 @@ impl ToolRegistry {
 
     /// Add a capability prefix (e.g. `"macos.clipboard"`).
     ///
-    /// The prefix is normalized to lowercase for stable matching.
+    /// The prefix is normalized to lowercase and any trailing `.` is stripped
+    /// so that `"macos.notes."` and `"macos.notes"` resolve to the same entry.
     ///
     /// This is advertised in `node_hello` and used by the gateway's
     /// capability router to route `tool_request`s to this node.
     ///
     /// Returns `&mut Self` for method chaining.
     pub fn add_capability_prefix(&mut self, prefix: impl Into<String>) -> &mut Self {
-        self.capability_prefixes.insert(prefix.into().to_ascii_lowercase());
+        let normalized = prefix.into().to_ascii_lowercase();
+        let normalized = normalized.strip_suffix('.').unwrap_or(&normalized).to_string();
+        self.capability_prefixes.insert(normalized);
         self
     }
 
@@ -248,6 +251,15 @@ mod tests {
     fn capability_prefixes_normalized() {
         let mut reg = ToolRegistry::new();
         reg.add_capability_prefix("Macos.Notes");
+        assert_eq!(reg.capabilities(), vec!["macos.notes"]);
+    }
+
+    #[test]
+    fn trailing_dot_stripped_from_prefix() {
+        let mut reg = ToolRegistry::new();
+        reg.add_capability_prefix("macos.notes.");
+        reg.add_capability_prefix("macos.notes");
+        // Both should collapse to the same entry.
         assert_eq!(reg.capabilities(), vec!["macos.notes"]);
     }
 
