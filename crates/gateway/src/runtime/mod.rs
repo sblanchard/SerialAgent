@@ -4,6 +4,7 @@
 //! Entry point: [`run_turn`] takes a session + user message and returns a
 //! stream of [`TurnEvent`]s suitable for SSE or non-streaming aggregation.
 
+pub mod cancel;
 pub mod session_lock;
 pub mod tools;
 
@@ -21,6 +22,8 @@ use sa_memory::UserFactsBuilder;
 use sa_sessions::transcript::TranscriptWriter;
 
 use crate::state::AppState;
+
+use self::cancel::CancelToken;
 
 /// Maximum number of tool-call loops before we force-stop.
 const MAX_TOOL_LOOPS: usize = 25;
@@ -59,6 +62,13 @@ pub enum TurnEvent {
     #[serde(rename = "final")]
     Final { content: String },
 
+    /// The turn was stopped by a cancellation request.
+    #[serde(rename = "stopped")]
+    Stopped {
+        /// Partial content accumulated before the stop.
+        content: String,
+    },
+
     /// An error occurred.
     #[serde(rename = "error")]
     Error { message: String },
@@ -93,14 +103,27 @@ pub struct TurnInput {
 ///
 /// Returns a channel receiver of [`TurnEvent`]s (the caller reads events
 /// as they arrive for SSE streaming, or drains them for non-streaming).
+///
+/// Registers a cancel token so `POST /v1/sessions/:key/stop` can abort
+/// the turn cleanly.
 pub fn run_turn(
     state: Arc<AppState>,
     input: TurnInput,
 ) -> mpsc::Receiver<TurnEvent> {
     let (tx, rx) = mpsc::channel::<TurnEvent>(64);
 
+    // Register a cancel token for this session.
+    let cancel_token = state.cancel_map.register(&input.session_key);
+    let session_key = input.session_key.clone();
+    let state_ref = state.clone();
+
     tokio::spawn(async move {
-        if let Err(e) = run_turn_inner(state, input, tx.clone()).await {
+        let result = run_turn_inner(state_ref.clone(), input, tx.clone(), &cancel_token).await;
+
+        // Cleanup: remove the cancel token.
+        state_ref.cancel_map.remove(&session_key);
+
+        if let Err(e) = result {
             let _ = tx
                 .send(TurnEvent::Error {
                     message: e.to_string(),
@@ -116,6 +139,7 @@ async fn run_turn_inner(
     state: Arc<AppState>,
     input: TurnInput,
     tx: mpsc::Sender<TurnEvent>,
+    cancel: &CancelToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 1. Resolve the LLM provider.
     let provider = resolve_provider(&state, input.model.as_deref())?;
@@ -152,6 +176,23 @@ async fn run_turn_inner(
     };
 
     for loop_idx in 0..MAX_TOOL_LOOPS {
+        // ── Check cancellation before each LLM call ──────────────
+        if cancel.is_cancelled() {
+            persist_transcript(
+                &state.transcripts,
+                &input.session_id,
+                "system",
+                "[run aborted by user]",
+                Some(serde_json::json!({ "stopped": true })),
+            );
+            let _ = tx
+                .send(TurnEvent::Stopped {
+                    content: String::new(),
+                })
+                .await;
+            return Ok(());
+        }
+
         // Call LLM (streaming).
         let req = sa_providers::ChatRequest {
             messages: messages.clone(),
@@ -168,12 +209,19 @@ async fn run_turn_inner(
         let mut text_buf = String::new();
         let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
         let mut turn_usage: Option<Usage> = None;
+        let mut was_cancelled = false;
 
         // Tool call assembly state.
         let mut tc_bufs: std::collections::HashMap<String, (String, String)> =
             std::collections::HashMap::new(); // call_id -> (name, args_json)
 
         while let Some(event_result) = stream.next().await {
+            // Check cancellation during streaming.
+            if cancel.is_cancelled() {
+                was_cancelled = true;
+                break;
+            }
+
             let event = event_result?;
             match event {
                 StreamEvent::Token { text } => {
@@ -203,7 +251,6 @@ async fn run_turn_inner(
                         tool_name: tool_name.clone(),
                         arguments: arguments.clone(),
                     });
-                    // Remove from partial buffer.
                     tc_bufs.remove(&call_id);
                 }
                 StreamEvent::Done {
@@ -217,6 +264,23 @@ async fn run_turn_inner(
                     return Ok(());
                 }
             }
+        }
+
+        // Handle cancellation during streaming.
+        if was_cancelled {
+            persist_transcript(
+                &state.transcripts,
+                &input.session_id,
+                "system",
+                &format!("[run aborted by user] partial: {text_buf}"),
+                Some(serde_json::json!({ "stopped": true })),
+            );
+            let _ = tx
+                .send(TurnEvent::Stopped {
+                    content: text_buf,
+                })
+                .await;
+            return Ok(());
         }
 
         // Assemble any tool calls that came through start/delta but not
@@ -239,7 +303,6 @@ async fn run_turn_inner(
 
         // If no tool calls, this is the final answer.
         if pending_tool_calls.is_empty() {
-            // Persist assistant message.
             persist_transcript(
                 &state.transcripts,
                 &input.session_id,
@@ -254,7 +317,6 @@ async fn run_turn_inner(
                 })
                 .await;
 
-            // Emit usage.
             let _ = tx
                 .send(TurnEvent::UsageEvent {
                     input_tokens: total_usage.prompt_tokens,
@@ -263,7 +325,6 @@ async fn run_turn_inner(
                 })
                 .await;
 
-            // Update session token counters.
             state.sessions.record_usage(
                 &input.session_key,
                 total_usage.prompt_tokens as u64,
@@ -274,10 +335,8 @@ async fn run_turn_inner(
         }
 
         // ── Tool dispatch ──────────────────────────────────────────
-        // Build assistant message with tool calls for the messages array.
         messages.push(build_assistant_tool_message(&text_buf, &pending_tool_calls));
 
-        // Persist assistant tool-call message.
         let tc_json = serde_json::to_string(&pending_tool_calls).unwrap_or_default();
         persist_transcript(
             &state.transcripts,
@@ -287,9 +346,24 @@ async fn run_turn_inner(
             Some(serde_json::json!({ "tool_calls": tc_json })),
         );
 
-        // Dispatch each tool call.
         for tc in &pending_tool_calls {
-            // Emit tool_call event.
+            // Check cancellation before each tool dispatch.
+            if cancel.is_cancelled() {
+                persist_transcript(
+                    &state.transcripts,
+                    &input.session_id,
+                    "system",
+                    "[run aborted by user during tool dispatch]",
+                    Some(serde_json::json!({ "stopped": true })),
+                );
+                let _ = tx
+                    .send(TurnEvent::Stopped {
+                        content: text_buf.clone(),
+                    })
+                    .await;
+                return Ok(());
+            }
+
             let _ = tx
                 .send(TurnEvent::ToolCallEvent {
                     call_id: tc.call_id.clone(),
@@ -298,7 +372,6 @@ async fn run_turn_inner(
                 })
                 .await;
 
-            // Dispatch.
             let (result_content, is_error) = tools::dispatch_tool(
                 &state,
                 &tc.tool_name,
@@ -307,7 +380,6 @@ async fn run_turn_inner(
             )
             .await;
 
-            // Emit tool_result event.
             let _ = tx
                 .send(TurnEvent::ToolResult {
                     call_id: tc.call_id.clone(),
@@ -317,10 +389,8 @@ async fn run_turn_inner(
                 })
                 .await;
 
-            // Build tool result message.
             messages.push(Message::tool_result(&tc.call_id, &result_content));
 
-            // Persist tool result to transcript.
             persist_transcript(
                 &state.transcripts,
                 &input.session_id,
@@ -356,7 +426,6 @@ fn resolve_provider(
     state: &AppState,
     model_override: Option<&str>,
 ) -> Result<Arc<dyn sa_providers::LlmProvider>, Box<dyn std::error::Error + Send + Sync>> {
-    // If model override, parse "provider_id/model_name".
     if let Some(spec) = model_override {
         let provider_id = spec.split('/').next().unwrap_or(spec);
         if let Some(p) = state.llm.get(provider_id) {
@@ -364,17 +433,18 @@ fn resolve_provider(
         }
     }
 
-    // Try the "executor" role first, then any available provider.
     if let Some(p) = state.llm.for_role("executor") {
         return Ok(p);
     }
 
-    // Fallback: first available provider.
     if let Some((_, p)) = state.llm.iter().next() {
         return Ok(p.clone());
     }
 
-    Err("no LLM providers available — configure at least one in config.toml".into())
+    Err("no_provider_configured: no LLM providers available. \
+         Configure at least one provider in config.toml under [llm.providers]. \
+         Dashboard and ops endpoints remain available."
+        .into())
 }
 
 async fn build_system_context(state: &AppState) -> String {
@@ -440,7 +510,6 @@ fn load_transcript_history(
             _ => continue,
         };
 
-        // For tool results, check metadata for call_id.
         if role == Role::Tool {
             if let Some(meta) = &line.metadata {
                 if let Some(call_id) = meta.get("call_id").and_then(|v| v.as_str()) {
@@ -448,7 +517,6 @@ fn load_transcript_history(
                     continue;
                 }
             }
-            // Tool result without call_id — skip (malformed).
             continue;
         }
 

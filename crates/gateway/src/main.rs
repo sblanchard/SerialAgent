@@ -116,6 +116,12 @@ async fn main() -> anyhow::Result<()> {
     );
     tracing::info!("session lock map ready");
 
+    // ── Cancel map (per-session cancellation) ─────────────────────────
+    let cancel_map = Arc::new(
+        sa_gateway::runtime::cancel::CancelMap::new(),
+    );
+    tracing::info!("cancel map ready");
+
     // ── App state ────────────────────────────────────────────────────
     let state = AppState {
         config: config.clone(),
@@ -132,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
         nodes: nodes.clone(),
         tool_router,
         session_locks,
+        cancel_map,
     };
 
     // ── Periodic session flush ───────────────────────────────────────
