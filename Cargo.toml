@@ -11,20 +11,24 @@ authors = ["sblanchard"]
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 toml = "0.8"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 async-trait = "0.1"
 futures-core = "0.3"
+futures-util = "0.3"
 async-stream = "0.3"
 
 # HTTP
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 
 # Web framework
-axum = { version = "0.7", features = ["json"] }
+axum = { version = "0.7", features = ["json", "ws"] }
 tower-http = { version = "0.5", features = ["cors", "trace"] }
+tokio-tungstenite = "0.24"
 
 # Observability
 tracing = "0.1"
@@ -37,6 +41,9 @@ anyhow = "1"
 thiserror = "1"
 parking_lot = "0.12"
 sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+tempfile = "3"
 
 # Internal crates
 sa-domain = { path = "crates/domain" }
@@ -45,3 +52,6 @@ sa-skills = { path = "crates/skills" }
 sa-memory = { path = "crates/serialmemory-client" }
 sa-providers = { path = "crates/providers" }
 sa-protocol = { path = "crates/node-protocol" }
+sa-sessions = { path = "crates/sessions" }
+sa-tools = { path = "crates/tools" }
+sa-node-sdk = { path = "crates/node-sdk" }
