@@ -184,8 +184,20 @@ pub struct LlmConfig {
     /// If true, abort startup when no providers initialize.
     /// Default false (dev-friendly: dashboard/nodes/sessions still work).
     /// Can also be forced via `SA_REQUIRE_LLM=1` env var.
+    /// **Deprecated**: prefer `startup_policy` for finer control.
     #[serde(default)]
     pub require_provider: bool,
+    /// Startup policy for LLM providers.
+    ///
+    /// - `allow_none` (default): gateway boots even if zero providers init
+    ///   — dashboard, nodes, and inbound wiring all work; LLM endpoints
+    ///   return errors until credentials are configured.
+    /// - `require_one`: abort startup if no providers successfully init.
+    ///
+    /// `require_provider = true` is treated as `require_one` for backward
+    /// compat, but `startup_policy` takes precedence when set.
+    #[serde(default)]
+    pub startup_policy: LlmStartupPolicy,
     /// Model roles: planner, executor, summarizer, embedder (+ custom).
     #[serde(default)]
     pub roles: HashMap<String, RoleConfig>,
@@ -201,10 +213,26 @@ impl Default for LlmConfig {
             default_timeout_ms: 20_000,
             max_retries: 2,
             require_provider: false,
+            startup_policy: LlmStartupPolicy::AllowNone,
             roles: HashMap::new(),
             providers: Vec::new(),
         }
     }
+}
+
+/// Controls how the gateway handles LLM provider initialization at startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmStartupPolicy {
+    /// Gateway boots even if no LLM providers initialize.
+    /// Dashboard, nodes, sessions, and inbound wiring all work.
+    /// LLM endpoints return errors until credentials are configured.
+    /// Provider init errors are reported in `/v1/models/readiness`.
+    #[default]
+    AllowNone,
+    /// Abort startup if no LLM providers successfully initialize.
+    /// Use for production deployments where LLM is required.
+    RequireOne,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

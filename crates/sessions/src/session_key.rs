@@ -9,11 +9,20 @@
 //! - `agent:<agentId>:<channel>:group:<groupId>:<channelId>` (scoped group, e.g. Slack/Teams)
 //! - `...:thread:<threadId>`                                 (only for non-DMs)
 //!
+//! # Canonical rules (for connector authors)
+//!
+//! - `channel_id` **must** be the "reply container" for any non-DM inbound
+//!   (Discord channel id, Telegram chat id, WhatsApp JID).
+//! - `group_id` is **optional** scoping (guild / workspace).  Only include
+//!   it when channel IDs are not globally unique (Slack, Teams).
+//! - `thread_id` appends **only** when present and **only** to non-DM keys.
+//!
 //! Invariants:
-//! - `channel_id` is the reply container (Discord channel, Telegram chat, WhatsApp JID).
-//! - `group_id` is optional space/workspace scoping (Discord guild, Slack workspace).
-//! - Threads/topics only append to non-DM keys.
 //! - `channel` and `account_id` are normalized to lowercase.
+//! - `peer_id` should already be canonicalized upstream via `IdentityResolver`.
+//! - A non-DM message without `channel_id` produces a warning and uses
+//!   `"unknown_channel"` as fallback (the inbound handler rejects these at
+//!   HTTP level, but the key function is defensive).
 
 use sa_domain::config::{DmScope, InboundMetadata};
 
@@ -86,6 +95,117 @@ fn compute_group_key(
         // Unscoped form: agent:{id}:{channel}:group:{channel_id}
         format!("{base}:{channel}:group:{channel_id}")
     }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Validation helpers
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Result of validating inbound metadata for session key computation.
+#[derive(Debug, Clone)]
+pub struct SessionKeyValidation {
+    /// Warnings that don't prevent key computation but indicate connector
+    /// issues.  Connector authors should fix these.
+    pub warnings: Vec<String>,
+    /// Hard errors that will cause key computation to produce incorrect
+    /// or degenerate results.
+    pub errors: Vec<String>,
+}
+
+impl SessionKeyValidation {
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    pub fn has_warnings(&self) -> bool {
+        !self.warnings.is_empty()
+    }
+}
+
+/// Validate inbound metadata against the canonical session key rules.
+///
+/// This function is meant to be called in the inbound handler before
+/// `compute_session_key` to surface connector bugs early.
+///
+/// # Rules enforced
+///
+/// 1. Non-DM messages **must** have `channel_id` (the reply container).
+/// 2. `group_id` without `channel_id` is suspicious — the connector may
+///    be using `group_id` as the reply container.
+/// 3. `channel_id` should not equal `group_id` (they serve different
+///    purposes: scoping vs reply target).
+/// 4. `channel` should be a known platform name (lowercase).
+/// 5. DMs should not have `group_id` set.
+pub fn validate_metadata(meta: &InboundMetadata) -> SessionKeyValidation {
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+
+    if !meta.is_direct {
+        // Rule 1: non-DM must have channel_id (reply container).
+        if meta.channel_id.is_none() {
+            errors.push(
+                "non-DM message missing channel_id — connectors must provide \
+                 the reply container ID (Discord channel id, Telegram chat id, \
+                 WhatsApp JID)"
+                    .to_string(),
+            );
+        }
+
+        // Rule 2: group_id without channel_id is suspicious.
+        if meta.group_id.is_some() && meta.channel_id.is_none() {
+            warnings.push(
+                "group_id set without channel_id — the connector may be \
+                 using group_id as the reply container; use channel_id instead"
+                    .to_string(),
+            );
+        }
+
+        // Rule 3: channel_id == group_id is a smell.
+        if let (Some(cid), Some(gid)) = (&meta.channel_id, &meta.group_id) {
+            if cid == gid {
+                warnings.push(format!(
+                    "channel_id == group_id (\"{cid}\") — these should differ; \
+                     channel_id is the reply container, group_id is workspace scoping"
+                ));
+            }
+        }
+    } else {
+        // Rule 5: DMs should not have group_id.
+        if meta.group_id.is_some() {
+            warnings.push(
+                "DM message has group_id set — this field is ignored for DMs \
+                 and may indicate a connector bug"
+                    .to_string(),
+            );
+        }
+    }
+
+    // Rule 4: channel should be a known platform (informational).
+    if let Some(ref ch) = meta.channel {
+        let normalized = ch.to_ascii_lowercase();
+        let known = [
+            "discord",
+            "telegram",
+            "whatsapp",
+            "slack",
+            "teams",
+            "signal",
+            "matrix",
+            "irc",
+            "cli",
+            "web",
+            "api",
+            "default",
+        ];
+        if !known.contains(&normalized.as_str()) {
+            warnings.push(format!(
+                "unknown channel \"{ch}\" — not in known platforms list; \
+                 this is fine for custom connectors but worth checking"
+            ));
+        }
+    }
+
+    SessionKeyValidation { warnings, errors }
 }
 
 #[cfg(test)]
@@ -235,5 +355,100 @@ mod tests {
             key,
             "agent:bot1:telegram:group:chat_123:thread:topic_5"
         );
+    }
+
+    // ── Validation tests ─────────────────────────────────────────────
+
+    #[test]
+    fn validate_valid_group_message() {
+        let m = InboundMetadata {
+            channel: Some("discord".into()),
+            group_id: Some("guild42".into()),
+            channel_id: Some("general".into()),
+            is_direct: false,
+            ..Default::default()
+        };
+        let v = validate_metadata(&m);
+        assert!(v.is_ok());
+        assert!(!v.has_warnings());
+    }
+
+    #[test]
+    fn validate_missing_channel_id_for_group() {
+        let m = InboundMetadata {
+            channel: Some("discord".into()),
+            is_direct: false,
+            ..Default::default()
+        };
+        let v = validate_metadata(&m);
+        assert!(!v.is_ok());
+        assert!(v.errors[0].contains("missing channel_id"));
+    }
+
+    #[test]
+    fn validate_group_id_without_channel_id() {
+        let m = InboundMetadata {
+            channel: Some("discord".into()),
+            group_id: Some("guild42".into()),
+            is_direct: false,
+            ..Default::default()
+        };
+        let v = validate_metadata(&m);
+        assert!(!v.is_ok()); // error for missing channel_id
+        assert!(v.warnings.iter().any(|w| w.contains("group_id set without channel_id")));
+    }
+
+    #[test]
+    fn validate_channel_id_equals_group_id() {
+        let m = InboundMetadata {
+            channel: Some("slack".into()),
+            group_id: Some("C12345".into()),
+            channel_id: Some("C12345".into()),
+            is_direct: false,
+            ..Default::default()
+        };
+        let v = validate_metadata(&m);
+        assert!(v.is_ok()); // no errors
+        assert!(v.warnings.iter().any(|w| w.contains("channel_id == group_id")));
+    }
+
+    #[test]
+    fn validate_dm_with_group_id_warns() {
+        let m = InboundMetadata {
+            channel: Some("discord".into()),
+            peer_id: Some("alice".into()),
+            group_id: Some("guild42".into()),
+            is_direct: true,
+            ..Default::default()
+        };
+        let v = validate_metadata(&m);
+        assert!(v.is_ok());
+        assert!(v.warnings.iter().any(|w| w.contains("DM message has group_id")));
+    }
+
+    #[test]
+    fn validate_unknown_channel_warns() {
+        let m = InboundMetadata {
+            channel: Some("my_custom_platform".into()),
+            peer_id: Some("alice".into()),
+            is_direct: true,
+            ..Default::default()
+        };
+        let v = validate_metadata(&m);
+        assert!(v.is_ok());
+        assert!(v.warnings.iter().any(|w| w.contains("unknown channel")));
+    }
+
+    #[test]
+    fn validate_known_channel_no_warn() {
+        let m = InboundMetadata {
+            channel: Some("telegram".into()),
+            channel_id: Some("chat_123".into()),
+            is_direct: false,
+            ..Default::default()
+        };
+        let v = validate_metadata(&m);
+        assert!(v.is_ok());
+        assert!(!v.has_warnings());
     }
 }
