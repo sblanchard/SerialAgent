@@ -21,7 +21,7 @@ use axum::response::{IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
 use sa_domain::config::{InboundMetadata, SendPolicyMode};
-use sa_sessions::compute_session_key;
+use sa_sessions::{compute_session_key, validate_metadata};
 use sa_sessions::store::SessionOrigin;
 
 use crate::runtime::session_lock::SessionBusy;
@@ -332,6 +332,23 @@ pub async fn inbound(
         thread_id: body.thread_id.clone(),
         is_direct,
     };
+
+    // ── 2b. Validate metadata (surface connector bugs) ──────────────
+    let validation = validate_metadata(&meta);
+    for w in &validation.warnings {
+        tracing::warn!(
+            channel = %body.channel,
+            peer_id = %body.peer_id,
+            "session key validation warning: {w}"
+        );
+    }
+    for e in &validation.errors {
+        tracing::error!(
+            channel = %body.channel,
+            peer_id = %body.peer_id,
+            "session key validation error: {e}"
+        );
+    }
 
     // ── 3. Compute session key ────────────────────────────────────
     let session_key = compute_session_key(

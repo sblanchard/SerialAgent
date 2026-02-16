@@ -117,11 +117,19 @@ mode = "off"                   # "off" or "cache-ttl"
 # require_provider: if true, abort startup when no LLM providers init.
 #   Default false — gateway boots without API keys (dashboard/nodes/
 #   sessions still work). Override with SA_REQUIRE_LLM=1 env var.
+#   DEPRECATED: prefer startup_policy for finer control.
+#
+# startup_policy: controls what happens when LLM providers fail to init.
+#   "allow_none" (default) — gateway boots without LLM; dashboard/nodes/
+#   sessions all work. Init errors surfaced in /v1/models/readiness.
+#   "require_one" — abort startup if no providers init (production).
+#
 # router_mode: "capability" (auto-select based on requirements) or "fixed"
 # Each role maps to "provider_id/model_name"
 
 [llm]
 require_provider = false
+startup_policy = "allow_none"
 router_mode = "capability"
 default_timeout_ms = 20000
 max_retries = 2

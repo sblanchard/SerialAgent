@@ -16,6 +16,7 @@ toml = "0.8"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 async-trait = "0.1"
 futures-core = "0.3"
 futures-util = "0.3"
@@ -53,3 +54,4 @@ sa-providers = { path = "crates/providers" }
 sa-protocol = { path = "crates/node-protocol" }
 sa-sessions = { path = "crates/sessions" }
 sa-tools = { path = "crates/tools" }
+sa-node-sdk = { path = "crates/node-sdk" }
