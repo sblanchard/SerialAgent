@@ -2,6 +2,7 @@ pub mod chat;
 pub mod clawhub;
 pub mod context;
 pub mod dashboard;
+pub mod inbound;
 pub mod memory;
 pub mod nodes;
 pub mod providers;
@@ -44,9 +45,12 @@ pub fn router() -> Router<AppState> {
         .route("/v1/sessions/:key/transcript", get(sessions::get_transcript))
         .route("/v1/sessions/:key/reset", post(sessions::reset_session_by_key))
         .route("/v1/sessions/:key/stop", post(sessions::stop_session))
+        .route("/v1/sessions/:key/compact", post(sessions::compact_session))
         // Chat (core runtime)
         .route("/v1/chat", post(chat::chat))
         .route("/v1/chat/stream", post(chat::chat_stream))
+        // Inbound (channel connector contract)
+        .route("/v1/inbound", post(inbound::inbound))
         // Tools (exec / process)
         .route("/v1/tools/exec", post(tools::exec_tool))
         .route("/v1/tools/process", post(tools::process_tool))
