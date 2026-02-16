@@ -93,3 +93,60 @@ pub enum WsMessage {
 /// Max tool response payload size in bytes (4 MB).
 /// Nodes should truncate results exceeding this and set `truncated = true`.
 pub const MAX_TOOL_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
+// ── NodeInfo helpers ────────────────────────────────────────────────
+
+impl NodeInfo {
+    /// Build a `NodeInfo` from environment variables and caller-provided metadata.
+    ///
+    /// | Env var          | Field   | Fallback                      |
+    /// |------------------|---------|-------------------------------|
+    /// | `SA_NODE_ID`     | `id`    | `{node_type}:{hostname}`      |
+    /// | `SA_NODE_NAME`   | `name`  | `sa-node-{node_type}`         |
+    /// | `SA_NODE_TAGS`   | `tags`  | `[]`                          |
+    ///
+    /// `node_type` and `version` are always supplied by the caller because
+    /// they're compile-time constants (node type is hard-coded, version comes
+    /// from `env!("CARGO_PKG_VERSION")`).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use sa_protocol::NodeInfo;
+    /// let info = NodeInfo::from_env("macos", "0.1.0");
+    /// assert_eq!(info.node_type, "macos");
+    /// ```
+    pub fn from_env(
+        node_type: impl Into<String>,
+        version: impl Into<String>,
+    ) -> Self {
+        let node_type = node_type.into();
+
+        let id = std::env::var("SA_NODE_ID").unwrap_or_else(|_| {
+            let hostname = std::env::var("HOSTNAME")
+                .or_else(|_| std::env::var("HOST"))
+                .unwrap_or_else(|_| "unknown".into());
+            format!("{node_type}:{hostname}")
+        });
+
+        let name = std::env::var("SA_NODE_NAME")
+            .unwrap_or_else(|_| format!("sa-node-{node_type}"));
+
+        let tags: Vec<String> = std::env::var("SA_NODE_TAGS")
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Self {
+            id,
+            name,
+            node_type,
+            version: version.into(),
+            tags,
+        }
+    }
+}
