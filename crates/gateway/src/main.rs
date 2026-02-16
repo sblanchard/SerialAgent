@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing_subscriber::EnvFilter;
 
 use sa_domain::config::Config;
@@ -205,8 +205,21 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ── Router ───────────────────────────────────────────────────────
+    let cors = if config.server.cors.allowed_origins.iter().any(|o| o == "*") {
+        tracing::warn!("CORS configured with wildcard origin — this is NOT recommended for production");
+        CorsLayer::permissive()
+    } else {
+        let origins: Vec<_> = config.server.cors.allowed_origins.iter()
+            .filter_map(|o| o.parse().ok())
+            .collect();
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(origins))
+            .allow_methods(tower_http::cors::Any)
+            .allow_headers(tower_http::cors::Any)
+    };
+
     let app = api::router()
-        .layer(CorsLayer::permissive())
+        .layer(cors)
         .with_state(state);
 
     // ── Bind ─────────────────────────────────────────────────────────
