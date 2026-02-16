@@ -21,6 +21,20 @@ default_user_id = "default_user"
 port = 3210
 host = "127.0.0.1"
 
+# ── CORS ──────────────────────────────────────────────────────────────
+# allowed_origins: list of origins for CORS. Default: localhost only.
+# Use ["*"] for permissive (NOT recommended for production).
+# [server.cors]
+# allowed_origins = ["http://localhost:3000", "https://myapp.com"]
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Admin
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Admin token env var for gated endpoints (ClawHub install/update/uninstall).
+# Set SA_ADMIN_TOKEN in your environment to enable these endpoints.
+# [admin]
+# token_env = "SA_ADMIN_TOKEN"
+
 [workspace]
 path = "./workspace"
 state_path = "./data/state"
@@ -87,6 +101,11 @@ max_output_chars = 1000000     # max output chars kept per process session
 # pending_max_output_chars = 500000
 notify_on_exit = true          # notify when background process exits
 # notify_on_exit_empty_success = false
+
+# ── Exec Security ──────────────────────────────────────────────────────
+# [tools.exec_security]
+# audit_log = true
+# denied_patterns = ["rm\\s+-rf\\s+/", "mkfs\\.", "dd\\s+if=.+of=/dev/"]
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Context Pruning (OpenClaw cache-ttl model)
