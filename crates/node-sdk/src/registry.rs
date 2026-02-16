@@ -85,9 +85,25 @@ impl ToolRegistry {
     /// case-insensitive and stable regardless of caller casing.
     ///
     /// Returns `&mut Self` for method chaining.
-    pub fn register(&mut self, name: impl Into<String>, tool: impl NodeTool) -> &mut Self {
+    pub fn register<T: NodeTool>(&mut self, name: impl Into<String>, tool: T) -> &mut Self {
         self.tools
             .insert(name.into().to_ascii_lowercase(), Arc::new(tool));
+        self
+    }
+
+    /// Register a pre-wrapped tool handler.
+    ///
+    /// Use this when you need to store tools in variables, inject wrappers,
+    /// or construct handlers dynamically.
+    ///
+    /// Returns `&mut Self` for method chaining.
+    pub fn register_boxed(
+        &mut self,
+        name: impl Into<String>,
+        tool: Arc<dyn NodeTool>,
+    ) -> &mut Self {
+        self.tools
+            .insert(name.into().to_ascii_lowercase(), tool);
         self
     }
 
@@ -108,7 +124,9 @@ impl ToolRegistry {
     ///
     /// For each tool name like `"macos.notes.search"`, derives the prefix
     /// `"macos.notes"` (everything up to the last dot).  Deduplicates.
-    pub fn derive_capabilities_from_tools(&mut self) {
+    ///
+    /// Returns `&mut Self` for method chaining.
+    pub fn derive_capabilities_from_tools(&mut self) -> &mut Self {
         let mut prefixes: Vec<String> = self
             .tools
             .keys()
@@ -124,6 +142,7 @@ impl ToolRegistry {
                 self.capability_prefixes.push(p);
             }
         }
+        self
     }
 
     /// All registered tool names (sorted).
