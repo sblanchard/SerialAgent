@@ -125,7 +125,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             port: 3210,
-            host: "0.0.0.0".into(),
+            host: "127.0.0.1".into(),
         }
     }
 }
@@ -829,7 +829,7 @@ fn d_3210() -> u16 {
     3210
 }
 fn d_host() -> String {
-    "0.0.0.0".into()
+    "127.0.0.1".into()
 }
 fn d_ws_path() -> PathBuf {
     PathBuf::from("./workspace")
