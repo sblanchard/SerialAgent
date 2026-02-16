@@ -70,15 +70,29 @@ use sa_domain::error::Result;
 /// | `rest`      | [`RestSerialMemoryClient`]                           |
 /// | `mcp`       | [`McpSerialMemoryClient`]                            |
 /// | `hybrid`    | [`RestSerialMemoryClient`] (REST primary; MCP ready) |
+///
+/// # Hybrid failure semantics
+///
+/// In `hybrid` mode the deterministic behavior is **REST-primary, no
+/// fallback**.  All reads and writes go through the REST transport.
+/// The MCP endpoint is documented and available for *external consumers*
+/// (CLI tooling, MCP-native clients) but the gateway itself never falls
+/// back to MCP on a REST failure.  This avoids ambiguous dual-write /
+/// split-brain scenarios that are painful to debug.
+///
+/// If you need true dual-transport with automatic failover, implement a
+/// dedicated `FallbackProvider` wrapper that retries on the secondary
+/// transport — but keep the policy explicit (e.g. "retry reads on MCP,
+/// never retry writes").
 pub fn create_provider(cfg: &SerialMemoryConfig) -> Result<Arc<dyn SerialMemoryProvider>> {
     match cfg.transport {
         SmTransport::Rest | SmTransport::Hybrid => {
             let client = RestSerialMemoryClient::new(cfg)?;
             if cfg.transport == SmTransport::Hybrid {
-                // Log that MCP is available but REST is the primary transport.
                 tracing::info!(
                     mcp_endpoint = ?cfg.mcp_endpoint,
-                    "hybrid mode: REST is primary transport; MCP endpoint documented for external consumers"
+                    "hybrid mode: REST is primary transport (no MCP fallback); \
+                     MCP endpoint documented for external consumers"
                 );
             }
             Ok(Arc::new(client))

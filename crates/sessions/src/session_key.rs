@@ -132,10 +132,11 @@ impl SessionKeyValidation {
 /// 1. Non-DM messages **must** have `channel_id` (the reply container).
 /// 2. `group_id` without `channel_id` is suspicious — the connector may
 ///    be using `group_id` as the reply container.
-/// 3. `channel_id` should not equal `group_id` (they serve different
-///    purposes: scoping vs reply target).
+/// 3. `channel_id == group_id` is warned (they serve different purposes)
+///    but **not** errored, because legacy connectors using
+///    `channel_id = chat_id.or(group_id)` naturally produce this pattern.
 /// 4. `channel` should be a known platform name (lowercase).
-/// 5. DMs should not have `group_id` set.
+/// 5. DMs with `group_id` set: warn (field ignored), never append `thread_id`.
 pub fn validate_metadata(meta: &InboundMetadata) -> SessionKeyValidation {
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
@@ -160,17 +161,23 @@ pub fn validate_metadata(meta: &InboundMetadata) -> SessionKeyValidation {
             );
         }
 
-        // Rule 3: channel_id == group_id is a smell.
+        // Rule 3: channel_id == group_id is a smell — warn, don't error.
+        // Legacy connectors that use `channel_id = chat_id.or(group_id)`
+        // will naturally produce this.  The key is still stable; the only
+        // side-effect is redundant scoping in the key template.
         if let (Some(cid), Some(gid)) = (&meta.channel_id, &meta.group_id) {
             if cid == gid {
                 warnings.push(format!(
-                    "channel_id == group_id (\"{cid}\") — these should differ; \
-                     channel_id is the reply container, group_id is workspace scoping"
+                    "channel_id == group_id (\"{cid}\") — ideally these \
+                     should differ (channel_id = reply container, group_id = \
+                     workspace scoping). This is accepted for backward \
+                     compatibility but may indicate a connector bug."
                 ));
             }
         }
     } else {
-        // Rule 5: DMs should not have group_id.
+        // Rule 5: DMs should not have group_id — warn if present, never
+        // use it in key computation, and never append thread_id to DM keys.
         if meta.group_id.is_some() {
             warnings.push(
                 "DM message has group_id set — this field is ignored for DMs \

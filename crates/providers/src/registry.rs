@@ -35,7 +35,31 @@ pub struct ProviderRegistry {
 pub struct ProviderInitError {
     pub provider_id: String,
     pub kind: String,
+    /// Error message with any potential secrets masked.
     pub error: String,
+}
+
+/// Mask substrings that look like API keys or bearer tokens in an error
+/// message.  This prevents raw secrets from leaking into logs, readiness
+/// endpoints, or dashboard UIs.
+fn mask_secrets(msg: &str) -> String {
+    let mut result = msg.to_string();
+    for word in msg.split(|c: char| c.is_whitespace() || c == '\'' || c == '"' || c == ',') {
+        let trimmed = word.trim();
+        if trimmed.len() >= 20
+            && trimmed
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            let masked = if trimmed.len() > 8 {
+                format!("{}...{}", &trimmed[..4], &trimmed[trimmed.len() - 4..])
+            } else {
+                "***masked***".to_string()
+            };
+            result = result.replace(trimmed, &masked);
+        }
+    }
+    result
 }
 
 impl ProviderRegistry {
@@ -75,16 +99,20 @@ impl ProviderRegistry {
                     providers.insert(pc.id.clone(), provider);
                 }
                 Err(e) => {
+                    // Mask potential API keys / secrets before logging or
+                    // storing the error, so they never leak to dashboards
+                    // or readiness endpoints.
+                    let safe_error = mask_secrets(&e.to_string());
                     tracing::warn!(
                         provider_id = %pc.id,
                         kind = ?pc.kind,
-                        error = %e,
+                        error = %safe_error,
                         "failed to initialize LLM provider, skipping"
                     );
                     init_errors.push(ProviderInitError {
                         provider_id: pc.id.clone(),
                         kind: format!("{:?}", pc.kind),
-                        error: e.to_string(),
+                        error: safe_error,
                     });
                 }
             }
