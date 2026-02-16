@@ -16,6 +16,16 @@ const pingResult = ref<ToolInvokeResponse | null>(null);
 const pinging = ref(false);
 const pingError = ref("");
 
+// Invoke history (kept in-memory for this session)
+type InvokeEntry = {
+  tool: string;
+  ok: boolean;
+  duration_ms: number;
+  route_kind: string;
+  timestamp: number;
+};
+const invokeHistory = ref<InvokeEntry[]>([]);
+
 const allCapabilities = computed(() => {
   const caps: string[] = [];
   for (const n of nodes.value) {
@@ -37,7 +47,6 @@ async function load() {
 
 function selectNode(n: NodeInfo) {
   selected.value = selected.value?.node_id === n.node_id ? null : n;
-  // Pre-fill first capability as tool name
   if (selected.value && selected.value.capabilities.length) {
     pingTool.value = selected.value.capabilities[0];
   }
@@ -49,11 +58,21 @@ async function doPing() {
   pingResult.value = null;
   try {
     const args = JSON.parse(pingArgs.value);
-    pingResult.value = await api.invokeTool({
+    const result = await api.invokeTool({
       tool: pingTool.value,
       args,
       timeout_ms: 10000,
     });
+    pingResult.value = result;
+    invokeHistory.value.unshift({
+      tool: pingTool.value,
+      ok: result.ok,
+      duration_ms: result.duration_ms,
+      route_kind: result.route.kind,
+      timestamp: Date.now(),
+    });
+    // Keep max 50 entries
+    if (invokeHistory.value.length > 50) invokeHistory.value.pop();
   } catch (e: any) {
     pingError.value = e.message;
   } finally {
@@ -68,6 +87,10 @@ function timeSince(iso: string): string {
   const min = Math.floor(sec / 60);
   if (min < 60) return `${min}m ago`;
   return `${Math.floor(min / 60)}h ago`;
+}
+
+function historyTime(ts: number): string {
+  return new Date(ts).toLocaleTimeString();
 }
 
 onMounted(load);
@@ -137,7 +160,7 @@ onMounted(load);
       </Card>
 
       <!-- Tool Ping -->
-      <Card title="Tool Ping">
+      <Card title="Tool Invoke">
         <div class="ping-form">
           <div class="field">
             <label>Tool name</label>
@@ -165,6 +188,24 @@ onMounted(load);
           </p>
           <pre class="json">{{ JSON.stringify(pingResult.ok ? pingResult.result : pingResult.error, null, 2) }}</pre>
         </div>
+      </Card>
+
+      <!-- Invoke History -->
+      <Card v-if="invokeHistory.length > 0" title="Recent Invocations">
+        <table class="tbl">
+          <thead>
+            <tr><th></th><th>Tool</th><th>Route</th><th>Duration</th><th>Time</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="(h, i) in invokeHistory" :key="i">
+              <td><StatusDot :status="h.ok ? 'ok' : 'error'" /></td>
+              <td><code>{{ h.tool }}</code></td>
+              <td class="dim">{{ h.route_kind }}</td>
+              <td class="dim">{{ h.duration_ms }}ms</td>
+              <td class="dim">{{ historyTime(h.timestamp) }}</td>
+            </tr>
+          </tbody>
+        </table>
       </Card>
     </div>
   </div>

@@ -109,13 +109,39 @@ export type AgentInfo = {
 export type AgentsListResponse = {
   agents: AgentInfo[];
   count: number;
+  total_tools_available?: number;
+};
+
+export type ProviderCapabilities = {
+  supports_tools: string;
+  supports_streaming: boolean;
+  supports_json_mode: boolean;
+  supports_vision: boolean;
+  context_window_tokens: number;
+  max_output_tokens?: number;
+};
+
+export type ProviderInfo = {
+  id: string;
+  capabilities: ProviderCapabilities;
+};
+
+export type InitError = {
+  provider_id: string;
+  kind: string;
+  error: string;
 };
 
 export type ReadinessResponse = {
   ready: boolean;
+  provider_count: number;
   startup_policy: string;
-  providers: unknown[];
-  errors: string[];
+  providers: ProviderInfo[];
+  init_errors: InitError[];
+  roles: Record<string, string>;
+  has_executor: boolean;
+  memory_configured: boolean;
+  nodes_connected: number;
 };
 
 export type ToolInvokeRequest = {
@@ -140,9 +166,106 @@ export type ToolInvokeResponse = {
   duration_ms: number;
 };
 
+// ── Admin types ──────────────────────────────────────────────────
+
+export type SystemInfo = {
+  version: string;
+  server: { host: string; port: number };
+  admin_token_set: boolean;
+  workspace_path: string;
+  skills_path: string;
+  serial_memory_url: string;
+  serial_memory_transport: string;
+  provider_count: number;
+  node_count: number;
+  session_count: number;
+};
+
+export type ScannedAgent = {
+  name: string;
+  has_models: boolean;
+  has_auth: boolean;
+  session_count: number;
+  models: Record<string, string>;
+};
+
+export type ScannedWorkspace = {
+  name: string;
+  path: string;
+  files: string[];
+  total_size_bytes: number;
+};
+
+export type ScanResult = {
+  path: string;
+  valid: boolean;
+  agents: ScannedAgent[];
+  workspaces: ScannedWorkspace[];
+  warnings: string[];
+};
+
+export type ImportApplyRequest = {
+  path: string;
+  workspaces: string[];
+  agents: string[];
+  import_models: boolean;
+  import_auth: boolean;
+  import_sessions: boolean;
+};
+
+export type ImportApplyResult = {
+  success: boolean;
+  workspaces_imported: string[];
+  agents_imported: string[];
+  sessions_imported: number;
+  files_copied: number;
+  warnings: string[];
+  errors: string[];
+};
+
+export type WorkspaceFile = {
+  name: string;
+  size: number;
+  sha256?: string;
+  content?: string;
+};
+
+export type WorkspaceFilesResponse = {
+  path: string;
+  files: WorkspaceFile[];
+  count: number;
+};
+
+export type SkillDetailed = {
+  name: string;
+  description: string;
+  risk: string;
+  ready: boolean;
+  permission_scope?: string;
+};
+
+export type SkillsDetailedResponse = {
+  skills: SkillDetailed[];
+  total: number;
+  ready_count: number;
+};
+
+export type SessionResetResponse = {
+  session_key: string;
+  session_id: string;
+  reset: boolean;
+};
+
+export type SessionStopResponse = {
+  session_key: string;
+  was_running: boolean;
+  stopped: boolean;
+};
+
 // ── API functions ──────────────────────────────────────────────────
 
 export const api = {
+  // Core
   readiness: () => get<ReadinessResponse>("/v1/models/readiness"),
   nodes: () => get<NodesListResponse>("/v1/nodes"),
   agents: () => get<AgentsListResponse>("/v1/agents"),
@@ -153,6 +276,23 @@ export const api = {
     get<TranscriptResponse>(
       `/v1/sessions/${encodeURIComponent(key)}/transcript?offset=${offset}&limit=${limit}`
     ),
+  resetSession: (key: string) =>
+    post<SessionResetResponse>(`/v1/sessions/${encodeURIComponent(key)}/reset`, {}),
+  stopSession: (key: string) =>
+    post<SessionStopResponse>(`/v1/sessions/${encodeURIComponent(key)}/stop`, {}),
   invokeTool: (req: ToolInvokeRequest) =>
     post<ToolInvokeResponse>("/v1/tools/invoke", req),
+
+  // Admin
+  systemInfo: () => get<SystemInfo>("/v1/admin/info"),
+  scanOpenClaw: (path: string) =>
+    post<ScanResult>("/v1/admin/import/openclaw/scan", { path }),
+  applyOpenClawImport: (req: ImportApplyRequest) =>
+    post<ImportApplyResult>("/v1/admin/import/openclaw/apply", req),
+  workspaceFiles: () => get<WorkspaceFilesResponse>("/v1/admin/workspace/files"),
+  skillsDetailed: () => get<SkillsDetailedResponse>("/v1/admin/skills"),
+
+  // Provider listing
+  providers: () => get<{ providers: string[]; count: number }>("/v1/models"),
+  roles: () => get<{ roles: Record<string, string> }>("/v1/models/roles"),
 };

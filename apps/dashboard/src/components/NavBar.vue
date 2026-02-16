@@ -7,6 +7,8 @@ const links = [
   { to: "/nodes", label: "Nodes", icon: ">" },
   { to: "/agents", label: "Agents", icon: "@" },
   { to: "/sessions", label: "Sessions", icon: "#" },
+  { to: "/llm", label: "LLM", icon: "*" },
+  { to: "/import", label: "Import", icon: "+" },
 ];
 </script>
 
