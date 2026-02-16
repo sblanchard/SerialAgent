@@ -159,8 +159,8 @@ impl ToolRouter {
         // Send tool_request to the node.
         let msg = WsMessage::ToolRequest {
             request_id: request_id.clone(),
-            tool_name: tool_name.to_string(),
-            arguments,
+            tool: tool_name.to_string(),
+            args: arguments,
             session_key,
         };
 
@@ -313,12 +313,10 @@ mod tests {
         nodes.register(super::super::registry::ConnectedNode {
             node_id: "mac1".into(),
             node_type: "macos".into(),
-            capabilities: vec![sa_protocol::NodeCapability {
-                name: "macos.notes".into(),
-                description: "Apple Notes".into(),
-                risk: "low".into(),
-            }],
+            name: "mac1".into(),
+            capabilities: vec!["macos.notes".into()],
             version: "0.1.0".into(),
+            tags: vec![],
             session_id: "s1".into(),
             connected_at: chrono::Utc::now(),
             last_seen: chrono::Utc::now(),

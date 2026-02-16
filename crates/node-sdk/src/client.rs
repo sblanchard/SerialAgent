@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use futures_util::{FutureExt, SinkExt, StreamExt};
-use sa_protocol::{NodeCapability, WsMessage};
+use sa_protocol::{NodeInfo, ToolResponseError, WsMessage};
 use tokio::sync::{mpsc, Semaphore};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
@@ -26,11 +26,11 @@ pub struct NodeClient {
     pub(crate) name: String,
     pub(crate) node_type: String,
     pub(crate) version: String,
-    pub(crate) _tags: Vec<String>,
+    pub(crate) tags: Vec<String>,
     pub(crate) heartbeat_interval: Duration,
     pub(crate) reconnect_backoff: ReconnectBackoff,
     pub(crate) max_concurrent_tools: usize,
-    pub(crate) _max_request_bytes: usize,
+    pub(crate) max_request_bytes: usize,
     pub(crate) max_response_bytes: usize,
 }
 
@@ -142,23 +142,16 @@ impl NodeClient {
         let (ws, _response) = tokio_tungstenite::connect_async(&url).await?;
         let (mut sink, mut stream) = ws.split();
 
-        // ── Build capability list from registry ──────────────────────
-        let capabilities: Vec<NodeCapability> = registry
-            .capabilities()
-            .into_iter()
-            .map(|name| NodeCapability {
-                name: name.clone(),
-                description: format!("Capability prefix: {name}"),
-                risk: "low".into(),
-            })
-            .collect();
-
         // ── Send node_hello ──────────────────────────────────────────
         let hello = WsMessage::NodeHello {
-            node_id: self.node_id.clone(),
-            node_type: self.node_type.clone(),
-            capabilities,
-            version: self.version.clone(),
+            node: NodeInfo {
+                id: self.node_id.clone(),
+                name: self.name.clone(),
+                node_type: self.node_type.clone(),
+                version: self.version.clone(),
+                tags: self.tags.clone(),
+            },
+            capabilities: registry.capabilities(),
         };
         let json = serde_json::to_string(&hello)?;
         sink.send(Message::Text(json)).await?;
@@ -169,11 +162,10 @@ impl NodeClient {
             while let Some(Ok(msg)) = stream.next().await {
                 if let Message::Text(text) = msg {
                     if let Ok(WsMessage::GatewayWelcome {
-                        session_id,
                         gateway_version,
                     }) = serde_json::from_str(&text)
                     {
-                        return Ok((session_id, gateway_version));
+                        return Ok(gateway_version);
                     }
                 }
             }
@@ -181,14 +173,13 @@ impl NodeClient {
         })
         .await;
 
-        let (session_id, gateway_version) = match welcome {
-            Ok(Ok(pair)) => pair,
+        let gateway_version = match welcome {
+            Ok(Ok(v)) => v,
             Ok(Err(e)) => return Err(e),
             Err(_) => return Err(anyhow::anyhow!("gateway_welcome timeout")),
         };
 
         tracing::info!(
-            session_id = %session_id,
             gateway_version = %gateway_version,
             node_id = %self.node_id,
             name = %self.name,
@@ -239,14 +230,11 @@ impl NodeClient {
 
         // Reader loop: dispatch inbound messages.
         let max_resp = self.max_response_bytes;
-        let max_req = self._max_request_bytes;
+        let max_req = self.max_request_bytes;
         while let Some(Ok(msg)) = stream.next().await {
             match msg {
                 Message::Text(ref text) => {
                     // ── Pre-parse size limit ─────────────────────────
-                    // Enforce max_request_bytes on the raw inbound JSON
-                    // message *before* parsing, so a malicious or buggy
-                    // gateway message cannot blow memory during serde.
                     if text.len() > max_req {
                         tracing::warn!(
                             bytes = text.len(),
@@ -259,13 +247,13 @@ impl NodeClient {
                     match serde_json::from_str::<WsMessage>(text) {
                         Ok(WsMessage::ToolRequest {
                             request_id,
-                            tool_name,
-                            arguments,
+                            tool,
+                            args,
                             session_key,
                         }) => {
                             tracing::debug!(
                                 request_id = %request_id,
-                                tool_name = %tool_name,
+                                tool = %tool,
                                 "received tool_request"
                             );
 
@@ -280,22 +268,20 @@ impl NodeClient {
 
                                 let ctx = ToolContext {
                                     request_id: request_id.clone(),
-                                    tool_name: tool_name.clone(),
+                                    tool_name: tool.clone(),
                                     session_key,
                                     cancel: tool_cancel,
                                 };
 
-                                // Case-insensitive tool lookup: normalize
-                                // the requested name to lowercase.
-                                let normalized_name = tool_name.to_ascii_lowercase();
+                                // Case-insensitive tool lookup.
+                                let normalized_name = tool.to_ascii_lowercase();
 
                                 let resp = match reg.get(&normalized_name) {
                                     Some(handler) => {
-                                        // Wrap handler invocation with
-                                        // catch_unwind so a panicking tool
-                                        // always produces a tool_response.
+                                        // catch_unwind: panicking tool always
+                                        // produces a tool_response.
                                         let call_result = AssertUnwindSafe(
-                                            handler.call(ctx, arguments),
+                                            handler.call(ctx, args),
                                         )
                                         .catch_unwind()
                                         .await;
@@ -305,67 +291,66 @@ impl NodeClient {
                                                 let serialized =
                                                     serde_json::to_string(&result)
                                                         .unwrap_or_default();
-                                                let truncated =
-                                                    serialized.len() > max_resp;
-                                                let result = if truncated {
-                                                    serde_json::json!({
+                                                if serialized.len() > max_resp {
+                                                    let truncated_result = serde_json::json!({
                                                         "_truncated": true,
                                                         "_original_bytes": serialized.len(),
                                                         "partial": &serialized[..max_resp.min(serialized.len())],
-                                                    })
+                                                    });
+                                                    WsMessage::ToolResponse {
+                                                        request_id,
+                                                        ok: true,
+                                                        result: Some(truncated_result),
+                                                        error: None,
+                                                    }
                                                 } else {
-                                                    result
-                                                };
-                                                WsMessage::ToolResponse {
-                                                    request_id,
-                                                    success: true,
-                                                    result,
-                                                    error: None,
-                                                    truncated,
+                                                    WsMessage::ToolResponse {
+                                                        request_id,
+                                                        ok: true,
+                                                        result: Some(result),
+                                                        error: None,
+                                                    }
                                                 }
                                             }
-                                            Ok(Err(e)) => WsMessage::ToolResponse {
-                                                request_id,
-                                                success: false,
-                                                result: serde_json::Value::Null,
-                                                error: Some(e.to_string()),
-                                                truncated: false,
-                                            },
+                                            Ok(Err(e)) => {
+                                                WsMessage::ToolResponse {
+                                                    request_id,
+                                                    ok: false,
+                                                    result: None,
+                                                    error: Some(tool_error_to_protocol(&e)),
+                                                }
+                                            }
                                             Err(_panic) => {
                                                 tracing::error!(
-                                                    tool_name = %tool_name,
+                                                    tool = %tool,
                                                     request_id = %request_id,
                                                     "tool handler panicked"
                                                 );
                                                 WsMessage::ToolResponse {
                                                     request_id,
-                                                    success: false,
-                                                    result: serde_json::Value::Null,
-                                                    error: Some(
-                                                        ToolError::Failed(
-                                                            "tool handler panicked"
-                                                                .into(),
-                                                        )
-                                                        .to_string(),
-                                                    ),
-                                                    truncated: false,
+                                                    ok: false,
+                                                    result: None,
+                                                    error: Some(ToolResponseError {
+                                                        kind: "Failed".into(),
+                                                        message: "tool handler panicked".into(),
+                                                    }),
                                                 }
                                             }
                                         }
                                     }
                                     None => {
                                         tracing::warn!(
-                                            tool_name = %tool_name,
+                                            tool = %tool,
                                             "no handler registered for tool"
                                         );
                                         WsMessage::ToolResponse {
                                             request_id,
-                                            success: false,
-                                            result: serde_json::Value::Null,
-                                            error: Some(format!(
-                                                "unknown tool: {tool_name}"
-                                            )),
-                                            truncated: false,
+                                            ok: false,
+                                            result: None,
+                                            error: Some(ToolResponseError {
+                                                kind: "Failed".into(),
+                                                message: format!("unknown tool: {tool}"),
+                                            }),
                                         }
                                     }
                                 };
@@ -397,8 +382,7 @@ impl NodeClient {
             }
         }
 
-        // Cleanup: cancel all in-flight tool calls so spawned subprocesses
-        // (e.g. osascript) don't keep running, and semaphore permits are freed.
+        // Cleanup: cancel all in-flight tool calls.
         inflight_cancel.cancel();
         ping_task.abort();
         writer_task.abort();
@@ -425,6 +409,20 @@ impl NodeClient {
     }
 }
 
+/// Convert an SDK [`ToolError`] into the protocol's [`ToolResponseError`].
+fn tool_error_to_protocol(err: &ToolError) -> ToolResponseError {
+    let (kind, message) = match err {
+        ToolError::InvalidArgs(m) => ("InvalidArgs", m.clone()),
+        ToolError::NotAllowed(m) => ("NotAllowed", m.clone()),
+        ToolError::Failed(m) => ("Failed", m.clone()),
+        ToolError::Timeout(m) => ("Timeout", m.clone()),
+    };
+    ToolResponseError {
+        kind: kind.into(),
+        message,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,11 +446,11 @@ mod tests {
             name: "Test Node".into(),
             node_type: "test".into(),
             version: "0.1.0".into(),
-            _tags: vec![],
+            tags: vec![],
             heartbeat_interval: Duration::from_secs(30),
             reconnect_backoff: ReconnectBackoff::default(),
             max_concurrent_tools: 16,
-            _max_request_bytes: 256 * 1024,
+            max_request_bytes: 256 * 1024,
             max_response_bytes: 1024 * 1024,
         }
     }

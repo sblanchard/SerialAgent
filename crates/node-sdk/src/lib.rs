@@ -9,28 +9,29 @@
 //! # Architecture
 //!
 //! ```text
-//! ┌───────────────────────────────────────────────────────────┐
-//! │  Your Node (Tauri / CLI / mobile / embedded)              │
-//! │                                                           │
-//! │   let mut reg = ToolRegistry::new();                      │
-//! │   reg.register("macos.notes.search", NotesSearch);        │
-//! │   reg.add_capability_prefix("macos.notes");               │
-//! │                                                           │
-//! │   NodeClientBuilder::new()                                │
-//! │       .gateway_ws_url("ws://gw:3210/v1/nodes/ws")         │
-//! │       .node_id("mac1")                                    │
-//! │       .token("secret")                                    │
-//! │       .build()?                                           │
-//! │       .run(reg, shutdown)                                 │
-//! │       .await;                                             │
-//! └───────────────────────────────────────────────────────────┘
+//! ┌──────────────────────────────────────────────────────────────┐
+//! │  Your Node (Tauri / CLI / mobile / embedded)                 │
+//! │                                                              │
+//! │   let mut reg = ToolRegistry::new();                         │
+//! │   reg.register("macos.notes.search", NotesSearch)            │
+//! │      .register("macos.clipboard.get", ClipboardGet)          │
+//! │      .derive_capabilities_from_tools();                      │
+//! │                                                              │
+//! │   NodeClientBuilder::new()                                   │
+//! │       .node_info(NodeInfo::from_env("macos", VERSION))       │
+//! │       .gateway_ws_url("ws://gw:3210/v1/nodes/ws")            │
+//! │       .token("secret")                                       │
+//! │       .build()?                                              │
+//! │       .run(reg, shutdown)                                    │
+//! │       .await;                                                │
+//! └──────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! # Connection flow (hard-coded by the SDK)
 //!
 //! 1. Connect WS (with `token=<SA_NODE_TOKEN>` query param)
-//! 2. Send `node_hello { node_id, node_type, capabilities, version }`
-//! 3. Wait for `gateway_welcome { session_id, gateway_version }`
+//! 2. Send `node_hello { node: { id, name, node_type, version, tags }, capabilities }`
+//! 3. Wait for `gateway_welcome { gateway_version }`
 //! 4. Main loop:
 //!    - On `tool_request`: dispatch to registered handler, always send `tool_response`
 //!    - On `ping`: reply `pong`
@@ -57,5 +58,9 @@ pub use reconnect::ReconnectBackoff;
 pub use registry::{NodeTool, ToolRegistry};
 pub use types::{NodeSdkError, ToolContext, ToolError, ToolResult};
 
-// Re-export sa-protocol types so nodes never need to import sa-protocol directly.
-pub use sa_protocol::{NodeCapability, WsMessage, MAX_TOOL_RESPONSE_BYTES};
+// Re-export the entire protocol crate so downstream nodes never need a
+// direct sa-protocol dependency.
+pub use sa_protocol as protocol;
+
+// Convenience re-exports of the most commonly used protocol types.
+pub use sa_protocol::{NodeInfo, ToolResponseError, WsMessage, MAX_TOOL_RESPONSE_BYTES};

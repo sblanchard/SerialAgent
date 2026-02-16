@@ -72,6 +72,27 @@ impl NodeClientBuilder {
 
     // ── Identity / metadata ──────────────────────────────────────────
 
+    /// Set all identity fields at once from a [`NodeInfo`](sa_protocol::NodeInfo).
+    ///
+    /// This is the recommended way to configure identity when using
+    /// [`NodeInfo::from_env`](sa_protocol::NodeInfo::from_env):
+    ///
+    /// ```rust,no_run
+    /// # use sa_node_sdk::{NodeClientBuilder, NodeInfo};
+    /// let client = NodeClientBuilder::new()
+    ///     .node_info(NodeInfo::from_env("macos", env!("CARGO_PKG_VERSION")))
+    ///     .build()
+    ///     .unwrap();
+    /// ```
+    pub fn node_info(mut self, info: sa_protocol::NodeInfo) -> Self {
+        self.node_id = info.id;
+        self.name = info.name;
+        self.node_type = info.node_type;
+        self.version = info.version;
+        self.tags = info.tags;
+        self
+    }
+
     /// Set the node's stable unique identifier.
     pub fn node_id(mut self, id: impl Into<String>) -> Self {
         self.node_id = id.into();
@@ -97,8 +118,8 @@ impl NodeClientBuilder {
     }
 
     /// Set optional tags for grouping/filtering.
-    pub fn tags(mut self, tags: impl IntoIterator<Item = String>) -> Self {
-        self.tags = tags.into_iter().collect();
+    pub fn tags(mut self, tags: impl Into<Vec<String>>) -> Self {
+        self.tags = tags.into();
         self
     }
 
@@ -149,11 +170,11 @@ impl NodeClientBuilder {
             name: self.name,
             node_type: self.node_type,
             version: self.version,
-            _tags: self.tags,
+            tags: self.tags,
             heartbeat_interval: self.heartbeat_interval,
             reconnect_backoff: self.reconnect_backoff,
             max_concurrent_tools: self.max_concurrent_tools,
-            _max_request_bytes: self.max_request_bytes,
+            max_request_bytes: self.max_request_bytes,
             max_response_bytes: self.max_response_bytes,
         })
     }

@@ -4,7 +4,6 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
-use sa_protocol::NodeCapability;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
@@ -15,8 +14,10 @@ pub type NodeSink = mpsc::Sender<sa_protocol::WsMessage>;
 pub struct ConnectedNode {
     pub node_id: String,
     pub node_type: String,
-    pub capabilities: Vec<NodeCapability>,
+    pub name: String,
+    pub capabilities: Vec<String>,
     pub version: String,
+    pub tags: Vec<String>,
     pub session_id: String,
     pub connected_at: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
@@ -29,8 +30,11 @@ pub struct ConnectedNode {
 pub struct NodeInfo {
     pub node_id: String,
     pub node_type: String,
-    pub capabilities: Vec<NodeCapability>,
+    pub name: String,
+    pub capabilities: Vec<String>,
     pub version: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     pub session_id: String,
     pub connected_at: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
@@ -100,19 +104,19 @@ impl NodeRegistry {
     fn filter_capabilities(
         &self,
         node_id: &str,
-        capabilities: Vec<NodeCapability>,
-    ) -> Vec<NodeCapability> {
+        capabilities: Vec<String>,
+    ) -> Vec<String> {
         let allowlists = self.allowlists.read();
         let Some(allowed) = allowlists.get(node_id) else {
             return capabilities; // No allowlist = unrestricted.
         };
 
         let original_count = capabilities.len();
-        let filtered: Vec<NodeCapability> = capabilities
+        let filtered: Vec<String> = capabilities
             .into_iter()
             .filter(|cap| {
                 allowed.iter().any(|prefix| {
-                    cap.name == *prefix || cap.name.starts_with(&format!("{prefix}."))
+                    cap == prefix || cap.starts_with(&format!("{prefix}."))
                 })
             })
             .collect();
@@ -164,8 +168,8 @@ impl NodeRegistry {
     /// Find the best node for a given tool name using longest-prefix matching.
     ///
     /// Matching rules:
-    /// 1. A capability matches if `tool_name == cap.name` or
-    ///    `tool_name` starts with `cap.name.` (dot-separated prefix).
+    /// 1. A capability matches if `tool_name == cap` or
+    ///    `tool_name` starts with `cap.` (dot-separated prefix).
     /// 2. Among all matches, the **longest** capability name wins
     ///    (most specific handler).
     /// 3. Tie-break: lexicographic `node_id` (deterministic, stable).
@@ -201,12 +205,12 @@ impl NodeRegistry {
             };
 
             for cap in &node.capabilities {
-                let matches = tool_name == cap.name
-                    || tool_name.starts_with(&format!("{}.", cap.name));
+                let matches = tool_name == cap.as_str()
+                    || tool_name.starts_with(&format!("{cap}."));
                 if !matches {
                     continue;
                 }
-                let specificity = cap.name.len();
+                let specificity = cap.len();
                 let dominated = match &best {
                     Some((best_len, best_affinity, best_nid, _)) => {
                         specificity > *best_len
@@ -239,8 +243,10 @@ impl NodeRegistry {
             .map(|n| NodeInfo {
                 node_id: n.node_id.clone(),
                 node_type: n.node_type.clone(),
+                name: n.name.clone(),
                 capabilities: n.capabilities.clone(),
                 version: n.version.clone(),
+                tags: n.tags.clone(),
                 session_id: n.session_id.clone(),
                 connected_at: n.connected_at,
                 last_seen: n.last_seen,
@@ -277,28 +283,26 @@ impl NodeRegistry {
 mod tests {
     use super::*;
 
-    fn make_cap(name: &str) -> NodeCapability {
-        NodeCapability {
-            name: name.to_string(),
-            description: format!("{name} capability"),
-            risk: "low".to_string(),
+    fn make_node(node_id: &str, node_type: &str, capabilities: Vec<&str>) -> ConnectedNode {
+        let (tx, _rx) = mpsc::channel(1);
+        ConnectedNode {
+            node_id: node_id.into(),
+            node_type: node_type.into(),
+            name: node_id.into(),
+            capabilities: capabilities.into_iter().map(String::from).collect(),
+            version: "0.1.0".into(),
+            tags: vec![],
+            session_id: format!("s-{node_id}"),
+            connected_at: Utc::now(),
+            last_seen: Utc::now(),
+            sink: tx,
         }
     }
 
     #[test]
     fn find_for_tool_matches_prefix() {
         let reg = NodeRegistry::new();
-        let (tx, _rx) = mpsc::channel(1);
-        reg.register(ConnectedNode {
-            node_id: "mac1".into(),
-            node_type: "macos".into(),
-            capabilities: vec![make_cap("macos.notes"), make_cap("macos.calendar")],
-            version: "0.1.0".into(),
-            session_id: "s1".into(),
-            connected_at: Utc::now(),
-            last_seen: Utc::now(),
-            sink: tx,
-        });
+        reg.register(make_node("mac1", "macos", vec!["macos.notes", "macos.calendar"]));
 
         // Exact match
         assert!(reg.find_for_tool("macos.notes").is_some());
@@ -313,38 +317,12 @@ mod tests {
     #[test]
     fn longest_prefix_wins() {
         let reg = NodeRegistry::new();
+        reg.register(make_node("broad", "macos", vec!["macos"]));
+        reg.register(make_node("specific", "macos", vec!["macos.notes"]));
 
-        // Node A: broad "macos" capability
-        let (tx_a, _) = mpsc::channel(1);
-        reg.register(ConnectedNode {
-            node_id: "broad".into(),
-            node_type: "macos".into(),
-            capabilities: vec![make_cap("macos")],
-            version: "0.1.0".into(),
-            session_id: "s1".into(),
-            connected_at: Utc::now(),
-            last_seen: Utc::now(),
-            sink: tx_a,
-        });
-
-        // Node B: specific "macos.notes" capability
-        let (tx_b, _) = mpsc::channel(1);
-        reg.register(ConnectedNode {
-            node_id: "specific".into(),
-            node_type: "macos".into(),
-            capabilities: vec![make_cap("macos.notes")],
-            version: "0.1.0".into(),
-            session_id: "s2".into(),
-            connected_at: Utc::now(),
-            last_seen: Utc::now(),
-            sink: tx_b,
-        });
-
-        // "macos.notes.search" should route to "specific" (longer prefix)
         let (nid, _) = reg.find_for_tool("macos.notes.search").unwrap();
         assert_eq!(nid, "specific");
 
-        // "macos.calendar.list" should route to "broad" (only match)
         let (nid, _) = reg.find_for_tool("macos.calendar.list").unwrap();
         assert_eq!(nid, "broad");
     }
@@ -352,32 +330,9 @@ mod tests {
     #[test]
     fn tie_break_is_lexicographic_node_id() {
         let reg = NodeRegistry::new();
+        reg.register(make_node("z_node", "t", vec!["shared.cap"]));
+        reg.register(make_node("a_node", "t", vec!["shared.cap"]));
 
-        // Two nodes with the same capability prefix
-        let (tx_z, _) = mpsc::channel(1);
-        reg.register(ConnectedNode {
-            node_id: "z_node".into(),
-            node_type: "t".into(),
-            capabilities: vec![make_cap("shared.cap")],
-            version: "0.1.0".into(),
-            session_id: "s1".into(),
-            connected_at: Utc::now(),
-            last_seen: Utc::now(),
-            sink: tx_z,
-        });
-        let (tx_a, _) = mpsc::channel(1);
-        reg.register(ConnectedNode {
-            node_id: "a_node".into(),
-            node_type: "t".into(),
-            capabilities: vec![make_cap("shared.cap")],
-            version: "0.1.0".into(),
-            session_id: "s2".into(),
-            connected_at: Utc::now(),
-            last_seen: Utc::now(),
-            sink: tx_a,
-        });
-
-        // Should pick "a_node" (lexicographically first)
         let (nid, _) = reg.find_for_tool("shared.cap.do_thing").unwrap();
         assert_eq!(nid, "a_node");
     }
@@ -385,31 +340,10 @@ mod tests {
     #[test]
     fn register_replaces_duplicate() {
         let reg = NodeRegistry::new();
-        let (tx1, _) = mpsc::channel(1);
-        let (tx2, _) = mpsc::channel(1);
-
-        reg.register(ConnectedNode {
-            node_id: "n1".into(),
-            node_type: "macos".into(),
-            capabilities: vec![make_cap("a")],
-            version: "0.1.0".into(),
-            session_id: "s1".into(),
-            connected_at: Utc::now(),
-            last_seen: Utc::now(),
-            sink: tx1,
-        });
+        reg.register(make_node("n1", "macos", vec!["a"]));
         assert_eq!(reg.len(), 1);
 
-        reg.register(ConnectedNode {
-            node_id: "n1".into(),
-            node_type: "macos".into(),
-            capabilities: vec![make_cap("a"), make_cap("b")],
-            version: "0.2.0".into(),
-            session_id: "s2".into(),
-            connected_at: Utc::now(),
-            last_seen: Utc::now(),
-            sink: tx2,
-        });
+        reg.register(make_node("n1", "macos", vec!["a", "b"]));
         assert_eq!(reg.len(), 1);
         assert_eq!(reg.list()[0].capabilities.len(), 2);
     }
@@ -417,97 +351,44 @@ mod tests {
     #[test]
     fn capability_allowlist_filters() {
         let reg = NodeRegistry::new();
-
-        // Manually set an allowlist (simulating SA_NODE_CAPS=mac1:macos.notes).
         reg.allowlists
             .write()
             .insert("mac1".into(), vec!["macos.notes".into()]);
 
-        let (tx, _rx) = mpsc::channel(1);
-        reg.register(ConnectedNode {
-            node_id: "mac1".into(),
-            node_type: "macos".into(),
-            capabilities: vec![
-                make_cap("macos.notes"),    // allowed
-                make_cap("macos.calendar"), // NOT allowed
-                make_cap("macos.notes.search"), // allowed (sub-prefix)
-            ],
-            version: "0.1.0".into(),
-            session_id: "s1".into(),
-            connected_at: Utc::now(),
-            last_seen: Utc::now(),
-            sink: tx,
-        });
+        reg.register(make_node("mac1", "macos", vec![
+            "macos.notes",
+            "macos.calendar",
+            "macos.notes.search",
+        ]));
 
         let info = &reg.list()[0];
-        assert_eq!(info.capabilities.len(), 2); // notes + notes.search
-        assert!(info.capabilities.iter().any(|c| c.name == "macos.notes"));
-        assert!(info
-            .capabilities
-            .iter()
-            .any(|c| c.name == "macos.notes.search"));
-        assert!(!info
-            .capabilities
-            .iter()
-            .any(|c| c.name == "macos.calendar"));
+        assert_eq!(info.capabilities.len(), 2);
+        assert!(info.capabilities.contains(&"macos.notes".to_string()));
+        assert!(info.capabilities.contains(&"macos.notes.search".to_string()));
+        assert!(!info.capabilities.contains(&"macos.calendar".to_string()));
     }
 
     #[test]
     fn no_allowlist_means_unrestricted() {
         let reg = NodeRegistry::new();
-        let (tx, _rx) = mpsc::channel(1);
-        reg.register(ConnectedNode {
-            node_id: "unrestricted".into(),
-            node_type: "t".into(),
-            capabilities: vec![make_cap("a"), make_cap("b"), make_cap("c")],
-            version: "0.1.0".into(),
-            session_id: "s1".into(),
-            connected_at: Utc::now(),
-            last_seen: Utc::now(),
-            sink: tx,
-        });
+        reg.register(make_node("unrestricted", "t", vec!["a", "b", "c"]));
         assert_eq!(reg.list()[0].capabilities.len(), 3);
     }
 
     #[test]
     fn affinity_prefers_matching_node() {
         let reg = NodeRegistry::new();
+        reg.register(make_node("linux-box", "linux", vec!["fs"]));
+        reg.register(make_node("mac-mini", "macos", vec!["fs"]));
 
-        // Two nodes with the same capability, different types.
-        let (tx_lin, _) = mpsc::channel(1);
-        reg.register(ConnectedNode {
-            node_id: "linux-box".into(),
-            node_type: "linux".into(),
-            capabilities: vec![make_cap("fs")],
-            version: "0.1.0".into(),
-            session_id: "s1".into(),
-            connected_at: Utc::now(),
-            last_seen: Utc::now(),
-            sink: tx_lin,
-        });
-        let (tx_mac, _) = mpsc::channel(1);
-        reg.register(ConnectedNode {
-            node_id: "mac-mini".into(),
-            node_type: "macos".into(),
-            capabilities: vec![make_cap("fs")],
-            version: "0.1.0".into(),
-            session_id: "s2".into(),
-            connected_at: Utc::now(),
-            last_seen: Utc::now(),
-            sink: tx_mac,
-        });
-
-        // Without affinity: picks "linux-box" (lexicographically first).
         let (nid, _) = reg.find_for_tool("fs.read_text").unwrap();
         assert_eq!(nid, "linux-box");
 
-        // With macOS affinity: picks "mac-mini" despite losing lexicographic tie-break.
         let (nid, _) = reg
             .find_for_tool_with_affinity("fs.read_text", &["macos".into()])
             .unwrap();
         assert_eq!(nid, "mac-mini");
 
-        // With linux affinity: picks "linux-box" (matches affinity).
         let (nid, _) = reg
             .find_for_tool_with_affinity("fs.read_text", &["linux".into()])
             .unwrap();
@@ -517,17 +398,7 @@ mod tests {
     #[test]
     fn remove_and_len() {
         let reg = NodeRegistry::new();
-        let (tx, _) = mpsc::channel(1);
-        reg.register(ConnectedNode {
-            node_id: "n1".into(),
-            node_type: "t".into(),
-            capabilities: vec![],
-            version: "0.1.0".into(),
-            session_id: "s".into(),
-            connected_at: Utc::now(),
-            last_seen: Utc::now(),
-            sink: tx,
-        });
+        reg.register(make_node("n1", "t", vec![]));
         assert_eq!(reg.len(), 1);
         reg.remove("n1");
         assert_eq!(reg.len(), 0);

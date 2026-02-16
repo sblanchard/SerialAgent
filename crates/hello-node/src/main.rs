@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use sa_protocol::{NodeCapability, WsMessage, MAX_TOOL_RESPONSE_BYTES};
+use sa_protocol::{NodeInfo, ToolResponseError, WsMessage, MAX_TOOL_RESPONSE_BYTES};
 use tokio_tungstenite::tungstenite::Message;
 use tracing_subscriber::EnvFilter;
 
@@ -64,26 +64,18 @@ async fn main() -> anyhow::Result<()> {
 
     // Send node_hello.
     let hello = WsMessage::NodeHello {
-        node_id: node_id.clone(),
-        node_type: "reference".into(),
+        node: NodeInfo {
+            id: node_id.clone(),
+            name: "Hello Node".into(),
+            node_type: "reference".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            tags: vec![],
+        },
         capabilities: vec![
-            NodeCapability {
-                name: "node.ping".into(),
-                description: "Echo pong with timestamp".into(),
-                risk: "none".into(),
-            },
-            NodeCapability {
-                name: "node.echo".into(),
-                description: "Echo arguments back".into(),
-                risk: "none".into(),
-            },
-            NodeCapability {
-                name: "node.fs.read_text".into(),
-                description: "Read a text file from the allowed directory".into(),
-                risk: "low".into(),
-            },
+            "node.ping".into(),
+            "node.echo".into(),
+            "node.fs".into(),
         ],
-        version: env!("CARGO_PKG_VERSION").into(),
     };
     send(&mut sink, &hello).await?;
 
@@ -91,12 +83,10 @@ async fn main() -> anyhow::Result<()> {
     while let Some(Ok(msg)) = stream.next().await {
         if let Message::Text(text) = msg {
             if let Ok(WsMessage::GatewayWelcome {
-                session_id,
                 gateway_version,
             }) = serde_json::from_str(&text)
             {
                 tracing::info!(
-                    session_id = %session_id,
                     gateway_version = %gateway_version,
                     "gateway welcomed us"
                 );
@@ -146,18 +136,18 @@ async fn main() -> anyhow::Result<()> {
                 match serde_json::from_str::<WsMessage>(&text) {
                     Ok(WsMessage::ToolRequest {
                         request_id,
-                        tool_name,
-                        arguments,
+                        tool,
+                        args,
                         ..
                     }) => {
                         tracing::info!(
                             request_id = %request_id,
-                            tool_name = %tool_name,
+                            tool = %tool,
                             "received tool_request"
                         );
                         let resp = handle_tool(
-                            &tool_name,
-                            &arguments,
+                            &tool,
+                            &args,
                             &request_id,
                             &allowed_dir,
                         );
@@ -188,43 +178,43 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn handle_tool(
-    tool_name: &str,
-    arguments: &serde_json::Value,
+    tool: &str,
+    args: &serde_json::Value,
     request_id: &str,
     allowed_dir: &std::path::Path,
 ) -> WsMessage {
-    match tool_name {
+    match tool {
         "node.ping" => WsMessage::ToolResponse {
             request_id: request_id.to_string(),
-            success: true,
-            result: serde_json::json!({
+            ok: true,
+            result: Some(serde_json::json!({
                 "pong": true,
                 "timestamp": Utc::now().timestamp_millis(),
-            }),
+            })),
             error: None,
-            truncated: false,
         },
 
         "node.echo" => WsMessage::ToolResponse {
             request_id: request_id.to_string(),
-            success: true,
-            result: arguments.clone(),
+            ok: true,
+            result: Some(args.clone()),
             error: None,
-            truncated: false,
         },
 
         "node.fs.read_text" => {
-            let path = arguments
+            let path = args
                 .get("path")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             if path.is_empty() {
                 return WsMessage::ToolResponse {
                     request_id: request_id.to_string(),
-                    success: false,
-                    result: serde_json::Value::Null,
-                    error: Some("missing 'path' argument".into()),
-                    truncated: false,
+                    ok: false,
+                    result: None,
+                    error: Some(ToolResponseError {
+                        kind: "InvalidArgs".into(),
+                        message: "missing 'path' argument".into(),
+                    }),
                 };
             }
 
@@ -236,10 +226,12 @@ fn handle_tool(
                 Err(e) => {
                     return WsMessage::ToolResponse {
                         request_id: request_id.to_string(),
-                        success: false,
-                        result: serde_json::Value::Null,
-                        error: Some(format!("allowed dir error: {e}")),
-                        truncated: false,
+                        ok: false,
+                        result: None,
+                        error: Some(ToolResponseError {
+                            kind: "Failed".into(),
+                            message: format!("allowed dir error: {e}"),
+                        }),
                     };
                 }
             };
@@ -248,20 +240,24 @@ fn handle_tool(
                 Err(e) => {
                     return WsMessage::ToolResponse {
                         request_id: request_id.to_string(),
-                        success: false,
-                        result: serde_json::Value::Null,
-                        error: Some(format!("file not found: {e}")),
-                        truncated: false,
+                        ok: false,
+                        result: None,
+                        error: Some(ToolResponseError {
+                            kind: "Failed".into(),
+                            message: format!("file not found: {e}"),
+                        }),
                     };
                 }
             };
             if !canonical_file.starts_with(&canonical_dir) {
                 return WsMessage::ToolResponse {
                     request_id: request_id.to_string(),
-                    success: false,
-                    result: serde_json::Value::Null,
-                    error: Some("path traversal outside allowed directory".into()),
-                    truncated: false,
+                    ok: false,
+                    result: None,
+                    error: Some(ToolResponseError {
+                        kind: "NotAllowed".into(),
+                        message: "path traversal outside allowed directory".into(),
+                    }),
                 };
             }
 
@@ -279,31 +275,34 @@ fn handle_tool(
                     };
                     WsMessage::ToolResponse {
                         request_id: request_id.to_string(),
-                        success: true,
-                        result: serde_json::json!({
+                        ok: true,
+                        result: Some(serde_json::json!({
                             "path": canonical_file.display().to_string(),
                             "content": content,
-                        }),
+                        })),
                         error: None,
-                        truncated,
                     }
                 }
                 Err(e) => WsMessage::ToolResponse {
                     request_id: request_id.to_string(),
-                    success: false,
-                    result: serde_json::Value::Null,
-                    error: Some(format!("read error: {e}")),
-                    truncated: false,
+                    ok: false,
+                    result: None,
+                    error: Some(ToolResponseError {
+                        kind: "Failed".into(),
+                        message: format!("read error: {e}"),
+                    }),
                 },
             }
         }
 
         _ => WsMessage::ToolResponse {
             request_id: request_id.to_string(),
-            success: false,
-            result: serde_json::Value::Null,
-            error: Some(format!("unknown tool: {tool_name}")),
-            truncated: false,
+            ok: false,
+            result: None,
+            error: Some(ToolResponseError {
+                kind: "Failed".into(),
+                message: format!("unknown tool: {tool}"),
+            }),
         },
     }
 }

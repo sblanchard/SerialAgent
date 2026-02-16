@@ -25,7 +25,7 @@
 mod platform;
 mod tools;
 
-use sa_node_sdk::{NodeClientBuilder, ToolRegistry};
+use sa_node_sdk::{NodeClientBuilder, NodeInfo, ToolRegistry};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
@@ -37,15 +37,12 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // ── Node identity (from env vars with sensible defaults) ─────────
+    let info = NodeInfo::from_env("macos", env!("CARGO_PKG_VERSION"));
+
     let url = std::env::var("SA_GATEWAY_WS_URL")
         .unwrap_or_else(|_| "ws://localhost:3210/v1/nodes/ws".into());
     let token = std::env::var("SA_NODE_TOKEN").unwrap_or_default();
-    let node_id = std::env::var("SA_NODE_ID").unwrap_or_else(|_| {
-        let hostname = hostname_fallback();
-        format!("macos:{hostname}")
-    });
-    let name =
-        std::env::var("SA_NODE_NAME").unwrap_or_else(|_| "sa-node-macos".into());
 
     // ── Build tool registry ──────────────────────────────────────────
     let mut reg = ToolRegistry::new();
@@ -66,12 +63,15 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // ── Build node client ────────────────────────────────────────────
+    tracing::info!(
+        node_id = %info.id,
+        name = %info.name,
+        "starting sa-node-macos"
+    );
+
     let mut builder = NodeClientBuilder::new()
         .gateway_ws_url(url)
-        .node_id(&node_id)
-        .name(&name)
-        .node_type("macos")
-        .version(env!("CARGO_PKG_VERSION"))
+        .node_info(info)
         .heartbeat_interval(std::time::Duration::from_secs(30))
         .max_concurrent_tools(8);
 
@@ -92,12 +92,6 @@ async fn main() -> anyhow::Result<()> {
         shutdown_clone.cancel();
     });
 
-    tracing::info!(
-        node_id = %node_id,
-        name = %name,
-        "starting sa-node-macos"
-    );
-
     match client.run(reg, shutdown).await {
         Ok(()) => tracing::info!("node exited cleanly"),
         Err(sa_node_sdk::NodeSdkError::Shutdown) => tracing::info!("node shutdown"),
@@ -108,11 +102,4 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Best-effort hostname for the default node ID.
-fn hostname_fallback() -> String {
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("HOST"))
-        .unwrap_or_else(|_| "unknown".into())
 }

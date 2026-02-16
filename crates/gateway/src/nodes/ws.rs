@@ -2,7 +2,7 @@
 //!
 //! Flow:
 //! 1. Node connects to `/v1/nodes/ws?token=<pre-shared-token>`
-//! 2. Node sends `node_hello` with its capabilities
+//! 2. Node sends `node_hello` with its NodeInfo + capabilities
 //! 3. Gateway responds with `gateway_welcome`
 //! 4. Bidirectional message loop: gateway sends `tool_request`,
 //!    node sends `tool_response`, both exchange `ping`/`pong`
@@ -17,7 +17,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-use sa_protocol::WsMessage;
+use sa_protocol::{NodeInfo, WsMessage};
 
 use crate::nodes::registry::{ConnectedNode, NodeRegistry};
 use crate::state::AppState;
@@ -100,12 +100,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     };
 
-    let node_id = hello.node_id.clone();
+    let node_id = hello.node.id.clone();
     let session_id = uuid::Uuid::new_v4().to_string();
 
     // 2. Send gateway_welcome.
     let welcome = WsMessage::GatewayWelcome {
-        session_id: session_id.clone(),
         gateway_version: env!("CARGO_PKG_VERSION").to_string(),
     };
     if send_ws_message(&mut ws_sink, &welcome).await.is_err() {
@@ -115,7 +114,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
     tracing::info!(
         node_id = %node_id,
-        node_type = %hello.node_type,
+        node_type = %hello.node.node_type,
         capabilities = hello.capabilities.len(),
         session_id = %session_id,
         "node connected"
@@ -127,9 +126,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // 4. Register the node.
     state.nodes.register(ConnectedNode {
         node_id: node_id.clone(),
-        node_type: hello.node_type,
+        node_type: hello.node.node_type,
+        name: hello.node.name,
         capabilities: hello.capabilities,
-        version: hello.version,
+        version: hello.node.version,
+        tags: hello.node.tags,
         session_id,
         connected_at: Utc::now(),
         last_seen: Utc::now(),
@@ -184,10 +185,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 struct HelloData {
-    node_id: String,
-    node_type: String,
-    capabilities: Vec<sa_protocol::NodeCapability>,
-    version: String,
+    node: NodeInfo,
+    capabilities: Vec<String>,
 }
 
 async fn wait_for_hello(
@@ -198,17 +197,13 @@ async fn wait_for_hello(
         while let Some(Ok(msg)) = stream.next().await {
             if let Message::Text(text) = msg {
                 if let Ok(WsMessage::NodeHello {
-                    node_id,
-                    node_type,
+                    node,
                     capabilities,
-                    version,
                 }) = serde_json::from_str::<WsMessage>(&text)
                 {
                     return Some(HelloData {
-                        node_id,
-                        node_type,
+                        node,
                         capabilities,
-                        version,
                     });
                 }
             }
@@ -239,23 +234,18 @@ async fn handle_inbound(
     match msg {
         WsMessage::ToolResponse {
             request_id,
-            success,
+            ok,
             result,
             error,
-            truncated,
         } => {
-            if truncated {
-                tracing::debug!(
-                    request_id = %request_id,
-                    "tool response was truncated by node"
-                );
-            }
-            // Forward the tool response to the pending request tracker.
+            // Convert protocol types to the router's internal format.
+            let error_string = error.map(|e| format!("{}: {}", e.kind, e.message));
+            let result_value = result.unwrap_or(serde_json::Value::Null);
             state.tool_router.complete_request(
                 &request_id,
-                success,
-                result,
-                error,
+                ok,
+                result_value,
+                error_string,
             );
         }
         WsMessage::Ping { timestamp } => {
