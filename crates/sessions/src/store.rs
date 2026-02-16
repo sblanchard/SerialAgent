@@ -229,18 +229,24 @@ impl SessionStore {
     /// Clones the map snapshot under the read lock, then releases the lock
     /// before serializing + writing, to avoid holding it during I/O.
     ///
+    /// The blocking `std::fs::write` is offloaded to a dedicated thread via
+    /// [`tokio::task::spawn_blocking`] so the async runtime is never stalled.
+    ///
     /// **Tradeoff**: mutations between the clone and file write are not
     /// captured in this flush but will be picked up by the next periodic
     /// flush (every 30 seconds). This is acceptable because session data
     /// is not transactional and the reduced lock contention benefits
     /// concurrent request handling.
-    pub fn flush(&self) -> Result<()> {
+    pub async fn flush(&self) -> Result<()> {
         let snapshot = self.sessions.read().clone();
         let json = serde_json::to_string(&snapshot)
             .map_err(|e| Error::Other(format!("serializing sessions: {e}")))?;
-        std::fs::write(&self.sessions_path, json)
-            .map_err(Error::Io)?;
-        Ok(())
+        let path = self.sessions_path.clone();
+        tokio::task::spawn_blocking(move || {
+            std::fs::write(&path, json).map_err(Error::Io)
+        })
+        .await
+        .map_err(|e| Error::Other(format!("flush join error: {e}")))?
     }
 
     /// Return the transcript directory for a given session ID.
