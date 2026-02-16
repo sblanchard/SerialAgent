@@ -1,6 +1,6 @@
 //! Tool registry — maps tool names to handlers and manages capability prefixes.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::types::{ToolContext, ToolResult};
@@ -59,7 +59,7 @@ pub trait NodeTool: Send + Sync + 'static {
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn NodeTool>>,
-    capability_prefixes: Vec<String>,
+    capability_prefixes: BTreeSet<String>,
 }
 
 impl ToolRegistry {
@@ -109,14 +109,17 @@ impl ToolRegistry {
 
     /// Add a capability prefix (e.g. `"macos.clipboard"`).
     ///
-    /// The prefix is normalized to lowercase for stable matching.
+    /// The prefix is normalized to lowercase and any trailing `.` is stripped
+    /// so that `"macos.notes."` and `"macos.notes"` resolve to the same entry.
     ///
     /// This is advertised in `node_hello` and used by the gateway's
     /// capability router to route `tool_request`s to this node.
     ///
     /// Returns `&mut Self` for method chaining.
     pub fn add_capability_prefix(&mut self, prefix: impl Into<String>) -> &mut Self {
-        self.capability_prefixes.push(prefix.into().to_ascii_lowercase());
+        let normalized = prefix.into().to_ascii_lowercase();
+        let normalized = normalized.strip_suffix('.').unwrap_or(&normalized).to_string();
+        self.capability_prefixes.insert(normalized);
         self
     }
 
@@ -127,19 +130,9 @@ impl ToolRegistry {
     ///
     /// Returns `&mut Self` for method chaining.
     pub fn derive_capabilities_from_tools(&mut self) -> &mut Self {
-        let mut prefixes: Vec<String> = self
-            .tools
-            .keys()
-            .filter_map(|name| {
-                let pos = name.rfind('.')?;
-                Some(name[..pos].to_string())
-            })
-            .collect();
-        prefixes.sort();
-        prefixes.dedup();
-        for p in prefixes {
-            if !self.capability_prefixes.contains(&p) {
-                self.capability_prefixes.push(p);
+        for name in self.tools.keys() {
+            if let Some((prefix, _)) = name.rsplit_once('.') {
+                self.capability_prefixes.insert(prefix.to_string());
             }
         }
         self
@@ -152,12 +145,9 @@ impl ToolRegistry {
         names
     }
 
-    /// All capability prefixes (sorted, deduplicated).
+    /// All capability prefixes (sorted, deduplicated — guaranteed by `BTreeSet`).
     pub fn capabilities(&self) -> Vec<String> {
-        let mut caps = self.capability_prefixes.clone();
-        caps.sort();
-        caps.dedup();
-        caps
+        self.capability_prefixes.iter().cloned().collect()
     }
 
     /// Look up a handler by tool name (case-insensitive).
@@ -261,6 +251,15 @@ mod tests {
     fn capability_prefixes_normalized() {
         let mut reg = ToolRegistry::new();
         reg.add_capability_prefix("Macos.Notes");
+        assert_eq!(reg.capabilities(), vec!["macos.notes"]);
+    }
+
+    #[test]
+    fn trailing_dot_stripped_from_prefix() {
+        let mut reg = ToolRegistry::new();
+        reg.add_capability_prefix("macos.notes.");
+        reg.add_capability_prefix("macos.notes");
+        // Both should collapse to the same entry.
         assert_eq!(reg.capabilities(), vec!["macos.notes"]);
     }
 
