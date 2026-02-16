@@ -25,9 +25,6 @@ pub fn prune_messages(
     // Find the cutoff index: protect tool results for the last N assistants.
     let cutoff = find_protection_cutoff(messages, config.keep_last_assistants);
 
-    // Build tool_use_id → tool_name map from assistant messages.
-    let tool_name_map = build_tool_name_map(messages);
-
     // Compute thresholds.
     let window = if context_window_chars > 0 {
         context_window_chars
@@ -55,7 +52,6 @@ pub fn prune_messages(
         // Prune tool result content parts.
         let pruned_content = prune_tool_content(
             &msg.content,
-            &tool_name_map,
             config,
             soft_threshold,
             hard_threshold,
@@ -91,24 +87,6 @@ fn find_protection_cutoff(messages: &[Message], keep_last_assistants: usize) -> 
     messages.len()
 }
 
-/// Build a map from tool_use_id to tool_name by scanning assistant messages.
-fn build_tool_name_map(messages: &[Message]) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    for msg in messages {
-        if msg.role != Role::Assistant {
-            continue;
-        }
-        if let MessageContent::Parts(parts) = &msg.content {
-            for part in parts {
-                if let ContentPart::ToolUse { id, name, .. } = part {
-                    map.insert(id.clone(), name.clone());
-                }
-            }
-        }
-    }
-    map
-}
-
 /// Check if a message content contains an image part.
 fn contains_image(content: &MessageContent) -> bool {
     match content {
@@ -120,7 +98,6 @@ fn contains_image(content: &MessageContent) -> bool {
 /// Prune the content parts of a tool-role message.
 fn prune_tool_content(
     content: &MessageContent,
-    _tool_name_map: &std::collections::HashMap<String, String>,
     config: &PruningConfig,
     soft_threshold: usize,
     hard_threshold: usize,
