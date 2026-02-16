@@ -4,6 +4,7 @@
 //! Entry point: [`run_turn`] takes a session + user message and returns a
 //! stream of [`TurnEvent`]s suitable for SSE or non-streaming aggregation.
 
+pub mod agent;
 pub mod cancel;
 pub mod compact;
 pub mod session_lock;
@@ -94,6 +95,8 @@ pub struct TurnInput {
     pub user_message: String,
     /// Model override (e.g. "openai/gpt-4o"). None = use role default.
     pub model: Option<String>,
+    /// When running as a sub-agent, carries agent-scoped overrides.
+    pub agent: Option<agent::AgentContext>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -142,11 +145,11 @@ async fn run_turn_inner(
     tx: mpsc::Sender<TurnEvent>,
     cancel: &CancelToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // 1. Resolve the LLM provider.
-    let provider = resolve_provider(&state, input.model.as_deref())?;
+    // 1. Resolve the LLM provider (agent models → global roles → any).
+    let provider = resolve_provider(&state, input.model.as_deref(), input.agent.as_ref())?;
 
-    // 2. Build system context.
-    let system_prompt = build_system_context(&state).await;
+    // 2. Build system context (agent-scoped workspace/skills if present).
+    let system_prompt = build_system_context(&state, input.agent.as_ref()).await;
 
     // 3. Load raw transcript and check compaction.
     let mut all_lines = load_raw_transcript(&state.transcripts, &input.session_id);
@@ -199,8 +202,9 @@ async fn run_turn_inner(
     let boundary = compact::compaction_boundary(&all_lines);
     let history = transcript_lines_to_messages(&all_lines[boundary..]);
 
-    // 5. Build the tool definitions.
-    let tool_defs = tools::build_tool_definitions(&state);
+    // 5. Build the tool definitions (filtered by agent tool policy).
+    let tool_policy = input.agent.as_ref().map(|a| &a.tool_policy);
+    let tool_defs = tools::build_tool_definitions(&state, tool_policy);
 
     // 6. Build conversation messages.
     let mut messages = Vec::new();
@@ -496,10 +500,17 @@ async fn run_turn_inner(
 // Helpers
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Provider resolution order:
+/// 1. Explicit model override (from API request / agent.run)
+/// 2. Agent-level model mapping (per sub-agent config)
+/// 3. Global role defaults (planner/executor/summarizer)
+/// 4. Any available provider
 fn resolve_provider(
     state: &AppState,
     model_override: Option<&str>,
+    agent_ctx: Option<&agent::AgentContext>,
 ) -> Result<Arc<dyn sa_providers::LlmProvider>, Box<dyn std::error::Error + Send + Sync>> {
+    // 1. Explicit override.
     if let Some(spec) = model_override {
         let provider_id = spec.split('/').next().unwrap_or(spec);
         if let Some(p) = state.llm.get(provider_id) {
@@ -507,10 +518,22 @@ fn resolve_provider(
         }
     }
 
+    // 2. Agent-level model mapping.
+    if let Some(ctx) = agent_ctx {
+        if let Some(spec) = ctx.models.get("executor") {
+            let provider_id = spec.split('/').next().unwrap_or(spec);
+            if let Some(p) = state.llm.get(provider_id) {
+                return Ok(p);
+            }
+        }
+    }
+
+    // 3. Global role defaults.
     if let Some(p) = state.llm.for_role("executor") {
         return Ok(p);
     }
 
+    // 4. Any available provider.
     if let Some((_, p)) = state.llm.iter().next() {
         return Ok(p.clone());
     }
@@ -530,7 +553,10 @@ fn resolve_summarizer(state: &AppState) -> Option<Arc<dyn sa_providers::LlmProvi
         .or_else(|| state.llm.iter().next().map(|(_, p)| p.clone()))
 }
 
-async fn build_system_context(state: &AppState) -> String {
+async fn build_system_context(
+    state: &AppState,
+    agent_ctx: Option<&agent::AgentContext>,
+) -> String {
     let is_first_run = state.bootstrap.is_first_run("default");
     let session_mode = if is_first_run {
         SessionMode::Bootstrap
@@ -558,8 +584,15 @@ async fn build_system_context(state: &AppState) -> String {
         state.config.context.bootstrap_total_max_chars,
     );
 
-    let ws_files = state.workspace.read_all_context_files();
-    let skills_index = state.skills.render_ready_index();
+    // Use agent-scoped workspace/skills if running as a sub-agent.
+    let ws_files = match agent_ctx {
+        Some(ctx) => ctx.workspace.read_all_context_files(),
+        None => state.workspace.read_all_context_files(),
+    };
+    let skills_index = match agent_ctx {
+        Some(ctx) => ctx.skills.render_ready_index(),
+        None => state.skills.render_ready_index(),
+    };
     let skills_idx = if skills_index.is_empty() {
         None
     } else {

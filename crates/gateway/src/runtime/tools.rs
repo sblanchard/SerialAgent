@@ -3,6 +3,7 @@
 
 use serde_json::Value;
 
+use sa_domain::config::ToolPolicy;
 use sa_domain::tool::ToolDefinition;
 use sa_tools::exec::{self, ExecRequest};
 use sa_tools::process::{self, ProcessRequest};
@@ -15,7 +16,13 @@ use crate::state::AppState;
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Build the set of tool definitions exposed to the LLM.
-pub fn build_tool_definitions(state: &AppState) -> Vec<ToolDefinition> {
+///
+/// When `tool_policy` is `Some`, definitions are filtered through it so that
+/// sub-agents only see tools their config permits.
+pub fn build_tool_definitions(
+    state: &AppState,
+    tool_policy: Option<&ToolPolicy>,
+) -> Vec<ToolDefinition> {
     let mut defs = Vec::new();
 
     // ── Built-in local tools ──────────────────────────────────────
@@ -131,6 +138,35 @@ pub fn build_tool_definitions(state: &AppState) -> Vec<ToolDefinition> {
         }),
     });
 
+    // ── Agent delegation tools ──────────────────────────────────────
+    // Only expose these if agents are configured.
+    if let Some(ref agents) = state.agents {
+        if !agents.is_empty() {
+            defs.push(ToolDefinition {
+                name: "agent.run".into(),
+                description: "Delegate a task to a specialist sub-agent. The sub-agent runs in its own session with scoped tools and skills. Returns the agent's final answer.".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "agent_id": { "type": "string", "description": "ID of the agent to run (from agent.list)" },
+                        "task": { "type": "string", "description": "The task or question to give the agent" },
+                        "model": { "type": "string", "description": "Optional model override (e.g. 'openai/gpt-4o')" }
+                    },
+                    "required": ["agent_id", "task"]
+                }),
+            });
+
+            defs.push(ToolDefinition {
+                name: "agent.list".into(),
+                description: "List all available sub-agents and their capabilities.".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            });
+        }
+    }
+
     // ── Node-advertised tools ─────────────────────────────────────
     // Add definitions for capabilities advertised by connected nodes.
     for node_info in state.nodes.list() {
@@ -149,6 +185,11 @@ pub fn build_tool_definitions(state: &AppState) -> Vec<ToolDefinition> {
                 }),
             });
         }
+    }
+
+    // ── Apply tool policy filter ─────────────────────────────────
+    if let Some(policy) = tool_policy {
+        defs.retain(|d| policy.allows(&d.name));
     }
 
     defs
@@ -173,6 +214,8 @@ pub async fn dispatch_tool(
         "skill.read_resource" => dispatch_skill_read_resource(state, arguments),
         "memory.search" => dispatch_memory_search(state, arguments).await,
         "memory.ingest" => dispatch_memory_ingest(state, arguments).await,
+        "agent.run" => dispatch_agent_run(state, arguments, session_key).await,
+        "agent.list" => dispatch_agent_list(state),
         "web.search" => stub_tool("web.search", "Web search is not yet configured. Use exec with curl or a search CLI tool as an alternative."),
         "http.request" => stub_tool("http.request", "HTTP requests are not yet configured. Use exec with curl as an alternative."),
         _ => {
@@ -276,6 +319,68 @@ async fn dispatch_memory_ingest(state: &AppState, arguments: &Value) -> (String,
         }
         Err(e) => (format!("memory ingest error: {e}"), true),
     }
+}
+
+async fn dispatch_agent_run(
+    state: &AppState,
+    arguments: &Value,
+    session_key: Option<&str>,
+) -> (String, bool) {
+    let agent_id = match arguments.get("agent_id").and_then(|v| v.as_str()) {
+        Some(id) => id,
+        None => return ("missing required argument: agent_id".into(), true),
+    };
+    let task = match arguments.get("task").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => return ("missing required argument: task".into(), true),
+    };
+    let model = arguments
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let parent_key = session_key.unwrap_or("anonymous");
+
+    super::agent::run_agent(state, agent_id, task, model, parent_key).await
+}
+
+fn dispatch_agent_list(state: &AppState) -> (String, bool) {
+    let manager = match &state.agents {
+        Some(m) => m,
+        None => {
+            return (
+                serde_json::json!({ "agents": [], "count": 0 }).to_string(),
+                false,
+            );
+        }
+    };
+
+    let agents: Vec<_> = manager
+        .list()
+        .into_iter()
+        .map(|id| {
+            let runtime = manager.get(&id);
+            match runtime {
+                Some(r) => serde_json::json!({
+                    "id": id,
+                    "tools_allow": r.config.tool_policy.allow,
+                    "tools_deny": r.config.tool_policy.deny,
+                    "models": r.config.models,
+                    "memory_mode": r.config.memory_mode,
+                }),
+                None => serde_json::json!({ "id": id }),
+            }
+        })
+        .collect();
+
+    (
+        serde_json::json!({
+            "agents": agents,
+            "count": agents.len(),
+        })
+        .to_string(),
+        false,
+    )
 }
 
 fn stub_tool(name: &str, message: &str) -> (String, bool) {

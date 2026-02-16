@@ -203,6 +203,7 @@ pub async fn inbound(
         session_id: entry.session_id.clone(),
         user_message: body.text,
         model: body.model,
+        agent: None,
     };
 
     let state_arc = Arc::new(state.clone());

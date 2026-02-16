@@ -30,6 +30,9 @@ pub struct Config {
     pub compaction: CompactionConfig,
     #[serde(default)]
     pub memory_lifecycle: MemoryLifecycleConfig,
+    /// Sub-agent definitions (key = agent_id).
+    #[serde(default)]
+    pub agents: HashMap<String, AgentConfig>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -560,6 +563,80 @@ impl Default for HardClearConfig {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Sub-agent definitions
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Configuration for a sub-agent that the master can delegate to.
+///
+/// Each agent has its own workspace, skills, tool policy, model mappings,
+/// and memory isolation mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    /// Workspace directory for agent-specific context files.
+    /// Falls back to the global workspace if not set.
+    #[serde(default)]
+    pub workspace_path: Option<PathBuf>,
+    /// Skills directory. Falls back to the global skills path if not set.
+    #[serde(default)]
+    pub skills_path: Option<PathBuf>,
+    /// Tool allow/deny policy.
+    #[serde(default)]
+    pub tool_policy: ToolPolicy,
+    /// Agent-specific role→model mapping (e.g. `{ executor = "vllm/qwen2.5" }`).
+    /// Overrides the global `[llm.roles]` for this agent.
+    #[serde(default)]
+    pub models: HashMap<String, String>,
+    /// Memory isolation mode.
+    #[serde(default)]
+    pub memory_mode: MemoryMode,
+}
+
+/// Tool allow/deny policy — prefix-based matching similar to node capabilities.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolPolicy {
+    /// Tool name prefixes this agent may use.  `["*"]` or empty = unrestricted.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Tool name prefixes this agent is denied (evaluated before allow).
+    #[serde(default)]
+    pub deny: Vec<String>,
+}
+
+impl ToolPolicy {
+    /// Check whether the given tool name is permitted by this policy.
+    pub fn allows(&self, tool_name: &str) -> bool {
+        // Deny takes precedence.
+        for d in &self.deny {
+            if d == "*" || tool_name == d || tool_name.starts_with(&format!("{d}.")) {
+                return false;
+            }
+        }
+        // Empty allow or ["*"] means unrestricted (after deny check).
+        if self.allow.is_empty() || self.allow.iter().any(|a| a == "*") {
+            return true;
+        }
+        // Otherwise must match at least one allow entry.
+        for a in &self.allow {
+            if tool_name == a || tool_name.starts_with(&format!("{a}.")) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Memory isolation mode for a sub-agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryMode {
+    /// Share the global SerialMemory workspace (default — shared learning).
+    #[default]
+    Shared,
+    /// Use an isolated workspace_id for this agent.
+    Isolated,
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Send policy
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -757,4 +834,62 @@ fn d_12() -> usize {
 }
 fn d_allow() -> SendPolicyMode {
     SendPolicyMode::Allow
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_policy_empty_allows_all() {
+        let policy = ToolPolicy::default();
+        assert!(policy.allows("exec"));
+        assert!(policy.allows("memory.search"));
+        assert!(policy.allows("agent.run"));
+    }
+
+    #[test]
+    fn tool_policy_allow_restricts() {
+        let policy = ToolPolicy {
+            allow: vec!["exec".into(), "memory".into()],
+            deny: vec![],
+        };
+        assert!(policy.allows("exec"));
+        assert!(policy.allows("memory.search"));
+        assert!(policy.allows("memory.ingest"));
+        assert!(!policy.allows("agent.run"));
+        assert!(!policy.allows("skill.read_doc"));
+    }
+
+    #[test]
+    fn tool_policy_deny_takes_precedence() {
+        let policy = ToolPolicy {
+            allow: vec!["*".into()],
+            deny: vec!["exec".into()],
+        };
+        assert!(!policy.allows("exec"));
+        assert!(policy.allows("memory.search"));
+        assert!(policy.allows("agent.run"));
+    }
+
+    #[test]
+    fn tool_policy_deny_prefix_blocks_subtree() {
+        let policy = ToolPolicy {
+            allow: vec![],
+            deny: vec!["memory".into()],
+        };
+        assert!(policy.allows("exec"));
+        assert!(!policy.allows("memory.search"));
+        assert!(!policy.allows("memory.ingest"));
+    }
+
+    #[test]
+    fn tool_policy_deny_star_blocks_all() {
+        let policy = ToolPolicy {
+            allow: vec!["exec".into()],
+            deny: vec!["*".into()],
+        };
+        assert!(!policy.allows("exec"));
+        assert!(!policy.allows("memory.search"));
+    }
 }
