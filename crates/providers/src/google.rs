@@ -84,7 +84,7 @@ impl GoogleProvider {
         for msg in &req.messages {
             match msg.role {
                 Role::System => {
-                    let text = extract_text(&msg.content);
+                    let text = msg.content.extract_all_text();
                     system_instruction = Some(serde_json::json!({
                         "parts": [{"text": text}]
                     }));
@@ -138,20 +138,6 @@ impl GoogleProvider {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Message serialization helpers
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-fn extract_text(content: &MessageContent) -> String {
-    match content {
-        MessageContent::Text(t) => t.clone(),
-        MessageContent::Parts(parts) => parts
-            .iter()
-            .filter_map(|p| match p {
-                ContentPart::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
-}
 
 fn user_to_gemini(msg: &Message) -> Value {
     let parts = content_to_gemini_parts(&msg.content);

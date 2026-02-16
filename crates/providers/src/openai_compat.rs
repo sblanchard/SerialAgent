@@ -167,26 +167,12 @@ fn msg_to_openai(msg: &Message) -> Value {
         Role::Tool => tool_result_to_openai(msg),
         Role::Assistant => assistant_to_openai(msg),
         _ => {
-            let text = extract_text(&msg.content);
+            let text = msg.content.extract_all_text();
             serde_json::json!({
                 "role": role_to_str(msg.role),
                 "content": text,
             })
         }
-    }
-}
-
-fn extract_text(content: &MessageContent) -> String {
-    match content {
-        MessageContent::Text(t) => t.clone(),
-        MessageContent::Parts(parts) => parts
-            .iter()
-            .filter_map(|p| match p {
-                ContentPart::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
     }
 }
 
