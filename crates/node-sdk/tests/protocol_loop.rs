@@ -3,7 +3,7 @@
 //! and asserts the full handshake + tool request/response cycle.
 //!
 //! This single test covers ~80% of future regressions in the protocol loop:
-//! - `node_hello` is sent with correct capabilities
+//! - `node_hello` is sent with correct NodeInfo + capabilities
 //! - `gateway_welcome` is received and handshake completes
 //! - `tool_request` dispatches to the registered handler
 //! - `tool_response` arrives back with the correct result
@@ -18,7 +18,7 @@ use futures_util::{SinkExt, StreamExt};
 use sa_node_sdk::{
     NodeClientBuilder, NodeTool, ReconnectBackoff, ToolContext, ToolRegistry, ToolResult,
 };
-use sa_protocol::WsMessage;
+use sa_protocol::{NodeInfo, WsMessage};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -51,9 +51,8 @@ impl NodeTool for PanicTool {
 /// A captured `node_hello` from the connected node.
 #[derive(Debug, Clone)]
 struct CapturedHello {
-    node_id: String,
-    node_type: String,
-    capabilities: Vec<sa_protocol::NodeCapability>,
+    node: NodeInfo,
+    capabilities: Vec<String>,
 }
 
 /// Boots a tiny WS server on an ephemeral port.  Returns the bound address
@@ -80,15 +79,12 @@ async fn start_mini_gateway() -> (
                     match stream.next().await {
                         Some(Ok(Message::Text(text))) => {
                             if let Ok(WsMessage::NodeHello {
-                                node_id,
-                                node_type,
+                                node,
                                 capabilities,
-                                ..
                             }) = serde_json::from_str(&text)
                             {
                                 break CapturedHello {
-                                    node_id,
-                                    node_type,
+                                    node,
                                     capabilities,
                                 };
                             }
@@ -99,7 +95,6 @@ async fn start_mini_gateway() -> (
 
                 // Send gateway_welcome.
                 let welcome = WsMessage::GatewayWelcome {
-                    session_id: "test-session-1".into(),
                     gateway_version: "0.0.0-test".into(),
                 };
                 let mut sink = sink;
@@ -160,12 +155,12 @@ impl GatewayConn {
         &mut self,
         request_id: &str,
         tool_name: &str,
-        arguments: serde_json::Value,
+        args: serde_json::Value,
     ) -> WsMessage {
         let req = WsMessage::ToolRequest {
             request_id: request_id.into(),
-            tool_name: tool_name.into(),
-            arguments,
+            tool: tool_name.into(),
+            args,
             session_key: None,
         };
         self.send.send(req).await.unwrap();
@@ -225,10 +220,11 @@ async fn handshake_and_tool_roundtrip() {
         .expect("no connection received");
 
     // ── Assert node_hello ────────────────────────────────────────────
-    assert_eq!(hello.node_id, "integration-node");
-    assert_eq!(hello.node_type, "test");
+    assert_eq!(hello.node.id, "integration-node");
+    assert_eq!(hello.node.node_type, "test");
+    assert_eq!(hello.node.name, "Integration Test Node");
     assert!(
-        hello.capabilities.iter().any(|c| c.name == "test"),
+        hello.capabilities.iter().any(|c| c == "test"),
         "expected 'test' capability, got: {:?}",
         hello.capabilities
     );
@@ -245,16 +241,15 @@ async fn handshake_and_tool_roundtrip() {
     match resp {
         WsMessage::ToolResponse {
             request_id,
-            success,
+            ok,
             result,
             error,
-            ..
         } => {
             assert_eq!(request_id, "req-1");
-            assert!(success, "expected success, got error: {:?}", error);
+            assert!(ok, "expected ok, got error: {:?}", error);
             assert_eq!(
                 result,
-                serde_json::json!({"echoed": {"hello": "world"}})
+                Some(serde_json::json!({"echoed": {"hello": "world"}}))
             );
         }
         other => panic!("expected ToolResponse, got: {:?}", other),
@@ -268,16 +263,17 @@ async fn handshake_and_tool_roundtrip() {
     match resp {
         WsMessage::ToolResponse {
             request_id,
-            success,
+            ok,
             error,
             ..
         } => {
             assert_eq!(request_id, "req-2");
-            assert!(!success);
+            assert!(!ok);
+            let err = error.expect("expected error payload");
             assert!(
-                error.as_deref().unwrap_or("").contains("unknown tool"),
+                err.message.contains("unknown tool"),
                 "expected 'unknown tool' error, got: {:?}",
-                error
+                err
             );
         }
         other => panic!("expected ToolResponse, got: {:?}", other),
@@ -291,16 +287,17 @@ async fn handshake_and_tool_roundtrip() {
     match resp {
         WsMessage::ToolResponse {
             request_id,
-            success,
+            ok,
             error,
             ..
         } => {
             assert_eq!(request_id, "req-3");
-            assert!(!success);
+            assert!(!ok);
+            let err = error.expect("expected error payload");
             assert!(
-                error.as_deref().unwrap_or("").contains("panic"),
+                err.message.contains("panic"),
                 "expected panic error, got: {:?}",
-                error
+                err
             );
         }
         other => panic!("expected ToolResponse, got: {:?}", other),
@@ -317,12 +314,12 @@ async fn handshake_and_tool_roundtrip() {
 
     match resp {
         WsMessage::ToolResponse {
-            success, result, ..
+            ok, result, ..
         } => {
-            assert!(success, "case-insensitive lookup should succeed");
+            assert!(ok, "case-insensitive lookup should succeed");
             assert_eq!(
                 result,
-                serde_json::json!({"echoed": {"case": "insensitive"}})
+                Some(serde_json::json!({"echoed": {"case": "insensitive"}}))
             );
         }
         other => panic!("expected ToolResponse, got: {:?}", other),
