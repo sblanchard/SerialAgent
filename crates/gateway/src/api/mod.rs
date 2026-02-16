@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod agents;
 pub mod chat;
 pub mod clawhub;
@@ -71,6 +72,18 @@ pub fn router() -> Router<AppState> {
         .route("/v1/models", get(providers::list_providers))
         .route("/v1/models/roles", get(providers::list_roles))
         .route("/v1/models/readiness", get(providers::readiness))
+        // Admin
+        .route("/v1/admin/info", get(admin::system_info))
+        .route(
+            "/v1/admin/import/openclaw/scan",
+            post(admin::scan_openclaw),
+        )
+        .route(
+            "/v1/admin/import/openclaw/apply",
+            post(admin::apply_openclaw_import),
+        )
+        .route("/v1/admin/workspace/files", get(admin::list_workspace_files))
+        .route("/v1/admin/skills", get(admin::list_skills_detailed))
         // Dashboard
         .route("/dashboard", get(dashboard::index))
         .route("/dashboard/context", get(dashboard::context_pack_page))

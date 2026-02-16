@@ -5,6 +5,8 @@ import Nodes from "./pages/Nodes.vue";
 import Agents from "./pages/Agents.vue";
 import Sessions from "./pages/Sessions.vue";
 import SessionDetail from "./pages/SessionDetail.vue";
+import LlmReadiness from "./pages/LlmReadiness.vue";
+import ImportOpenClaw from "./pages/ImportOpenClaw.vue";
 
 export const router = createRouter({
   history: createWebHashHistory(),
@@ -14,5 +16,7 @@ export const router = createRouter({
     { path: "/agents", name: "agents", component: Agents },
     { path: "/sessions", name: "sessions", component: Sessions },
     { path: "/sessions/:key", name: "session-detail", component: SessionDetail, props: true },
+    { path: "/llm", name: "llm-readiness", component: LlmReadiness },
+    { path: "/import", name: "import-openclaw", component: ImportOpenClaw },
   ],
 });
