@@ -11,7 +11,12 @@ use sa_gateway::workspace::bootstrap::BootstrapTracker;
 use sa_gateway::workspace::files::WorkspaceReader;
 use sa_memory::RestSerialMemoryClient;
 use sa_providers::registry::ProviderRegistry;
+use sa_sessions::{IdentityResolver, LifecycleManager, SessionStore, TranscriptWriter};
 use sa_skills::registry::SkillsRegistry;
+use sa_tools::ProcessManager;
+
+use sa_gateway::nodes::registry::NodeRegistry;
+use sa_gateway::nodes::router::ToolRouter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -62,19 +67,132 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(url = %config.serial_memory.base_url, "SerialMemory client ready");
 
     // ── LLM providers ────────────────────────────────────────────────
-    let llm =
-        Arc::new(ProviderRegistry::from_config(&config.llm).context("initializing LLM providers")?);
-    tracing::info!(providers = llm.len(), "LLM provider registry ready");
+    let llm = Arc::new(
+        ProviderRegistry::from_config(&config.llm).context("initializing LLM providers")?,
+    );
+    if llm.is_empty() {
+        tracing::warn!(
+            "no LLM providers initialized — gateway will run but \
+             /v1/models will be empty and LLM calls will fail"
+        );
+    } else {
+        tracing::info!(providers = llm.len(), "LLM provider registry ready");
+    }
 
-    // ── App state ────────────────────────────────────────────────────
-    let state = AppState {
+    // ── Session management ───────────────────────────────────────────
+    let sessions = Arc::new(
+        SessionStore::new(&config.workspace.state_path)
+            .context("initializing session store")?,
+    );
+    let identity = Arc::new(IdentityResolver::from_config(
+        &config.sessions.identity_links,
+    ));
+    let lifecycle = Arc::new(LifecycleManager::new(config.sessions.lifecycle.clone()));
+    let transcript_dir = sessions.transcript_dir();
+    let transcripts = Arc::new(TranscriptWriter::new(&transcript_dir));
+    tracing::info!(
+        agent_id = %config.sessions.agent_id,
+        dm_scope = ?config.sessions.dm_scope,
+        identity_links = identity.len(),
+        "session management ready"
+    );
+
+    // ── Process manager (exec/process tools) ───────────────────────
+    let processes = Arc::new(ProcessManager::new(config.tools.exec.clone()));
+    tracing::info!("process manager ready");
+
+    // ── Node registry + tool router ──────────────────────────────────
+    let nodes = Arc::new(NodeRegistry::new());
+    nodes.load_allowlists_from_env();
+    let tool_router = Arc::new(ToolRouter::new(
+        nodes.clone(),
+        config.tools.exec.timeout_sec,
+    ));
+    tracing::info!("node registry + tool router ready");
+
+    // ── Session locks (per-session concurrency) ──────────────────────
+    let session_locks = Arc::new(
+        sa_gateway::runtime::session_lock::SessionLockMap::new(),
+    );
+    tracing::info!("session lock map ready");
+
+    // ── Cancel map (per-session cancellation) ─────────────────────────
+    let cancel_map = Arc::new(
+        sa_gateway::runtime::cancel::CancelMap::new(),
+    );
+    tracing::info!("cancel map ready");
+
+    // ── App state (without agents — needed for AgentManager init) ───
+    let mut state = AppState {
         config: config.clone(),
         memory,
         skills,
         workspace,
         bootstrap,
         llm,
+        sessions: sessions.clone(),
+        identity,
+        lifecycle,
+        transcripts,
+        processes: processes.clone(),
+        nodes: nodes.clone(),
+        tool_router,
+        session_locks,
+        cancel_map,
+        agents: None,
     };
+
+    // ── Agent manager (sub-agents) ──────────────────────────────────
+    if !config.agents.is_empty() {
+        let agent_mgr = sa_gateway::runtime::agent::AgentManager::from_config(&state);
+        tracing::info!(agent_count = agent_mgr.len(), "agent manager ready");
+        state.agents = Some(Arc::new(agent_mgr));
+    }
+
+    // ── Periodic session flush ───────────────────────────────────────
+    {
+        let sessions = sessions.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                std::time::Duration::from_secs(30),
+            );
+            loop {
+                interval.tick().await;
+                if let Err(e) = sessions.flush() {
+                    tracing::warn!(error = %e, "session store flush failed");
+                }
+            }
+        });
+    }
+
+    // ── Periodic process cleanup ──────────────────────────────────
+    {
+        let processes = processes.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                std::time::Duration::from_secs(60),
+            );
+            loop {
+                interval.tick().await;
+                processes.cleanup_stale();
+            }
+        });
+    }
+
+    // ── Periodic stale node pruning ─────────────────────────────────
+    {
+        let nodes = nodes.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                std::time::Duration::from_secs(30),
+            );
+            loop {
+                interval.tick().await;
+                // Remove nodes not seen for 120 seconds.
+                nodes.prune_stale(120);
+            }
+        });
+    }
 
     // ── Router ───────────────────────────────────────────────────────
     let app = api::router()

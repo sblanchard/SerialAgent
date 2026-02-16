@@ -31,6 +31,9 @@ pub enum WsMessage {
         request_id: String,
         tool_name: String,
         arguments: serde_json::Value,
+        /// The session key this tool call belongs to (for transcript/memory context).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_key: Option<String>,
     },
 
     /// Node → Gateway: tool call result.
@@ -41,6 +44,9 @@ pub enum WsMessage {
         result: serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// If true, result was truncated by the node to fit the size cap.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        truncated: bool,
     },
 
     /// Bidirectional: heartbeat.
@@ -51,6 +57,10 @@ pub enum WsMessage {
     #[serde(rename = "pong")]
     Pong { timestamp: i64 },
 }
+
+/// Max tool response payload size in bytes (4 MB).
+/// Nodes should truncate results exceeding this and set `truncated = true`.
+pub const MAX_TOOL_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 /// A capability advertised by a node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
