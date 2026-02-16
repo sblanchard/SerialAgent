@@ -122,6 +122,12 @@ async fn main() -> anyhow::Result<()> {
     );
     tracing::info!("cancel map ready");
 
+    // ── Dedupe store (inbound idempotency, 24h TTL) ────────────────
+    let dedupe = Arc::new(
+        sa_gateway::api::inbound::DedupeStore::new(std::time::Duration::from_secs(86_400)),
+    );
+    tracing::info!("dedupe store ready (24h TTL)");
+
     // ── App state (without agents — needed for AgentManager init) ───
     let mut state = AppState {
         config: config.clone(),
@@ -140,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
         session_locks,
         cancel_map,
         agents: None,
+        dedupe,
     };
 
     // ── Agent manager (sub-agents) ──────────────────────────────────
