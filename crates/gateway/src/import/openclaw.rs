@@ -58,6 +58,10 @@ const MAX_IDENT_LEN: usize = 128;
 /// Max path depth to prevent zip-bomb-style deeply nested directories.
 const MAX_PATH_DEPTH: usize = 64;
 
+/// Max total tar entries (including metadata like PAX headers) to prevent
+/// entry-count DoS even without materializing files.
+const MAX_ENTRIES_TOTAL: u64 = 100_000;
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Error type
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -612,7 +616,7 @@ async fn safe_extract_tgz(
             }
         }
 
-        let rel_path = entry
+        let raw_path = entry
             .path()
             .map_err(|e| {
                 OpenClawImportError::ArchiveInvalid(format!("tar path read failed: {e}"))
@@ -620,9 +624,12 @@ async fn safe_extract_tgz(
             .into_owned();
 
         // Defense-in-depth: re-validate path even though phase 1 already did
-        validate_relative_path(&rel_path)?;
+        validate_relative_path(&raw_path)?;
 
-        let full_path = dest_dir.join(&rel_path);
+        // Use the same normalized path as validation — ensures the filesystem path
+        // matches the dedup key (a/./b → a/b, a//b → a/b, etc.)
+        let (_, normalized_path) = normalize_tar_path(&raw_path)?;
+        let full_path = dest_dir.join(&normalized_path);
 
         match entry_type {
             tar::EntryType::Directory => {
@@ -653,7 +660,7 @@ async fn safe_extract_tgz(
                         if e.kind() == io::ErrorKind::AlreadyExists {
                             OpenClawImportError::ArchiveInvalid(format!(
                                 "file collision (duplicate or pre-existing): {}",
-                                rel_path.display()
+                                normalized_path.display()
                             ))
                         } else {
                             OpenClawImportError::Io(e)
@@ -690,6 +697,7 @@ fn validate_tgz_entries(tgz_path: &Path) -> Result<(), OpenClawImportError> {
     let max_files = max_file_count();
     let mut total_bytes: u64 = 0;
     let mut total_files: u64 = 0;
+    let mut total_entries: u64 = 0;
     let mut seen_file_paths = std::collections::HashSet::new();
 
     for entry in archive.entries().map_err(|e| {
@@ -699,15 +707,36 @@ fn validate_tgz_entries(tgz_path: &Path) -> Result<(), OpenClawImportError> {
             OpenClawImportError::ArchiveInvalid(format!("tar entry read failed: {e}"))
         })?;
 
+        // ── Global entry counter (caps total tar records, including metadata) ──
+        total_entries += 1;
+        if total_entries > MAX_ENTRIES_TOTAL {
+            return Err(OpenClawImportError::SizeLimitExceeded(format!(
+                "archive contains more than {} total entries (including metadata)",
+                MAX_ENTRIES_TOTAL
+            )));
+        }
+
         // ── Type check ──
         let entry_type = entry.header().entry_type();
         match entry_type {
             // PAX / GNU longname metadata: normally consumed transparently by the
-            // tar crate, but handle defensively — skip without counting.
+            // tar crate, but handle defensively. Count bytes toward the limit
+            // (PAX records can be arbitrarily large → decompression DoS).
             tar::EntryType::XHeader
             | tar::EntryType::XGlobalHeader
             | tar::EntryType::GNULongName
-            | tar::EntryType::GNULongLink => continue,
+            | tar::EntryType::GNULongLink => {
+                let meta_size = entry.header().size().unwrap_or(0);
+                total_bytes += meta_size;
+                if total_bytes > max_bytes {
+                    return Err(OpenClawImportError::SizeLimitExceeded(format!(
+                        "archive metadata exceeds extracted-bytes limit of {} bytes \
+                         (at {} bytes after {} entries)",
+                        max_bytes, total_bytes, total_entries
+                    )));
+                }
+                continue;
+            }
             // Allowed content types
             tar::EntryType::Regular
             | tar::EntryType::GNUSparse
@@ -730,18 +759,20 @@ fn validate_tgz_entries(tgz_path: &Path) -> Result<(), OpenClawImportError> {
             }
         }
 
-        // ── Path check: no traversal, no empty, depth limit ──
+        // ── Path check: no traversal, no empty, depth limit, no non-UTF8 ──
         let path = entry.path().map_err(|e| {
             OpenClawImportError::ArchiveInvalid(format!("tar path read failed: {e}"))
         })?;
         validate_relative_path(&path)?;
 
-        // ── Duplicate file detection (dirs may repeat, that's OK) ──
+        // ── Normalize path and check for collisions ──
+        let (normalized_key, _) = normalize_tar_path(&path)?;
+
+        // Duplicate file detection (dirs may repeat, that's OK)
         if !matches!(entry_type, tar::EntryType::Directory) {
-            let key = path.to_string_lossy().to_string();
-            if !seen_file_paths.insert(key) {
+            if !seen_file_paths.insert(normalized_key.clone()) {
                 return Err(OpenClawImportError::ArchiveInvalid(format!(
-                    "duplicate file path in archive: {}",
+                    "duplicate file path in archive (after normalization): {}",
                     path.display()
                 )));
             }
@@ -766,6 +797,46 @@ fn validate_tgz_entries(tgz_path: &Path) -> Result<(), OpenClawImportError> {
         }
     }
     Ok(())
+}
+
+/// Normalize a tar path to a canonical form for dedup and filesystem use.
+///
+/// - Rejects non-UTF8 paths (prevents encoding-based bypasses)
+/// - Strips `.` components and repeated separators
+/// - Returns the normalized path as a String key (for dedup) and PathBuf (for fs)
+///
+/// This ensures the dedup key always matches the path that will be created on disk.
+fn normalize_tar_path(path: &Path) -> Result<(String, PathBuf), OpenClawImportError> {
+    // Reject non-UTF8 paths explicitly
+    let raw = path.to_str().ok_or_else(|| {
+        OpenClawImportError::ArchiveInvalid(format!(
+            "non-UTF8 path in archive: {}",
+            path.display()
+        ))
+    })?;
+
+    // Rebuild from components: this strips `.`, collapses `//`, and normalizes
+    let mut parts = Vec::new();
+    for comp in path.components() {
+        match comp {
+            Component::Normal(s) => {
+                let s_str = s.to_str().ok_or_else(|| {
+                    OpenClawImportError::ArchiveInvalid(format!(
+                        "non-UTF8 component in archive path: {}",
+                        raw
+                    ))
+                })?;
+                parts.push(s_str);
+            }
+            Component::CurDir => {} // strip "."
+            // ParentDir, Prefix, RootDir are caught by validate_relative_path
+            _ => {}
+        }
+    }
+
+    let normalized: PathBuf = parts.iter().collect();
+    let key = normalized.to_string_lossy().to_string();
+    Ok((key, normalized))
 }
 
 fn validate_relative_path(path: &Path) -> Result<(), OpenClawImportError> {
@@ -1555,6 +1626,70 @@ mod tests {
             err.contains("depth"),
             "should reject deep nesting: {err}"
         );
+    }
+
+    #[test]
+    fn test_validate_archive_normalization_collision() {
+        // "a/b" and "a/./b" should normalize to the same key → duplicate detected.
+        // The tar crate's Builder strips "." from paths, so we use the raw
+        // byte-level builder to craft the a/./b entry.
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let gz = GzEncoder::new(tmp.as_file(), Compression::fast());
+        let mut out = std::io::BufWriter::new(gz);
+
+        // Helper to write a raw tar entry
+        let write_raw_entry = |out: &mut std::io::BufWriter<GzEncoder<&std::fs::File>>,
+                                path: &str,
+                                data: &[u8]| {
+            let mut hdr = [0u8; 512];
+            let name_bytes = path.as_bytes();
+            let name_len = name_bytes.len().min(100);
+            hdr[..name_len].copy_from_slice(&name_bytes[..name_len]);
+            hdr[100..108].copy_from_slice(b"0000644\0");
+            hdr[108..116].copy_from_slice(b"0001000\0");
+            hdr[116..124].copy_from_slice(b"0001000\0");
+            let size_str = format!("{:011o}\0", data.len());
+            hdr[124..136].copy_from_slice(size_str.as_bytes());
+            hdr[136..148].copy_from_slice(b"00000000000\0");
+            hdr[156] = b'0';
+            hdr[257..263].copy_from_slice(b"ustar\0");
+            hdr[263..265].copy_from_slice(b"00");
+            hdr[148..156].copy_from_slice(b"        ");
+            let cksum: u32 = hdr.iter().map(|&b| b as u32).sum();
+            let cksum_str = format!("{:06o}\0 ", cksum);
+            hdr[148..156].copy_from_slice(&cksum_str.as_bytes()[..8]);
+            out.write_all(&hdr).unwrap();
+            out.write_all(data).unwrap();
+            let rem = data.len() % 512;
+            if rem != 0 {
+                out.write_all(&vec![0u8; 512 - rem]).unwrap();
+            }
+        };
+
+        write_raw_entry(&mut out, "agents/main/s.jsonl", b"first");
+        write_raw_entry(&mut out, "agents/./main/s.jsonl", b"second");
+        out.write_all(&[0u8; 1024]).unwrap();
+        let gz = out.into_inner().unwrap();
+        gz.finish().unwrap();
+
+        let result = validate_tgz_entries(tmp.path());
+        assert!(result.is_err(), "should detect normalization collision");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("duplicate"),
+            "should report as duplicate: {err}"
+        );
+    }
+
+    #[test]
+    fn test_normalize_tar_path_strips_curdir() {
+        let (key, pb) = normalize_tar_path(Path::new("a/./b/./c")).unwrap();
+        assert_eq!(key, "a/b/c");
+        assert_eq!(pb, PathBuf::from("a/b/c"));
     }
 
     #[test]
