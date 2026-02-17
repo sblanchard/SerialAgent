@@ -4,6 +4,7 @@ pub mod chat;
 pub mod clawhub;
 pub mod context;
 pub mod dashboard;
+pub mod import_openclaw;
 pub mod inbound;
 pub mod memory;
 pub mod nodes;
@@ -84,6 +85,19 @@ pub fn router() -> Router<AppState> {
         )
         .route("/v1/admin/workspace/files", get(admin::list_workspace_files))
         .route("/v1/admin/skills", get(admin::list_skills_detailed))
+        // Import (staging-based OpenClaw import)
+        .route(
+            "/v1/import/openclaw/preview",
+            post(admin::import_openclaw_preview),
+        )
+        .route(
+            "/v1/import/openclaw/apply",
+            post(admin::import_openclaw_apply_v2),
+        )
+        .route(
+            "/v1/import/openclaw/test-ssh",
+            post(admin::import_openclaw_test_ssh),
+        )
         // Dashboard
         .route("/dashboard", get(dashboard::index))
         .route("/dashboard/context", get(dashboard::context_pack_page))
