@@ -27,12 +27,15 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], defau
 
 # Web framework
 axum = { version = "0.7", features = ["json", "ws"] }
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }
 tokio-tungstenite = "0.24"
 
 # Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Regex
+regex = "1"
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -41,6 +44,7 @@ anyhow = "1"
 thiserror = "1"
 parking_lot = "0.12"
 sha2 = "0.10"
+subtle = "2"
 flate2 = "1"
 tar = "0.4"
 tempfile = "3"

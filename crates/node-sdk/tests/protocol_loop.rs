@@ -81,6 +81,7 @@ async fn start_mini_gateway() -> (
                             if let Ok(WsMessage::NodeHello {
                                 node,
                                 capabilities,
+                                ..
                             }) = serde_json::from_str(&text)
                             {
                                 break CapturedHello {
@@ -95,6 +96,7 @@ async fn start_mini_gateway() -> (
 
                 // Send gateway_welcome.
                 let welcome = WsMessage::GatewayWelcome {
+                    protocol_version: sa_protocol::PROTOCOL_VERSION,
                     gateway_version: "0.0.0-test".into(),
                 };
                 let mut sink = sink;

@@ -138,6 +138,11 @@ impl WorkspaceReader {
         })
     }
 
+    /// Clear the cache so next reads pick up fresh content.
+    pub fn refresh(&self) {
+        self.cache.write().clear();
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }

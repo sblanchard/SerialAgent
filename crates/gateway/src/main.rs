@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
 use tracing_subscriber::EnvFilter;
 
 use sa_domain::config::Config;
@@ -150,6 +151,8 @@ async fn main() -> anyhow::Result<()> {
         cancel_map,
         agents: None,
         dedupe,
+        user_facts_cache: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
+        tool_defs_cache: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
     };
 
     // ── Agent manager (sub-agents) ──────────────────────────────────
@@ -168,7 +171,7 @@ async fn main() -> anyhow::Result<()> {
             );
             loop {
                 interval.tick().await;
-                if let Err(e) = sessions.flush() {
+                if let Err(e) = sessions.flush().await {
                     tracing::warn!(error = %e, "session store flush failed");
                 }
             }
@@ -205,9 +208,23 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ── Router ───────────────────────────────────────────────────────
-    let app = api::router()
-        .layer(CorsLayer::permissive())
-        .with_state(state);
+    // Serve the Vue SPA from apps/dashboard/dist if it exists.
+    // The SPA uses hash-based routing so all paths fall back to index.html.
+    let dashboard_dist = std::path::Path::new("apps/dashboard/dist");
+    let app = if dashboard_dist.exists() {
+        let index_html = dashboard_dist.join("index.html");
+        let spa = ServeDir::new(dashboard_dist)
+            .not_found_service(ServeFile::new(index_html));
+        api::router()
+            .nest_service("/app", spa)
+            .layer(CorsLayer::permissive())
+            .with_state(state)
+    } else {
+        tracing::info!("apps/dashboard/dist not found — SPA not served (run `npm run build` in apps/dashboard)");
+        api::router()
+            .layer(CorsLayer::permissive())
+            .with_state(state)
+    };
 
     // ── Bind ─────────────────────────────────────────────────────────
     let addr = format!("{}:{}", config.server.host, config.server.port);

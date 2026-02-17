@@ -4,7 +4,7 @@
 //! the Anthropic-specific message structure where system messages go in a
 //! separate top-level `system` field.
 
-use crate::openai_compat::{from_reqwest, resolve_api_key};
+use crate::util::{from_reqwest, resolve_api_key};
 use crate::traits::{
     ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider,
 };
@@ -91,7 +91,7 @@ impl AnthropicProvider {
         for msg in &req.messages {
             match msg.role {
                 Role::System => {
-                    system_parts.push(extract_text(&msg.content));
+                    system_parts.push(msg.content.extract_all_text());
                 }
                 Role::User => {
                     api_messages.push(user_msg_to_anthropic(msg));
@@ -135,20 +135,6 @@ impl AnthropicProvider {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Message serialization helpers
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-fn extract_text(content: &MessageContent) -> String {
-    match content {
-        MessageContent::Text(t) => t.clone(),
-        MessageContent::Parts(parts) => parts
-            .iter()
-            .filter_map(|p| match p {
-                ContentPart::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
-}
 
 fn user_msg_to_anthropic(msg: &Message) -> Value {
     match &msg.content {
@@ -513,35 +499,6 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Vec<Result<Stream
     events
 }
 
-/// Drain complete SSE events from the buffer. Anthropic SSE uses
-/// `event: <type>\ndata: <json>\n\n`.
-fn drain_anthropic_sse(buffer: &mut String, state: &mut StreamState) -> Vec<Result<StreamEvent>> {
-    let mut all_events = Vec::new();
-
-    while let Some(pos) = buffer.find("\n\n") {
-        let block = buffer[..pos].to_string();
-        *buffer = buffer[pos + 2..].to_string();
-
-        // Each block may contain multiple lines: `event:`, `data:`, etc.
-        let mut data_line: Option<String> = None;
-        for line in block.lines() {
-            let line = line.trim();
-            if let Some(data) = line.strip_prefix("data:") {
-                data_line = Some(data.trim().to_string());
-            }
-        }
-
-        if let Some(data) = data_line {
-            if !data.is_empty() {
-                let events = parse_anthropic_sse(&data, state);
-                all_events.extend(events);
-            }
-        }
-    }
-
-    all_events
-}
-
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Trait implementation
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -601,48 +558,10 @@ impl LlmProvider for AnthropicProvider {
             });
         }
 
-        let stream = async_stream::stream! {
-            let mut response = resp;
-            let mut buffer = String::new();
-            let mut state = StreamState::new();
-
-            loop {
-                match response.chunk().await {
-                    Ok(Some(bytes)) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-                        let events = drain_anthropic_sse(&mut buffer, &mut state);
-                        for event in events {
-                            yield event;
-                        }
-                    }
-                    Ok(None) => {
-                        // Flush remaining buffer.
-                        if !buffer.trim().is_empty() {
-                            buffer.push_str("\n\n");
-                            let events = drain_anthropic_sse(&mut buffer, &mut state);
-                            for event in events {
-                                yield event;
-                            }
-                        }
-                        break;
-                    }
-                    Err(e) => {
-                        yield Err(from_reqwest(e));
-                        break;
-                    }
-                }
-            }
-
-            if !state.done_emitted {
-                yield Ok(StreamEvent::Done {
-                    usage: state.usage.clone(),
-                    finish_reason: Some("stop".into()),
-                });
-            }
-        };
-
-        Ok(Box::pin(stream))
+        let mut state = StreamState::new();
+        Ok(crate::sse::sse_response_stream(resp, move |data| {
+            parse_anthropic_sse(data, &mut state)
+        }))
     }
 
     async fn embeddings(&self, _req: EmbeddingsRequest) -> Result<EmbeddingsResponse> {
