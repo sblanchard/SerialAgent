@@ -713,6 +713,32 @@ pub async fn import_openclaw_test_ssh(
     }
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /v1/import/openclaw/staging — list all staging entries
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub async fn import_openclaw_list_staging(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = check_admin_token(&headers) {
+        return e.into_response();
+    }
+
+    match crate::import::openclaw::list_staging(&state.import_root).await {
+        Ok(entries) => Json(serde_json::json!({
+            "entries": entries,
+            "count": entries.len(),
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 /// Map OpenClawImportError to HTTP status + JSON body.
 fn map_import_err(e: crate::import::openclaw::OpenClawImportError) -> (StatusCode, Json<serde_json::Value>) {
     let msg = e.to_string();

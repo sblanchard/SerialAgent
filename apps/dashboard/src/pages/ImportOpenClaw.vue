@@ -1,174 +1,70 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
-import { api } from "@/api/client";
-import type {
-  ImportSource,
-  ImportOptions,
-  ImportPreviewResponse,
-  ImportApplyResponseV2,
-  MergeStrategy,
-  SshAuth,
-} from "@/api/client";
+import { ref } from "vue";
+import { useOpenClawImport, IMPORT_LIMITS } from "@/composables/useOpenClawImport";
+import type { MergeStrategy } from "@/api/client";
 import Card from "@/components/Card.vue";
 import StatusDot from "@/components/StatusDot.vue";
 
-// ── Wizard steps ─────────────────────────────────────────────────
-type Step = "source" | "preview" | "apply" | "result";
-const step = ref<Step>("source");
+const {
+  phase,
+  sourceTab,
+  localPath,
+  sshHost,
+  sshUser,
+  sshPort,
+  sshRemotePath,
+  sshAuthMethod,
+  sshKeyPath,
+  sshTesting,
+  sshTestResult,
+  preset,
+  customWorkspaces,
+  customSessions,
+  customModels,
+  customAuth,
+  canScan,
+  isAuthEnabled,
+  previewData,
+  applyResult,
+  mergeStrategy,
+  error,
+  testSsh,
+  preview,
+  confirmPreview,
+  apply,
+  reset,
+  goBack,
+  dismissError,
+} = useOpenClawImport();
 
-// ── Step 0: Source selection ─────────────────────────────────────
-type SourceTab = "local" | "ssh";
-const sourceTab = ref<SourceTab>("local");
+// Error detail toggle
+const showErrorDetail = ref(false);
 
-// Local source
-const localPath = ref("/home/user/.openclaw");
-
-// SSH source
-const sshHost = ref("");
-const sshUser = ref("");
-const sshPort = ref("");
-const sshRemotePath = ref("~/.openclaw");
-const sshAuthMethod = ref<"agent" | "keyfile">("agent");
-const sshKeyPath = ref("~/.ssh/id_ed25519");
-const sshTesting = ref(false);
-const sshTestResult = ref<{ ok: boolean; message: string } | null>(null);
-
-// Presets
-type Preset = "minimal" | "full" | "everything" | "custom";
-const preset = ref<Preset>("full");
-
-const options = computed<ImportOptions>(() => {
-  switch (preset.value) {
-    case "minimal":
-      return { include_workspaces: true, include_sessions: true };
-    case "full":
-      return { include_workspaces: true, include_sessions: true, include_models: true };
-    case "everything":
-      return {
-        include_workspaces: true,
-        include_sessions: true,
-        include_models: true,
-        include_auth_profiles: true,
-      };
-    case "custom":
-      return {
-        include_workspaces: customWorkspaces.value,
-        include_sessions: customSessions.value,
-        include_models: customModels.value,
-        include_auth_profiles: customAuth.value,
-      };
-  }
-});
-
-// Custom options
-const customWorkspaces = ref(true);
-const customSessions = ref(true);
-const customModels = ref(false);
-const customAuth = ref(false);
-
-// Scan state
-const scanning = ref(false);
-const scanError = ref("");
-const previewData = ref<ImportPreviewResponse | null>(null);
-
-function buildSource(): ImportSource {
-  if (sourceTab.value === "local") {
-    return { local: { path: localPath.value } };
-  }
-  const auth: SshAuth = sshAuthMethod.value === "keyfile"
-    ? { key_file: { key_path: sshKeyPath.value } }
-    : "agent";
-  return {
-    ssh: {
-      host: sshHost.value,
-      user: sshUser.value || undefined,
-      port: sshPort.value ? parseInt(sshPort.value) : undefined,
-      remote_path: sshRemotePath.value,
-      auth,
-    },
-  };
-}
-
-async function testSsh() {
-  sshTesting.value = true;
-  sshTestResult.value = null;
-  try {
-    const res = await api.testSsh(
-      sshHost.value,
-      sshUser.value || undefined,
-      sshPort.value ? parseInt(sshPort.value) : undefined
-    );
-    sshTestResult.value = {
-      ok: res.ok,
-      message: res.ok ? "Connection successful" : (res.stderr || res.error || "Failed"),
-    };
-  } catch (e: any) {
-    sshTestResult.value = { ok: false, message: e.message };
-  } finally {
-    sshTesting.value = false;
+// Copy error detail to clipboard
+function copyErrorDetail() {
+  if (error.value) {
+    navigator.clipboard.writeText(error.value.detail);
   }
 }
 
-async function doPreview() {
-  scanning.value = true;
-  scanError.value = "";
-  previewData.value = null;
-  try {
-    previewData.value = await api.importPreview({
-      source: buildSource(),
-      options: options.value,
-    });
-    step.value = "preview";
-  } catch (e: any) {
-    scanError.value = e.message;
-  } finally {
-    scanning.value = false;
-  }
+// Step labels for the indicator
+const STEPS = [
+  { key: "source", label: "1. Source", phases: ["idle"] },
+  { key: "validate", label: "2. Validate", phases: ["validating"] },
+  { key: "preview", label: "3. Preview", phases: ["scanned", "previewing"] },
+  { key: "apply", label: "4. Apply", phases: ["applying"] },
+  { key: "done", label: "5. Done", phases: ["done"] },
+] as const;
+
+function isStepActive(phases: readonly string[]) {
+  return phases.includes(phase.value) || (phase.value === "error");
 }
 
-const canScan = computed(() => {
-  if (scanning.value) return false;
-  if (sourceTab.value === "local") return !!localPath.value.trim();
-  return !!sshHost.value.trim();
-});
-
-// ── Step 1: Preview ─────────────────────────────────────────────
-const mergeStrategy = ref<MergeStrategy>("merge_safe");
-
-function proceedToApply() {
-  step.value = "apply";
-}
-
-// ── Step 2: Apply ───────────────────────────────────────────────
-const applying = ref(false);
-const applyError = ref("");
-const applyResult = ref<ImportApplyResponseV2 | null>(null);
-
-async function doApply() {
-  if (!previewData.value) return;
-  applying.value = true;
-  applyError.value = "";
-  try {
-    applyResult.value = await api.importApply({
-      staging_id: previewData.value.staging_id,
-      merge_strategy: mergeStrategy.value,
-      options: options.value,
-    });
-    step.value = "result";
-  } catch (e: any) {
-    applyError.value = e.message;
-  } finally {
-    applying.value = false;
-  }
-}
-
-// ── Helpers ─────────────────────────────────────────────────────
-function startOver() {
-  step.value = "source";
-  previewData.value = null;
-  applyResult.value = null;
-  scanError.value = "";
-  applyError.value = "";
+function isStepDone(phases: readonly string[]) {
+  const phaseOrder = ["idle", "validating", "scanned", "previewing", "applying", "done"];
+  const currentIdx = phaseOrder.indexOf(phase.value);
+  const stepIdx = Math.max(...phases.map((p) => phaseOrder.indexOf(p)));
+  return currentIdx > stepIdx;
 }
 
 function formatBytes(bytes: number): string {
@@ -190,17 +86,44 @@ const strategyLabel: Record<MergeStrategy, string> = {
 
     <!-- Step indicator -->
     <div class="steps">
-      <span :class="{ active: step === 'source' }">1. Source</span>
-      <span class="sep">&rarr;</span>
-      <span :class="{ active: step === 'preview' }">2. Preview</span>
-      <span class="sep">&rarr;</span>
-      <span :class="{ active: step === 'apply' }">3. Apply</span>
-      <span class="sep">&rarr;</span>
-      <span :class="{ active: step === 'result' }">4. Done</span>
+      <template v-for="(s, i) in STEPS" :key="s.key">
+        <span v-if="i > 0" class="sep">&rarr;</span>
+        <span
+          :class="{
+            active: isStepActive(s.phases),
+            done: isStepDone(s.phases),
+          }"
+        >{{ s.label }}</span>
+      </template>
     </div>
 
-    <!-- ── STEP 1: Source ──────────────────────────────────────── -->
-    <template v-if="step === 'source'">
+    <!-- ── Error panel (shown in any error state) ──────────────── -->
+    <Card v-if="phase === 'error' && error" title="Import Failed">
+      <div class="error-banner">
+        <StatusDot status="error" />
+        <strong>{{ error.friendly }}</strong>
+        <span v-if="error.status" class="error-code">HTTP {{ error.status }}</span>
+      </div>
+
+      <div class="error-actions">
+        <button class="detail-toggle" @click="showErrorDetail = !showErrorDetail">
+          {{ showErrorDetail ? "Hide" : "Show" }} technical details
+        </button>
+        <button class="secondary copy-btn" @click="copyErrorDetail">Copy details</button>
+      </div>
+
+      <div v-if="showErrorDetail" class="error-detail">
+        <code>{{ error.detail }}</code>
+      </div>
+
+      <div class="action-bar">
+        <button @click="dismissError">Try Again</button>
+        <button class="secondary" @click="reset">Start Over</button>
+      </div>
+    </Card>
+
+    <!-- ── STEP A: Source ──────────────────────────────────────── -->
+    <template v-if="phase === 'idle'">
       <Card title="Import Source">
         <div class="tab-bar">
           <button
@@ -302,23 +225,58 @@ const strategyLabel: Record<MergeStrategy, string> = {
           <label class="option warning-option"><input type="checkbox" v-model="customAuth" /> Auth profiles <span class="warn-text">(API keys)</span></label>
         </div>
 
-        <div v-if="preset === 'everything' || (preset === 'custom' && customAuth)" class="auth-warning">
+        <div v-if="isAuthEnabled" class="auth-warning">
           <StatusDot status="warn" />
           <strong>Auth import enabled.</strong>
           auth-profiles.json contains plaintext API keys. Keys will be redacted in the preview but imported as-is.
         </div>
       </Card>
 
+      <!-- Limits info -->
+      <Card title="Archive Limits">
+        <div class="limits-grid">
+          <div class="limit-item">
+            <span class="limit-label">Max archive size</span>
+            <span class="limit-value">{{ formatBytes(IMPORT_LIMITS.maxTgzBytes) }}</span>
+          </div>
+          <div class="limit-item">
+            <span class="limit-label">Max extracted size</span>
+            <span class="limit-value">{{ formatBytes(IMPORT_LIMITS.maxExtractedBytes) }}</span>
+          </div>
+          <div class="limit-item">
+            <span class="limit-label">Max file count</span>
+            <span class="limit-value">{{ IMPORT_LIMITS.maxFileCount.toLocaleString() }}</span>
+          </div>
+          <div class="limit-item">
+            <span class="limit-label">Max path depth</span>
+            <span class="limit-value">{{ IMPORT_LIMITS.maxPathDepth }}</span>
+          </div>
+          <div class="limit-item">
+            <span class="limit-label">Rejected types</span>
+            <span class="limit-value dim">{{ IMPORT_LIMITS.rejectedTypes.join(", ") }}</span>
+          </div>
+        </div>
+      </Card>
+
       <div class="action-bar">
-        <button @click="doPreview" :disabled="!canScan">
-          {{ scanning ? "Scanning..." : "Preview Import" }}
-        </button>
+        <button @click="preview" :disabled="!canScan">Preview Import</button>
+        <router-link to="/staging" class="secondary-link">Manage staging</router-link>
       </div>
-      <p v-if="scanError" class="error">{{ scanError }}</p>
     </template>
 
-    <!-- ── STEP 2: Preview ─────────────────────────────────────── -->
-    <template v-if="step === 'preview' && previewData">
+    <!-- ── STEP B: Validating ──────────────────────────────────── -->
+    <Card v-if="phase === 'validating'" title="Validating Archive">
+      <div class="validate-status">
+        <div class="spinner"></div>
+        <div class="validate-text">
+          <p>Validating archive contents...</p>
+          <p class="dim">Checking paths, entry types, sizes, and security constraints</p>
+        </div>
+      </div>
+    </Card>
+
+    <!-- ── STEP C: Preview (scanned) ──────────────────────────── -->
+    <template v-if="phase === 'scanned' && previewData">
       <!-- Inventory summary -->
       <Card title="Import Inventory">
         <div class="inv-summary">
@@ -389,8 +347,8 @@ const strategyLabel: Record<MergeStrategy, string> = {
         </div>
       </Card>
 
-      <!-- Destinations -->
-      <Card title="Destination">
+      <!-- Destinations + merge -->
+      <Card title="Destination &amp; Merge Strategy">
         <div class="dest-info">
           <div><span class="label">Workspace</span> <code>{{ previewData.conflicts_hint.default_workspace_dest }}</code></div>
           <div><span class="label">Sessions</span> <code>{{ previewData.conflicts_hint.default_sessions_dest }}</code></div>
@@ -423,15 +381,17 @@ const strategyLabel: Record<MergeStrategy, string> = {
       </Card>
 
       <div class="action-bar">
-        <button @click="proceedToApply">Confirm &amp; Apply</button>
-        <button class="secondary" @click="startOver">Back</button>
+        <button @click="confirmPreview">Confirm &amp; Apply</button>
+        <button class="secondary" @click="goBack">Back</button>
       </div>
     </template>
 
-    <!-- ── STEP 3: Apply (progress) ────────────────────────────── -->
-    <Card v-if="step === 'apply'" title="Applying Import">
+    <!-- ── STEP D: Apply (confirmation + progress) ─────────────── -->
+    <Card v-if="phase === 'previewing' || phase === 'applying'" title="Apply Import">
       <div class="apply-confirm">
-        <p>Ready to apply import with <strong>{{ strategyLabel[mergeStrategy] }}</strong> strategy.</p>
+        <p>
+          Apply import with <strong>{{ strategyLabel[mergeStrategy] }}</strong> strategy.
+        </p>
         <div v-if="previewData" class="apply-summary">
           <span>{{ previewData.inventory.agents.length }} agents</span>
           <span>{{ previewData.inventory.workspaces.length }} workspaces</span>
@@ -439,21 +399,20 @@ const strategyLabel: Record<MergeStrategy, string> = {
         </div>
       </div>
 
-      <div v-if="applying" class="progress-bar">
+      <div v-if="phase === 'applying'" class="progress-bar">
         <div class="progress-fill" style="width: 100%; animation: pulse 1.5s infinite"></div>
       </div>
 
       <div class="action-bar">
-        <button @click="doApply" :disabled="applying">
-          {{ applying ? "Importing..." : "Start Import" }}
+        <button @click="apply" :disabled="phase === 'applying'">
+          {{ phase === 'applying' ? "Importing..." : "Start Import" }}
         </button>
-        <button class="secondary" @click="step = 'preview'" :disabled="applying">Back</button>
+        <button class="secondary" @click="goBack" :disabled="phase === 'applying'">Back</button>
       </div>
-      <p v-if="applyError" class="error">{{ applyError }}</p>
     </Card>
 
-    <!-- ── STEP 4: Result ──────────────────────────────────────── -->
-    <template v-if="step === 'result' && applyResult">
+    <!-- ── STEP E: Done ───────────────────────────────────────── -->
+    <template v-if="phase === 'done' && applyResult">
       <Card title="Import Complete">
         <div class="result-banner">
           <StatusDot status="ok" />
@@ -490,8 +449,14 @@ const strategyLabel: Record<MergeStrategy, string> = {
           </p>
         </div>
 
+        <div class="done-nav">
+          <p class="dim">Staging data will be automatically cleaned up within 24 hours, or you can
+            <router-link to="/staging">manage it manually</router-link>.</p>
+        </div>
+
         <div class="action-bar">
-          <button @click="startOver">Import Another</button>
+          <button @click="reset">Import Another</button>
+          <router-link to="/agents" class="secondary-link">View Agents</router-link>
           <router-link to="/" class="secondary-link">Back to Overview</router-link>
         </div>
       </Card>
@@ -513,7 +478,48 @@ const strategyLabel: Record<MergeStrategy, string> = {
   color: var(--text-dim);
 }
 .steps .active { color: var(--accent); font-weight: 600; }
+.steps .done { color: var(--green); }
 .steps .sep { color: var(--border); }
+
+/* ── Error panel ──────────────────────────────────────────── */
+.error-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+  color: var(--red);
+  margin-bottom: 0.8rem;
+}
+.error-code {
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  font-family: var(--mono);
+}
+.error-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.detail-toggle {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  padding: 0.25rem 0.6rem;
+}
+.detail-toggle:hover { color: var(--text); border-color: var(--text-dim); }
+.copy-btn { font-size: 0.78rem !important; padding: 0.25rem 0.6rem !important; }
+.error-detail {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  word-break: break-all;
+  margin-bottom: 0.5rem;
+}
 
 /* ── Tabs ────────────────────────────────────────────────── */
 .tab-bar {
@@ -575,6 +581,17 @@ const strategyLabel: Record<MergeStrategy, string> = {
 
 .custom-opts { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.8rem; padding-left: 0.5rem; }
 
+/* ── Limits ──────────────────────────────────────────────── */
+.limits-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem 1.5rem;
+  font-size: 0.85rem;
+}
+.limit-item { display: flex; justify-content: space-between; padding: 0.25rem 0; }
+.limit-label { color: var(--text-dim); }
+.limit-value { font-family: var(--mono); }
+
 /* ── Buttons ─────────────────────────────────────────────── */
 button {
   background: var(--accent-dim);
@@ -617,6 +634,25 @@ button.secondary:hover:not(:disabled) { color: var(--text); border-color: var(--
   margin-top: 0.8rem;
   font-size: 0.85rem;
 }
+
+/* ── Validation spinner ──────────────────────────────────── */
+.validate-status {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 0;
+}
+.validate-text p { margin: 0.2rem 0; }
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* ── Inventory ───────────────────────────────────────────── */
 .inv-summary { display: flex; gap: 2rem; margin-bottom: 1rem; }
@@ -696,4 +732,12 @@ button.secondary:hover:not(:disabled) { color: var(--text); border-color: var(--
 }
 .result-section { margin-top: 1rem; }
 .warn-line { color: var(--yellow); font-size: 0.85rem; margin: 0.2rem 0; }
+
+.done-nav {
+  margin-top: 1rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
 </style>

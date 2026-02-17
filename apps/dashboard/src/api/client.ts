@@ -2,9 +2,62 @@
 
 const BASE = "";
 
+// ── Structured API error with friendly messages ─────────────────────
+
+export class ApiError extends Error {
+  status: number;
+  detail: string;
+  friendly: string;
+
+  constructor(method: string, path: string, status: number, body: string) {
+    const detail = extractDetail(body);
+    const friendly = mapFriendlyMessage(status, detail);
+    super(friendly);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+    this.friendly = friendly;
+  }
+}
+
+function extractDetail(body: string): string {
+  try {
+    const json = JSON.parse(body);
+    return json.error || json.message || body;
+  } catch {
+    return body;
+  }
+}
+
+function mapFriendlyMessage(status: number, detail: string): string {
+  const d = detail.toLowerCase();
+  if (status === 413) return "Archive exceeds size limits";
+  if (status === 401) return "Admin authentication required";
+  if (d.includes("traversal") || d.includes("parent") || d.includes("absolute"))
+    return "Unsafe paths detected in archive";
+  if (d.includes("non-utf8") || d.includes("non-utf-8"))
+    return "Unsupported filename encoding in archive";
+  if (d.includes("duplicate"))
+    return "Conflicting duplicate entries in archive";
+  if (d.includes("symlink") || d.includes("link") || d.includes("device"))
+    return "Symlinks, hardlinks, or devices not allowed";
+  if (d.includes("size limit"))
+    return "Archive exceeds size limits";
+  if (d.includes("ssh") || d.includes("connect"))
+    return "SSH connection failed";
+  if (d.includes("staging") && d.includes("not found"))
+    return "Staging data not found (may have expired)";
+  if (status === 502) return "Remote connection failed";
+  if (status >= 500) return "Server error — please try again";
+  return detail;
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
-  if (!res.ok) throw new Error(`GET ${path}: ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError("GET", path, res.status, body);
+  }
   return res.json();
 }
 
@@ -14,7 +67,19 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`POST ${path}: ${res.status}`);
+  if (!res.ok) {
+    const respBody = await res.text().catch(() => "");
+    throw new ApiError("POST", path, res.status, respBody);
+  }
+  return res.json();
+}
+
+async function del<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { method: "DELETE" });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new ApiError("DELETE", path, res.status, body);
+  }
   return res.json();
 }
 
@@ -366,6 +431,25 @@ export type TestSshResponse = {
   error?: string;
 };
 
+// ── Staging management types ────────────────────────────────────────
+
+export type StagingEntry = {
+  id: string;
+  created_at: string;
+  age_secs: number;
+  size_bytes: number;
+  has_extracted: boolean;
+};
+
+export type StagingListResponse = {
+  entries: StagingEntry[];
+  count: number;
+};
+
+export type DeleteStagingResponse = {
+  deleted: boolean;
+};
+
 // ── API functions ──────────────────────────────────────────────────
 
 export const api = {
@@ -403,6 +487,10 @@ export const api = {
     post<ImportApplyResponseV2>("/v1/import/openclaw/apply", req),
   testSsh: (host: string, user?: string, port?: number) =>
     post<TestSshResponse>("/v1/import/openclaw/test-ssh", { host, user, port }),
+  listStaging: () =>
+    get<StagingListResponse>("/v1/import/openclaw/staging"),
+  deleteStaging: (id: string) =>
+    del<DeleteStagingResponse>(`/v1/import/openclaw/staging/${encodeURIComponent(id)}`),
 
   // Provider listing
   providers: () => get<{ providers: string[]; count: number }>("/v1/models"),
