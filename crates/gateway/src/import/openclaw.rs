@@ -1,14 +1,48 @@
 //! Core OpenClaw import logic: staging, fetching (local + SSH), safe extraction,
 //! inventory scanning, sensitive file detection/redaction, and merge-strategy copy.
 //!
-//! Security properties:
-//! - Archives are validated before extraction: no symlinks, hardlinks, device files,
-//!   FIFOs, or path traversal (../ or absolute paths)
-//! - Size limits enforced: max tarball size, max extracted bytes, max file count
-//! - Filesystem-derived identifiers (agent IDs, workspace names) are sanitized
-//! - SSH surface area restricted: remote_path forced to ~/.openclaw, password auth
-//!   disabled by default
-//! - Staging dirs cleaned up on TTL (caller is responsible for scheduling)
+//! # Import Security Invariants
+//!
+//! ## Path normalization
+//! All tar paths pass through [`normalize_tar_path()`] which is the **single source
+//! of truth** for both the dedup key (validation) and the filesystem target (extraction).
+//! This eliminates split-brain where `a/b` and `a/./b` could bypass duplicate detection.
+//!
+//! Rules: strip `.` (CurDir); hard-reject `..` (ParentDir), `/` (RootDir),
+//! platform prefixes (`C:\`); reject non-UTF8; reject empty after normalization.
+//!
+//! ## Entry types: materialized vs skipped
+//! - **Materialized** (counted toward `MAX_FILE_COUNT`): Regular, GNUSparse, Directory
+//! - **Skipped** (metadata, NOT materialized but bytes counted toward extracted limit):
+//!   XHeader, XGlobalHeader, GNULongName, GNULongLink
+//! - **Rejected** (hard error): Symlink, Link (hardlink), all others (devices, FIFOs, etc.)
+//!
+//! ## Size / count limits
+//! | Limit                       | What it caps                              | Default  |
+//! |-----------------------------|-------------------------------------------|----------|
+//! | `SA_IMPORT_MAX_TGZ_BYTES`   | Compressed tarball on disk                | 200 MB   |
+//! | `SA_IMPORT_MAX_EXTRACTED_BYTES` | Sum of all entry bodies (incl. metadata)  | 500 MB   |
+//! | `SA_IMPORT_MAX_FILE_COUNT`  | Materialized filesystem nodes (files+dirs) | 50,000   |
+//! | `MAX_ENTRIES_TOTAL`         | All tar records including metadata          | 100,000  |
+//! | `MAX_PATH_DEPTH`            | Max nesting depth per path                  | 64       |
+//!
+//! ## Extraction hardening
+//! - No `unpack_in()` — fully manual extraction with [`std::fs::OpenOptions::create_new(true)`]
+//!   to prevent overwrites, TOCTOU symlink-following, and duplicate-path tricks.
+//! - Permissions masked: setuid/setgid/sticky stripped (`& 0o777`), dirs forced to `0o755`.
+//! - Duplicate file paths detected during validation (normalized key) AND enforced during
+//!   extraction (`create_new` fails on collision).
+//!
+//! ## SSH surface area
+//! - `remote_path` forced to `~/.openclaw` regardless of request input
+//! - Password auth disabled by default (`SA_IMPORT_ALLOW_SSH_PASSWORD=1` to override)
+//! - `BatchMode=yes`, `PreferredAuthentications=publickey`, `KbdInteractiveAuthentication=no`
+//! - Host/user passed as discrete args (never shell-concatenated)
+//!
+//! ## Staging lifecycle
+//! - Staging dirs identified by UUID (Axum extracts `Path<Uuid>` — non-UUID rejected at routing)
+//! - Periodic hourly sweep deletes staging >24h old
+//! - Filesystem identifiers (agent IDs, workspace names) validated via [`sanitize_ident()`]
 
 use crate::api::import_openclaw::*;
 use flate2::read::GzDecoder;
@@ -801,11 +835,17 @@ fn validate_tgz_entries(tgz_path: &Path) -> Result<(), OpenClawImportError> {
 
 /// Normalize a tar path to a canonical form for dedup and filesystem use.
 ///
-/// - Rejects non-UTF8 paths (prevents encoding-based bypasses)
-/// - Strips `.` components and repeated separators
-/// - Returns the normalized path as a String key (for dedup) and PathBuf (for fs)
+/// This is the **single source of truth** for path normalization. Both validation
+/// (dedup key) and extraction (filesystem target) must use this function so the
+/// model matches.
 ///
-/// This ensures the dedup key always matches the path that will be created on disk.
+/// Invariants enforced:
+/// - Rejects non-UTF8 paths and components (encoding bypass prevention)
+/// - Rejects `..` (ParentDir), absolute (`/`, RootDir), and platform prefixes (`C:\`)
+/// - Strips `.` (CurDir) components and collapses repeated separators
+/// - Rejects empty Normal components (e.g. from pathological inputs)
+/// - Rejects paths that normalize to empty
+/// - Returns `(String key, PathBuf fs_path)` — both always identical in meaning
 fn normalize_tar_path(path: &Path) -> Result<(String, PathBuf), OpenClawImportError> {
     // Reject non-UTF8 paths explicitly
     let raw = path.to_str().ok_or_else(|| {
@@ -815,7 +855,9 @@ fn normalize_tar_path(path: &Path) -> Result<(String, PathBuf), OpenClawImportEr
         ))
     })?;
 
-    // Rebuild from components: this strips `.`, collapses `//`, and normalizes
+    // Rebuild from components: this strips `.`, collapses `//`, and normalizes.
+    // Dangerous components are hard-rejected here (not just in validate_relative_path)
+    // so this function is safe to call standalone.
     let mut parts = Vec::new();
     for comp in path.components() {
         match comp {
@@ -826,12 +868,43 @@ fn normalize_tar_path(path: &Path) -> Result<(String, PathBuf), OpenClawImportEr
                         raw
                     ))
                 })?;
+                // Reject empty normal components (shouldn't happen, but be explicit)
+                if s_str.is_empty() {
+                    return Err(OpenClawImportError::ArchiveInvalid(format!(
+                        "empty component in archive path: {}",
+                        raw
+                    )));
+                }
                 parts.push(s_str);
             }
             Component::CurDir => {} // strip "."
-            // ParentDir, Prefix, RootDir are caught by validate_relative_path
-            _ => {}
+            Component::ParentDir => {
+                return Err(OpenClawImportError::ArchiveInvalid(format!(
+                    "parent dir traversal in path: {}",
+                    raw
+                )));
+            }
+            Component::RootDir => {
+                return Err(OpenClawImportError::ArchiveInvalid(format!(
+                    "absolute path (root dir): {}",
+                    raw
+                )));
+            }
+            Component::Prefix(_) => {
+                return Err(OpenClawImportError::ArchiveInvalid(format!(
+                    "platform prefix in path: {}",
+                    raw
+                )));
+            }
         }
+    }
+
+    // Reject paths that normalize to empty (e.g. "." or "./")
+    if parts.is_empty() {
+        return Err(OpenClawImportError::ArchiveInvalid(format!(
+            "path normalizes to empty: {}",
+            raw
+        )));
     }
 
     let normalized: PathBuf = parts.iter().collect();
@@ -1807,6 +1880,101 @@ mod tests {
                 mode & 0o7777
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_safe_extract_dir_then_file_collision() {
+        // Archive has a dir entry "workspace" then a file entry "workspace"
+        // Extraction should fail because you can't create_new a file where a dir exists.
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let gz = GzEncoder::new(tmp.as_file(), Compression::fast());
+        let mut builder = tar::Builder::new(gz);
+
+        // Add directory entry
+        let mut dir_hdr = tar::Header::new_gnu();
+        dir_hdr.set_entry_type(tar::EntryType::Directory);
+        dir_hdr.set_size(0);
+        dir_hdr.set_mode(0o755);
+        dir_hdr.set_cksum();
+        builder
+            .append_data(&mut dir_hdr, "workspace", &[] as &[u8])
+            .unwrap();
+
+        // Add file entry with same name
+        let data = b"conflict";
+        let mut file_hdr = tar::Header::new_gnu();
+        file_hdr.set_entry_type(tar::EntryType::Regular);
+        file_hdr.set_size(data.len() as u64);
+        file_hdr.set_mode(0o644);
+        file_hdr.set_cksum();
+        builder
+            .append_data(&mut file_hdr, "workspace", &data[..])
+            .unwrap();
+
+        let gz = builder.into_inner().unwrap();
+        gz.finish().unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let result = safe_extract_tgz(tmp.path(), dest.path()).await;
+        // Should fail: can't create a file where a directory exists
+        assert!(result.is_err(), "dir-then-file collision should fail: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_safe_extract_file_then_dir_collision() {
+        // Archive has a file entry "agents" then a dir entry "agents"
+        // Extraction should fail because the file already occupies the path.
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let gz = GzEncoder::new(tmp.as_file(), Compression::fast());
+        let mut builder = tar::Builder::new(gz);
+
+        // Add file entry
+        let data = b"I'm a file, not a dir";
+        let mut file_hdr = tar::Header::new_gnu();
+        file_hdr.set_entry_type(tar::EntryType::Regular);
+        file_hdr.set_size(data.len() as u64);
+        file_hdr.set_mode(0o644);
+        file_hdr.set_cksum();
+        builder
+            .append_data(&mut file_hdr, "agents", &data[..])
+            .unwrap();
+
+        // Add directory entry with same name
+        let mut dir_hdr = tar::Header::new_gnu();
+        dir_hdr.set_entry_type(tar::EntryType::Directory);
+        dir_hdr.set_size(0);
+        dir_hdr.set_mode(0o755);
+        dir_hdr.set_cksum();
+        builder
+            .append_data(&mut dir_hdr, "agents", &[] as &[u8])
+            .unwrap();
+
+        let gz = builder.into_inner().unwrap();
+        gz.finish().unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let result = safe_extract_tgz(tmp.path(), dest.path()).await;
+        // Should fail: create_dir_all on a path that's already a file
+        assert!(result.is_err(), "file-then-dir collision should fail: {:?}", result);
+    }
+
+    #[test]
+    fn test_normalize_tar_path_rejects_parent_dir() {
+        // normalize_tar_path must reject .. independently of validate_relative_path
+        assert!(normalize_tar_path(Path::new("a/../b")).is_err());
+        assert!(normalize_tar_path(Path::new("../x")).is_err());
+    }
+
+    #[test]
+    fn test_normalize_tar_path_rejects_empty_result() {
+        assert!(normalize_tar_path(Path::new(".")).is_err());
+        assert!(normalize_tar_path(Path::new("./")).is_err());
     }
 
     // ── MergeSafe doesn't overwrite ─────────────────────────────
