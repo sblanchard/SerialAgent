@@ -462,7 +462,7 @@ pub async fn inbound(
     };
 
     let state_arc = Arc::new(state.clone());
-    let mut rx = run_turn(state_arc, input);
+    let (_run_id, mut rx) = run_turn(state_arc, input);
 
     // ── 9. Build outbound actions ─────────────────────────────────
     let mut actions = Vec::new();

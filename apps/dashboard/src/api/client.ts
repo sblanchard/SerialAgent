@@ -450,6 +450,72 @@ export type DeleteStagingResponse = {
   deleted: boolean;
 };
 
+// ── Run types ───────────────────────────────────────────────────────
+
+export type RunStatus = "queued" | "running" | "completed" | "failed" | "stopped";
+
+export type NodeKind = "llm_request" | "tool_call";
+
+export type RunNode = {
+  node_id: number;
+  kind: NodeKind;
+  name: string;
+  status: RunStatus;
+  started_at: string;
+  ended_at?: string;
+  duration_ms?: number;
+  input_preview?: string;
+  output_preview?: string;
+  is_error: boolean;
+  input_tokens: number;
+  output_tokens: number;
+};
+
+export type RunListItem = {
+  run_id: string;
+  session_key: string;
+  session_id: string;
+  status: RunStatus;
+  agent_id?: string;
+  model?: string;
+  started_at: string;
+  ended_at?: string;
+  duration_ms?: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  input_preview?: string;
+  output_preview?: string;
+  error?: string;
+  node_count: number;
+  loop_count: number;
+};
+
+export type RunDetail = RunListItem & {
+  nodes: RunNode[];
+};
+
+export type RunListResponse = {
+  runs: RunListItem[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type RunNodesResponse = {
+  run_id: string;
+  nodes: RunNode[];
+  count: number;
+};
+
+export type RunListParams = {
+  status?: RunStatus;
+  session_key?: string;
+  agent_id?: string;
+  limit?: number;
+  offset?: number;
+};
+
 // ── API functions ──────────────────────────────────────────────────
 
 export const api = {
@@ -491,6 +557,22 @@ export const api = {
     get<StagingListResponse>("/v1/import/openclaw/staging"),
   deleteStaging: (id: string) =>
     del<DeleteStagingResponse>(`/v1/import/openclaw/staging/${encodeURIComponent(id)}`),
+
+  // Runs
+  getRuns: (params?: RunListParams) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set("status", params.status);
+    if (params?.session_key) q.set("session_key", params.session_key);
+    if (params?.agent_id) q.set("agent_id", params.agent_id);
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.offset) q.set("offset", String(params.offset));
+    const qs = q.toString();
+    return get<RunListResponse>(`/v1/runs${qs ? "?" + qs : ""}`);
+  },
+  getRun: (runId: string) =>
+    get<RunDetail>(`/v1/runs/${encodeURIComponent(runId)}`),
+  getRunNodes: (runId: string) =>
+    get<RunNodesResponse>(`/v1/runs/${encodeURIComponent(runId)}/nodes`),
 
   // Provider listing
   providers: () => get<{ providers: string[]; count: number }>("/v1/models"),

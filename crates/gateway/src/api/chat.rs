@@ -83,7 +83,7 @@ pub async fn chat(
     };
 
     let state_arc = std::sync::Arc::new(state.clone());
-    let mut rx = run_turn(state_arc, input);
+    let (_run_id, mut rx) = run_turn(state_arc, input);
 
     // Drain all events and collect the final response.
     let mut final_content = String::new();
@@ -206,7 +206,7 @@ pub async fn chat_stream(
     };
 
     let state_arc = std::sync::Arc::new(state.clone());
-    let rx = run_turn(state_arc, input);
+    let (_run_id, rx) = run_turn(state_arc, input);
 
     let stream = make_sse_stream(rx, permit);
 

@@ -9,6 +9,7 @@ pub mod inbound;
 pub mod memory;
 pub mod nodes;
 pub mod providers;
+pub mod runs;
 pub mod sessions;
 pub mod skills;
 pub mod tools;
@@ -67,6 +68,11 @@ pub fn router() -> Router<AppState> {
         .route("/v1/clawhub/install", post(clawhub::install_pack))
         .route("/v1/clawhub/update", post(clawhub::update_pack))
         .route("/v1/clawhub/uninstall", post(clawhub::uninstall_pack))
+        // Runs (execution tracking)
+        .route("/v1/runs", get(runs::list_runs))
+        .route("/v1/runs/:id", get(runs::get_run))
+        .route("/v1/runs/:id/nodes", get(runs::get_run_nodes))
+        .route("/v1/runs/:id/events", get(runs::run_events_sse))
         // Agents (audit / introspection)
         .route("/v1/agents", get(agents::list_agents))
         // Providers / Models

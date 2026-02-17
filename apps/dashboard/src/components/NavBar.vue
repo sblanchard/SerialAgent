@@ -4,6 +4,7 @@ const route = useRoute();
 
 const links = [
   { to: "/", label: "Overview", icon: "~" },
+  { to: "/runs", label: "Runs", icon: "!" },
   { to: "/nodes", label: "Nodes", icon: ">" },
   { to: "/agents", label: "Agents", icon: "@" },
   { to: "/sessions", label: "Sessions", icon: "#" },

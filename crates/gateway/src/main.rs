@@ -137,6 +137,12 @@ async fn main() -> anyhow::Result<()> {
     let _ = std::fs::create_dir_all(&import_root);
     tracing::info!(path = %import_root.display(), "import staging root ready");
 
+    // ── Run store ────────────────────────────────────────────────────
+    let run_store = Arc::new(sa_gateway::runtime::runs::RunStore::new(
+        &config.workspace.state_path,
+    ));
+    tracing::info!("run store ready");
+
     // ── App state (without agents — needed for AgentManager init) ───
     let mut state = AppState {
         config: config.clone(),
@@ -156,6 +162,7 @@ async fn main() -> anyhow::Result<()> {
         cancel_map,
         agents: None,
         dedupe,
+        run_store,
         import_root,
     };
 
