@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use futures_util::{FutureExt, SinkExt, StreamExt};
-use sa_protocol::{NodeInfo, ToolResponseError, WsMessage};
+use sa_protocol::{ErrorKind, NodeInfo, ToolResponseError, WsMessage, PROTOCOL_VERSION};
 use tokio::sync::{mpsc, Semaphore};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
@@ -144,6 +144,7 @@ impl NodeClient {
 
         // ── Send node_hello ──────────────────────────────────────────
         let hello = WsMessage::NodeHello {
+            protocol_version: PROTOCOL_VERSION,
             node: NodeInfo {
                 id: self.node_id.clone(),
                 name: self.name.clone(),
@@ -163,6 +164,7 @@ impl NodeClient {
                 if let Message::Text(text) = msg {
                     if let Ok(WsMessage::GatewayWelcome {
                         gateway_version,
+                        ..
                     }) = serde_json::from_str(&text)
                     {
                         return Ok(gateway_version);
@@ -331,7 +333,7 @@ impl NodeClient {
                                                     ok: false,
                                                     result: None,
                                                     error: Some(ToolResponseError {
-                                                        kind: "Failed".into(),
+                                                        kind: ErrorKind::Failed,
                                                         message: "tool handler panicked".into(),
                                                     }),
                                                 }
@@ -348,7 +350,7 @@ impl NodeClient {
                                             ok: false,
                                             result: None,
                                             error: Some(ToolResponseError {
-                                                kind: "Failed".into(),
+                                                kind: ErrorKind::NotFound,
                                                 message: format!("unknown tool: {tool}"),
                                             }),
                                         }
@@ -412,15 +414,14 @@ impl NodeClient {
 /// Convert an SDK [`ToolError`] into the protocol's [`ToolResponseError`].
 fn tool_error_to_protocol(err: &ToolError) -> ToolResponseError {
     let (kind, message) = match err {
-        ToolError::InvalidArgs(m) => ("InvalidArgs", m.clone()),
-        ToolError::NotAllowed(m) => ("NotAllowed", m.clone()),
-        ToolError::Failed(m) => ("Failed", m.clone()),
-        ToolError::Timeout(m) => ("Timeout", m.clone()),
+        ToolError::InvalidArgs(m) => (ErrorKind::InvalidArgs, m.clone()),
+        ToolError::NotAllowed(m) => (ErrorKind::NotAllowed, m.clone()),
+        ToolError::Failed(m) => (ErrorKind::Failed, m.clone()),
+        ToolError::Timeout(m) => (ErrorKind::Timeout, m.clone()),
+        ToolError::Cancelled(m) => (ErrorKind::Cancelled, m.clone()),
+        ToolError::NotFound(m) => (ErrorKind::NotFound, m.clone()),
     };
-    ToolResponseError {
-        kind: kind.into(),
-        message,
-    }
+    ToolResponseError { kind, message }
 }
 
 #[cfg(test)]
