@@ -55,6 +55,9 @@ fn max_file_count() -> u64 {
 /// Max length for identifiers (agent IDs, workspace names).
 const MAX_IDENT_LEN: usize = 128;
 
+/// Max path depth to prevent zip-bomb-style deeply nested directories.
+const MAX_PATH_DEPTH: usize = 64;
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Error type
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -502,6 +505,10 @@ async fn fetch_ssh_tar(
     }
     // Connection timeout to prevent hanging
     cmd.arg("-o").arg("ConnectTimeout=30");
+    // Restrict to publickey auth only — prevents interactive prompts,
+    // password prompts, and keyboard-interactive challenges.
+    cmd.arg("-o").arg("PreferredAuthentications=publickey");
+    cmd.arg("-o").arg("KbdInteractiveAuthentication=no");
 
     if let Some(p) = port {
         cmd.arg("-p").arg(p.to_string());
@@ -566,17 +573,15 @@ async fn safe_extract_tgz(
     tgz_path: &Path,
     dest_dir: &Path,
 ) -> Result<(), OpenClawImportError> {
-    // Stream validation: check all entries before extracting.
-    // Uses streaming (BufReader) — does NOT load entire archive into memory.
+    // Phase 1: Stream validation — check all entries before extracting.
+    // This catches path traversal, symlinks, duplicates, size limits, etc.
     validate_tgz_entries(tgz_path)?;
 
-    // Now extract using tar+flate2 (streaming, not loading whole file).
+    // Phase 2: Manual extraction with hardened file creation.
+    // We do NOT use `unpack_in()` — instead we control every file open.
     let file = std::fs::File::open(tgz_path)?;
     let gz = GzDecoder::new(std::io::BufReader::new(file));
     let mut archive = Archive::new(gz);
-
-    // Disable unpacking of symlinks/hardlinks/special files
-    archive.set_unpack_xattrs(false);
 
     for entry in archive.entries().map_err(|e| {
         OpenClawImportError::ArchiveInvalid(format!("tar entries failed: {e}"))
@@ -587,39 +592,95 @@ async fn safe_extract_tgz(
 
         let entry_type = entry.header().entry_type();
 
-        // Only allow regular files and directories
+        // Skip metadata-only entries (PAX headers, GNU longname)
         match entry_type {
+            tar::EntryType::XHeader
+            | tar::EntryType::XGlobalHeader
+            | tar::EntryType::GNULongName
+            | tar::EntryType::GNULongLink => continue,
             tar::EntryType::Regular
             | tar::EntryType::GNUSparse
             | tar::EntryType::Directory => {}
-            tar::EntryType::Symlink | tar::EntryType::Link => {
+            _ => {
+                // Already validated in phase 1, but defense-in-depth
                 let path = entry.path().unwrap_or_default();
                 return Err(OpenClawImportError::ArchiveInvalid(format!(
-                    "symlink/hardlink rejected: {}",
-                    path.display()
-                )));
-            }
-            other => {
-                let path = entry.path().unwrap_or_default();
-                return Err(OpenClawImportError::ArchiveInvalid(format!(
-                    "unsupported entry type {:?} at: {}",
-                    other,
+                    "unexpected entry type {:?} at: {}",
+                    entry_type,
                     path.display()
                 )));
             }
         }
 
-        // Safe unpack into dest_dir
-        entry.unpack_in(dest_dir).map_err(|e| {
-            OpenClawImportError::ArchiveInvalid(format!("unpack failed: {e}"))
-        })?;
+        let rel_path = entry
+            .path()
+            .map_err(|e| {
+                OpenClawImportError::ArchiveInvalid(format!("tar path read failed: {e}"))
+            })?
+            .into_owned();
+
+        // Defense-in-depth: re-validate path even though phase 1 already did
+        validate_relative_path(&rel_path)?;
+
+        let full_path = dest_dir.join(&rel_path);
+
+        match entry_type {
+            tar::EntryType::Directory => {
+                std::fs::create_dir_all(&full_path)?;
+                // Safe permissions: rwxr-xr-x, no setuid/setgid/sticky
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(
+                        &full_path,
+                        std::fs::Permissions::from_mode(0o755),
+                    )?;
+                }
+            }
+            _ => {
+                // Regular file (or GNUSparse)
+                if let Some(parent) = full_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+
+                // create_new(true): never overwrite, never follow pre-existing symlinks.
+                // This prevents tar tricks with repeated paths and TOCTOU races.
+                let mut out_file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&full_path)
+                    .map_err(|e| {
+                        if e.kind() == io::ErrorKind::AlreadyExists {
+                            OpenClawImportError::ArchiveInvalid(format!(
+                                "file collision (duplicate or pre-existing): {}",
+                                rel_path.display()
+                            ))
+                        } else {
+                            OpenClawImportError::Io(e)
+                        }
+                    })?;
+
+                std::io::copy(&mut entry, &mut out_file)?;
+
+                // Safe permissions: strip setuid(04000)/setgid(02000)/sticky(01000)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = entry.header().mode().unwrap_or(0o644) & 0o777;
+                    std::fs::set_permissions(
+                        &full_path,
+                        std::fs::Permissions::from_mode(mode),
+                    )?;
+                }
+            }
+        }
     }
 
     Ok(())
 }
 
-/// Validate tar entries without extracting: check paths, types, and cumulative sizes.
-/// Uses streaming (BufReader) — NOT tokio::fs::read.
+/// Validate tar entries without extracting: check paths, types, cumulative sizes,
+/// and duplicate file paths. Uses streaming (BufReader) — NOT tokio::fs::read.
 fn validate_tgz_entries(tgz_path: &Path) -> Result<(), OpenClawImportError> {
     let file = std::fs::File::open(tgz_path)?;
     let gz = GzDecoder::new(std::io::BufReader::new(file));
@@ -629,6 +690,7 @@ fn validate_tgz_entries(tgz_path: &Path) -> Result<(), OpenClawImportError> {
     let max_files = max_file_count();
     let mut total_bytes: u64 = 0;
     let mut total_files: u64 = 0;
+    let mut seen_file_paths = std::collections::HashSet::new();
 
     for entry in archive.entries().map_err(|e| {
         OpenClawImportError::ArchiveInvalid(format!("tar entries failed: {e}"))
@@ -637,12 +699,20 @@ fn validate_tgz_entries(tgz_path: &Path) -> Result<(), OpenClawImportError> {
             OpenClawImportError::ArchiveInvalid(format!("tar entry read failed: {e}"))
         })?;
 
-        // ── Type check: reject symlinks, hardlinks, devices, FIFOs ──
+        // ── Type check ──
         let entry_type = entry.header().entry_type();
         match entry_type {
+            // PAX / GNU longname metadata: normally consumed transparently by the
+            // tar crate, but handle defensively — skip without counting.
+            tar::EntryType::XHeader
+            | tar::EntryType::XGlobalHeader
+            | tar::EntryType::GNULongName
+            | tar::EntryType::GNULongLink => continue,
+            // Allowed content types
             tar::EntryType::Regular
             | tar::EntryType::GNUSparse
             | tar::EntryType::Directory => {}
+            // Reject everything else
             tar::EntryType::Symlink | tar::EntryType::Link => {
                 let path = entry.path().unwrap_or_default();
                 return Err(OpenClawImportError::ArchiveInvalid(format!(
@@ -660,11 +730,22 @@ fn validate_tgz_entries(tgz_path: &Path) -> Result<(), OpenClawImportError> {
             }
         }
 
-        // ── Path check: no traversal ──
+        // ── Path check: no traversal, no empty, depth limit ──
         let path = entry.path().map_err(|e| {
             OpenClawImportError::ArchiveInvalid(format!("tar path read failed: {e}"))
         })?;
         validate_relative_path(&path)?;
+
+        // ── Duplicate file detection (dirs may repeat, that's OK) ──
+        if !matches!(entry_type, tar::EntryType::Directory) {
+            let key = path.to_string_lossy().to_string();
+            if !seen_file_paths.insert(key) {
+                return Err(OpenClawImportError::ArchiveInvalid(format!(
+                    "duplicate file path in archive: {}",
+                    path.display()
+                )));
+            }
+        }
 
         // ── Size limits ──
         let entry_size = entry.header().size().unwrap_or(0);
@@ -688,28 +769,58 @@ fn validate_tgz_entries(tgz_path: &Path) -> Result<(), OpenClawImportError> {
 }
 
 fn validate_relative_path(path: &Path) -> Result<(), OpenClawImportError> {
+    // Reject empty paths
+    if path.as_os_str().is_empty() {
+        return Err(OpenClawImportError::ArchiveInvalid(
+            "empty path in archive".to_string(),
+        ));
+    }
     if path.is_absolute() {
         return Err(OpenClawImportError::ArchiveInvalid(format!(
             "absolute path in archive: {}",
             path.display()
         )));
     }
+    let mut depth = 0usize;
     for comp in path.components() {
         match comp {
-            Component::Normal(_) | Component::CurDir => {}
+            Component::Normal(_) => {
+                depth += 1;
+            }
+            Component::CurDir => {}
             Component::ParentDir => {
                 return Err(OpenClawImportError::ArchiveInvalid(format!(
                     "parent dir traversal in archive: {}",
                     path.display()
                 )));
             }
-            _ => {
+            Component::Prefix(_) => {
                 return Err(OpenClawImportError::ArchiveInvalid(format!(
-                    "invalid component in archive: {}",
+                    "platform prefix in archive path: {}",
+                    path.display()
+                )));
+            }
+            Component::RootDir => {
+                return Err(OpenClawImportError::ArchiveInvalid(format!(
+                    "root dir in archive path: {}",
                     path.display()
                 )));
             }
         }
+    }
+    // Reject paths like "." or "./" that have no real components
+    if depth == 0 {
+        return Err(OpenClawImportError::ArchiveInvalid(format!(
+            "path resolves to empty: {}",
+            path.display()
+        )));
+    }
+    if depth > MAX_PATH_DEPTH {
+        return Err(OpenClawImportError::ArchiveInvalid(format!(
+            "path depth {} exceeds limit of {MAX_PATH_DEPTH}: {}",
+            depth,
+            path.display()
+        )));
     }
     Ok(())
 }
@@ -1183,6 +1294,34 @@ mod tests {
         assert!(validate_relative_path(Path::new("/tmp/evil")).is_err());
     }
 
+    #[test]
+    fn test_empty_path_rejected() {
+        assert!(validate_relative_path(Path::new("")).is_err());
+    }
+
+    #[test]
+    fn test_curdir_only_rejected() {
+        // "." and "./" resolve to zero Normal components → rejected
+        assert!(validate_relative_path(Path::new(".")).is_err());
+        assert!(validate_relative_path(Path::new("./")).is_err());
+    }
+
+    #[test]
+    fn test_deep_nesting_rejected() {
+        let deep = (0..MAX_PATH_DEPTH + 1)
+            .map(|i| format!("d{i}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        assert!(validate_relative_path(Path::new(&deep)).is_err());
+
+        // Just at the limit should be OK
+        let at_limit = (0..MAX_PATH_DEPTH)
+            .map(|i| format!("d{i}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        assert!(validate_relative_path(Path::new(&at_limit)).is_ok());
+    }
+
     // ── Identifier sanitization ─────────────────────────────────
 
     #[test]
@@ -1372,6 +1511,53 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_archive_absolute_path() {
+        // Create archive with absolute path via raw bytes
+        let tgz = create_test_tgz_with_traversal(&[("/tmp/evil", b"pwned")]);
+        let result = validate_tgz_entries(tgz.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("absolute") || err.contains("root dir"),
+            "should reject absolute path: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_archive_duplicate_file_paths() {
+        // The tar crate's Builder doesn't check for duplicates,
+        // so we can create a valid tgz with the same file path twice.
+        let tgz = create_test_tgz(&[
+            ("agents/main/sessions/s1.jsonl", b"first"),
+            ("agents/main/sessions/s1.jsonl", b"second"),
+        ]);
+        let result = validate_tgz_entries(tgz.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("duplicate"),
+            "should reject duplicate file path: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_archive_deep_nesting() {
+        let deep = (0..MAX_PATH_DEPTH + 1)
+            .map(|i| format!("d{i}"))
+            .collect::<Vec<_>>()
+            .join("/")
+            + "/file.txt";
+        let tgz = create_test_tgz(&[(&deep, b"deep")]);
+        let result = validate_tgz_entries(tgz.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("depth"),
+            "should reject deep nesting: {err}"
+        );
+    }
+
+    #[test]
     fn test_validate_archive_rejects_symlink() {
         use flate2::write::GzEncoder;
         use flate2::Compression;
@@ -1426,6 +1612,66 @@ mod tests {
         let dest = tempfile::tempdir().unwrap();
         let result = safe_extract_tgz(tgz.path(), dest.path()).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_safe_extract_create_new_prevents_overwrite() {
+        let tgz = create_test_tgz(&[("workspace/MEMORY.md", b"# Memory file")]);
+        let dest = tempfile::tempdir().unwrap();
+
+        // First extraction should succeed
+        let r1 = safe_extract_tgz(tgz.path(), dest.path()).await;
+        assert!(r1.is_ok(), "first extract should succeed: {:?}", r1);
+
+        // Second extraction into same dir should fail due to create_new(true)
+        let r2 = safe_extract_tgz(tgz.path(), dest.path()).await;
+        assert!(r2.is_err(), "second extract should fail (file collision)");
+        let err = r2.unwrap_err().to_string();
+        assert!(
+            err.contains("collision") || err.contains("AlreadyExists") || err.contains("duplicate"),
+            "should report file collision: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_safe_extract_permission_masking() {
+        // Create archive with setuid bit in header
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let gz = GzEncoder::new(tmp.as_file(), Compression::fast());
+        let mut builder = tar::Builder::new(gz);
+
+        let data = b"#!/bin/sh\necho pwned";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o4755); // setuid!
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "workspace/evil.sh", &data[..])
+            .unwrap();
+        let gz = builder.into_inner().unwrap();
+        gz.finish().unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let result = safe_extract_tgz(tmp.path(), dest.path()).await;
+        assert!(result.is_ok(), "extract should succeed: {:?}", result);
+
+        // Verify setuid bit was stripped
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(dest.path().join("workspace/evil.sh")).unwrap();
+            let mode = meta.permissions().mode();
+            assert_eq!(
+                mode & 0o7777,
+                0o755,
+                "setuid bit should be stripped, got {:o}",
+                mode & 0o7777
+            );
+        }
     }
 
     // ── MergeSafe doesn't overwrite ─────────────────────────────
