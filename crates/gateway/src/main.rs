@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
 use tracing_subscriber::EnvFilter;
 
 use sa_domain::config::Config;
@@ -207,36 +208,23 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ── Router ───────────────────────────────────────────────────────
-    let cors = if config.server.cors.allowed_origins.iter().any(|o| o == "*") {
-        tracing::warn!("CORS configured with wildcard origin — this is NOT recommended for production");
-        CorsLayer::permissive()
+    // Serve the Vue SPA from apps/dashboard/dist if it exists.
+    // The SPA uses hash-based routing so all paths fall back to index.html.
+    let dashboard_dist = std::path::Path::new("apps/dashboard/dist");
+    let app = if dashboard_dist.exists() {
+        let index_html = dashboard_dist.join("index.html");
+        let spa = ServeDir::new(dashboard_dist)
+            .not_found_service(ServeFile::new(index_html));
+        api::router()
+            .nest_service("/app", spa)
+            .layer(CorsLayer::permissive())
+            .with_state(state)
     } else {
-        let patterns = config.server.cors.allowed_origins.clone();
-        CorsLayer::new()
-            .allow_origin(AllowOrigin::predicate(
-                move |origin: &axum::http::HeaderValue, _req: &_| {
-                    let Ok(origin_str) = origin.to_str() else {
-                        return false;
-                    };
-                    patterns.iter().any(|pattern| {
-                        if let Some(prefix) = pattern.strip_suffix(":*") {
-                            // Wildcard port: match "http://localhost:*" against
-                            // "http://localhost:3000"
-                            origin_str.starts_with(prefix)
-                                && origin_str[prefix.len()..].starts_with(':')
-                        } else {
-                            origin_str == pattern
-                        }
-                    })
-                },
-            ))
-            .allow_methods(tower_http::cors::Any)
-            .allow_headers(tower_http::cors::Any)
+        tracing::info!("apps/dashboard/dist not found — SPA not served (run `npm run build` in apps/dashboard)");
+        api::router()
+            .layer(CorsLayer::permissive())
+            .with_state(state)
     };
-
-    let app = api::router()
-        .layer(cors)
-        .with_state(state);
 
     // ── Bind ─────────────────────────────────────────────────────────
     let addr = format!("{}:{}", config.server.host, config.server.port);

@@ -92,7 +92,16 @@ pub async fn index(State(state): State<AppState>) -> impl IntoResponse {
 <li><a href="/v1/memory/health">/v1/memory/health</a> — SerialMemory health</li>
 <li><a href="/v1/models">/v1/models</a> — Provider list</li>
 <li><a href="/v1/models/roles">/v1/models/roles</a> — Role assignments</li>
+<li><a href="/v1/nodes">/v1/nodes</a> — Connected nodes</li>
+<li><a href="/v1/sessions">/v1/sessions</a> — Active sessions</li>
+<li><a href="/v1/agents">/v1/agents</a> — Agent configs</li>
+<li><a href="/v1/tools/invoke">/v1/tools/invoke</a> — Tool invoke (POST)</li>
 </ul>
+</div>
+
+<h2>Dashboard App</h2>
+<div class="card">
+<p><a href="/app">Open Dashboard SPA</a> (Vue 3 — nodes, sessions, agents, tool ping)</p>
 </div>
 </body>
 </html>"#,

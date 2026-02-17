@@ -30,7 +30,7 @@
 //! # Connection flow (hard-coded by the SDK)
 //!
 //! 1. Connect WS (with `token=<SA_NODE_TOKEN>` query param)
-//! 2. Send `node_hello { node: { id, name, node_type, version, tags }, capabilities }`
+//! 2. Send `node_hello { protocol_version, node: { id, name, node_type, version, tags }, capabilities }`
 //! 3. Wait for `gateway_welcome { gateway_version }`
 //! 4. Main loop:
 //!    - On `tool_request`: dispatch to registered handler, always send `tool_response`
@@ -63,4 +63,6 @@ pub use types::{NodeSdkError, ToolContext, ToolError, ToolResult};
 pub use sa_protocol as protocol;
 
 // Convenience re-exports of the most commonly used protocol types.
-pub use sa_protocol::{NodeInfo, ToolResponseError, WsMessage, MAX_TOOL_RESPONSE_BYTES};
+pub use sa_protocol::{
+    ErrorKind, NodeInfo, ToolResponseError, WsMessage, MAX_TOOL_RESPONSE_BYTES, PROTOCOL_VERSION,
+};
