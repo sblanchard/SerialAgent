@@ -4,13 +4,20 @@ const route = useRoute();
 
 const links = [
   { to: "/", label: "Overview", icon: "~" },
+  { to: "/inbox", label: "Inbox", icon: "=" },
+  { to: "/chat", label: "Chat", icon: ">" },
+  { to: "/schedules", label: "Schedules", icon: "&" },
   { to: "/runs", label: "Runs", icon: "!" },
-  { to: "/nodes", label: "Nodes", icon: ">" },
+  { to: "/skills", label: "Skills", icon: "^" },
+  { to: "/usage", label: "Usage", icon: "$" },
+  { to: "/logs", label: "Logs", icon: "?" },
+  { to: "/nodes", label: "Nodes", icon: "." },
   { to: "/agents", label: "Agents", icon: "@" },
   { to: "/sessions", label: "Sessions", icon: "#" },
   { to: "/llm", label: "LLM", icon: "*" },
   { to: "/import", label: "Import", icon: "+" },
   { to: "/staging", label: "Staging", icon: "%" },
+  { to: "/settings", label: "Settings", icon: ":" },
 ];
 </script>
 

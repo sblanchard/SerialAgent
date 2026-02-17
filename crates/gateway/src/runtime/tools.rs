@@ -114,31 +114,46 @@ pub fn build_tool_definitions(
         }),
     });
 
-    // ── Stub tools (common aliases that aren't wired yet) ─────────
-    defs.push(ToolDefinition {
-        name: "web.search".into(),
-        description: "Search the web (SERP). Currently unavailable — returns an error with alternatives.".into(),
-        parameters: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": "Search query" }
-            },
-            "required": ["query"]
-        }),
-    });
+    // ── Skill engine tools ────────────────────────────────────────
+    // Add tool definitions for every registered callable skill.
+    for spec in state.skill_engine.list() {
+        defs.push(ToolDefinition {
+            name: spec.name.clone(),
+            description: spec.description.clone(),
+            parameters: spec.args_schema.clone(),
+        });
+    }
 
-    defs.push(ToolDefinition {
-        name: "http.request".into(),
-        description: "Make an HTTP request. Currently unavailable — returns an error with alternatives.".into(),
-        parameters: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "url": { "type": "string", "description": "URL to fetch" },
-                "method": { "type": "string", "description": "HTTP method (GET, POST, etc.)" }
-            },
-            "required": ["url"]
-        }),
-    });
+    // ── Stub tools (common aliases that aren't wired yet) ─────────
+    // Only add stubs for tools not already provided by the skill engine.
+    if !state.skill_engine.skill_names().contains(&"web.search".into()) {
+        defs.push(ToolDefinition {
+            name: "web.search".into(),
+            description: "Search the web (SERP). Currently unavailable — returns an error with alternatives.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query" }
+                },
+                "required": ["query"]
+            }),
+        });
+    }
+
+    if !state.skill_engine.skill_names().contains(&"http.request".into()) {
+        defs.push(ToolDefinition {
+            name: "http.request".into(),
+            description: "Make an HTTP request. Currently unavailable — returns an error with alternatives.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "URL to fetch" },
+                    "method": { "type": "string", "description": "HTTP method (GET, POST, etc.)" }
+                },
+                "required": ["url"]
+            }),
+        });
+    }
 
     // ── Agent delegation tools ──────────────────────────────────────
     // Only expose these if agents are configured.
@@ -268,6 +283,10 @@ pub async fn dispatch_tool(
         "web.search" => stub_tool("web.search", "Web search is not yet configured. Use exec with curl or a search CLI tool as an alternative."),
         "http.request" => stub_tool("http.request", "HTTP requests are not yet configured. Use exec with curl as an alternative."),
         _ => {
+            // Try the callable skill engine first.
+            if state.skill_engine.get(tool_name).is_some() {
+                return dispatch_skill_engine(state, tool_name, arguments, session_key).await;
+            }
             // Try routing to a connected node via ToolRouter.
             dispatch_to_node(state, tool_name, arguments, session_key).await
         }
@@ -475,6 +494,26 @@ fn stub_tool(name: &str, message: &str) -> (String, bool) {
         .to_string(),
         true,
     )
+}
+
+async fn dispatch_skill_engine(
+    state: &AppState,
+    tool_name: &str,
+    arguments: &Value,
+    session_key: Option<&str>,
+) -> (String, bool) {
+    let ctx = crate::skills::SkillContext {
+        run_id: uuid::Uuid::new_v4(),
+        session_key: session_key.unwrap_or("anonymous").to_string(),
+        actor: "runtime".to_string(),
+    };
+    match state.skill_engine.call(ctx, tool_name, arguments.clone()).await {
+        Ok(result) => {
+            let json = serde_json::to_string_pretty(&result.output).unwrap_or_default();
+            (json, !result.ok)
+        }
+        Err(e) => (format!("skill engine error: {e}"), true),
+    }
 }
 
 async fn dispatch_to_node(

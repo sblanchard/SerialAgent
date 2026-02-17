@@ -74,6 +74,19 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
+async function put<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const respBody = await res.text().catch(() => "");
+    throw new ApiError("PUT", path, res.status, respBody);
+  }
+  return res.json();
+}
+
 async function del<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { method: "DELETE" });
   if (!res.ok) {
@@ -516,6 +529,103 @@ export type RunListParams = {
   offset?: number;
 };
 
+// ── Schedule types ───────────────────────────────────────────────────
+
+export type ScheduleStatus = "active" | "paused" | "error";
+
+export type DeliveryTarget =
+  | { kind: "in_app" }
+  | { kind: "webhook"; url: string };
+
+export type Schedule = {
+  id: string;
+  name: string;
+  cron: string;
+  timezone: string;
+  enabled: boolean;
+  agent_id: string;
+  prompt_template: string;
+  sources: string[];
+  delivery_targets: DeliveryTarget[];
+  created_at: string;
+  updated_at: string;
+  last_run_id?: string;
+  last_run_at?: string;
+  next_run_at?: string;
+  status: ScheduleStatus;
+};
+
+export type ScheduleListResponse = {
+  schedules: Schedule[];
+  count: number;
+};
+
+export type ScheduleDetailResponse = {
+  schedule: Schedule;
+  next_occurrences: string[];
+};
+
+export type CreateScheduleRequest = {
+  name: string;
+  cron: string;
+  timezone?: string;
+  enabled?: boolean;
+  agent_id?: string;
+  prompt_template: string;
+  sources?: string[];
+  delivery_targets?: DeliveryTarget[];
+};
+
+export type UpdateScheduleRequest = {
+  name?: string;
+  cron?: string;
+  timezone?: string;
+  enabled?: boolean;
+  agent_id?: string;
+  prompt_template?: string;
+  sources?: string[];
+  delivery_targets?: DeliveryTarget[];
+};
+
+// ── Delivery types ──────────────────────────────────────────────────
+
+export type Delivery = {
+  id: string;
+  schedule_id?: string;
+  schedule_name?: string;
+  run_id?: string;
+  created_at: string;
+  title: string;
+  body: string;
+  sources: string[];
+  read: boolean;
+  metadata: unknown;
+};
+
+export type DeliveryListResponse = {
+  deliveries: Delivery[];
+  total: number;
+  unread: number;
+};
+
+// ── Skill engine types ──────────────────────────────────────────────
+
+export type DangerLevel = "safe" | "network" | "filesystem" | "execution";
+
+export type SkillEngineSpec = {
+  name: string;
+  title: string;
+  description: string;
+  args_schema: unknown;
+  returns_schema: unknown;
+  danger_level: DangerLevel;
+};
+
+export type SkillEngineListResponse = {
+  skills: SkillEngineSpec[];
+  count: number;
+};
+
 // ── API functions ──────────────────────────────────────────────────
 
 export const api = {
@@ -573,6 +683,30 @@ export const api = {
     get<RunDetail>(`/v1/runs/${encodeURIComponent(runId)}`),
   getRunNodes: (runId: string) =>
     get<RunNodesResponse>(`/v1/runs/${encodeURIComponent(runId)}/nodes`),
+
+  // Schedules
+  getSchedules: () => get<ScheduleListResponse>("/v1/schedules"),
+  getSchedule: (id: string) =>
+    get<ScheduleDetailResponse>(`/v1/schedules/${encodeURIComponent(id)}`),
+  createSchedule: (req: CreateScheduleRequest) =>
+    post<{ schedule: Schedule }>("/v1/schedules", req),
+  updateSchedule: (id: string, req: UpdateScheduleRequest) =>
+    put<{ schedule: Schedule }>(`/v1/schedules/${encodeURIComponent(id)}`, req),
+  deleteSchedule: (id: string) =>
+    del<{ deleted: boolean }>(`/v1/schedules/${encodeURIComponent(id)}`),
+  runScheduleNow: (id: string) =>
+    post<{ run_id: string; schedule_id: string }>(`/v1/schedules/${encodeURIComponent(id)}/run-now`, {}),
+
+  // Deliveries (inbox)
+  getDeliveries: (limit = 25, offset = 0) =>
+    get<DeliveryListResponse>(`/v1/deliveries?limit=${limit}&offset=${offset}`),
+  getDelivery: (id: string) =>
+    get<{ delivery: Delivery }>(`/v1/deliveries/${encodeURIComponent(id)}`),
+  markDeliveryRead: (id: string) =>
+    post<{ ok: boolean }>(`/v1/deliveries/${encodeURIComponent(id)}/read`, {}),
+
+  // Skill engine
+  getSkillEngine: () => get<SkillEngineListResponse>("/v1/skill-engine"),
 
   // Provider listing
   providers: () => get<{ providers: string[]; count: number }>("/v1/models"),

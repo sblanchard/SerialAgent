@@ -7,7 +7,9 @@
 pub mod agent;
 pub mod cancel;
 pub mod compact;
+pub mod deliveries;
 pub mod runs;
+pub mod schedules;
 pub mod session_lock;
 pub mod tools;
 
