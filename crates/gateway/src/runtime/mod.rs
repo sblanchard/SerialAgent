@@ -7,6 +7,7 @@
 pub mod agent;
 pub mod cancel;
 pub mod compact;
+pub mod runs;
 pub mod session_lock;
 pub mod tools;
 
@@ -105,16 +106,36 @@ pub struct TurnInput {
 
 /// Run one agent turn: build context, call LLM, dispatch tools, loop.
 ///
-/// Returns a channel receiver of [`TurnEvent`]s (the caller reads events
-/// as they arrive for SSE streaming, or drains them for non-streaming).
+/// Returns the `run_id` (UUID) and a channel receiver of [`TurnEvent`]s
+/// (the caller reads events as they arrive for SSE streaming, or drains
+/// them for non-streaming).
 ///
 /// Registers a cancel token so `POST /v1/sessions/:key/stop` can abort
 /// the turn cleanly.
 pub fn run_turn(
     state: Arc<AppState>,
     input: TurnInput,
-) -> mpsc::Receiver<TurnEvent> {
+) -> (uuid::Uuid, mpsc::Receiver<TurnEvent>) {
     let (tx, rx) = mpsc::channel::<TurnEvent>(64);
+
+    // ── Create run record ────────────────────────────────────────
+    let mut run = runs::Run::new(
+        input.session_key.clone(),
+        input.session_id.clone(),
+        &input.user_message,
+    );
+    run.model = input.model.clone();
+    run.agent_id = input.agent.as_ref().map(|a| a.agent_id.clone());
+    run.status = runs::RunStatus::Running;
+    let run_id = run.run_id;
+    state.run_store.insert(run);
+    state.run_store.emit(
+        &run_id,
+        runs::RunEvent::RunStatus {
+            run_id,
+            status: runs::RunStatus::Running,
+        },
+    );
 
     // Register a cancel token for this session.
     let cancel_token = state.cancel_map.register(&input.session_key);
@@ -122,21 +143,38 @@ pub fn run_turn(
     let state_ref = state.clone();
 
     tokio::spawn(async move {
-        let result = run_turn_inner(state_ref.clone(), input, tx.clone(), &cancel_token).await;
+        let result =
+            run_turn_inner(state_ref.clone(), input, tx.clone(), &cancel_token, run_id).await;
 
         // Cleanup: remove the cancel token.
         state_ref.cancel_map.remove(&session_key);
 
         if let Err(e) = result {
+            let err_msg = e.to_string();
+            state_ref.run_store.update(&run_id, |r| {
+                r.error = Some(err_msg.clone());
+                r.finish(runs::RunStatus::Failed);
+            });
+            if let Some(run) = state_ref.run_store.get(&run_id) {
+                state_ref.run_store.persist(&run);
+            }
+            state_ref.run_store.emit(
+                &run_id,
+                runs::RunEvent::RunStatus {
+                    run_id,
+                    status: runs::RunStatus::Failed,
+                },
+            );
+            state_ref.run_store.cleanup_channel(&run_id);
             let _ = tx
                 .send(TurnEvent::Error {
-                    message: e.to_string(),
+                    message: err_msg,
                 })
                 .await;
         }
     });
 
-    rx
+    (run_id, rx)
 }
 
 async fn run_turn_inner(
@@ -144,7 +182,9 @@ async fn run_turn_inner(
     input: TurnInput,
     tx: mpsc::Sender<TurnEvent>,
     cancel: &CancelToken,
+    run_id: uuid::Uuid,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut node_seq: u32 = 0;
     // 1. Resolve the LLM provider (agent models → global roles → any).
     let provider = resolve_provider(&state, input.model.as_deref(), input.agent.as_ref())?;
 
@@ -259,6 +299,33 @@ async fn run_turn_inner(
             return Ok(());
         }
 
+        // ── Track LLM node ────────────────────────────────────────
+        node_seq += 1;
+        let llm_node_id = node_seq;
+        let llm_start = chrono::Utc::now();
+        let llm_node = runs::RunNode {
+            node_id: llm_node_id,
+            kind: runs::NodeKind::LlmRequest,
+            name: "llm".into(),
+            status: runs::RunStatus::Running,
+            started_at: llm_start,
+            ended_at: None,
+            duration_ms: None,
+            input_preview: None,
+            output_preview: None,
+            is_error: false,
+            input_tokens: 0,
+            output_tokens: 0,
+        };
+        state.run_store.update(&run_id, |r| {
+            r.loop_count = loop_idx as u32 + 1;
+            r.nodes.push(llm_node.clone());
+        });
+        state.run_store.emit(&run_id, runs::RunEvent::NodeStarted {
+            run_id,
+            node: llm_node,
+        });
+
         // Call LLM (streaming).
         let req = sa_providers::ChatRequest {
             messages: messages.clone(),
@@ -332,8 +399,43 @@ async fn run_turn_inner(
             }
         }
 
+        // ── Finalize LLM node ─────────────────────────────────────
+        {
+            let llm_end = chrono::Utc::now();
+            let llm_dur = (llm_end - llm_start).num_milliseconds().max(0) as u64;
+            let llm_status = if was_cancelled {
+                runs::RunStatus::Stopped
+            } else {
+                runs::RunStatus::Completed
+            };
+            let t_in = turn_usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0);
+            let t_out = turn_usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0);
+            state.run_store.update(&run_id, |r| {
+                if let Some(n) = r.nodes.iter_mut().find(|n| n.node_id == llm_node_id) {
+                    n.status = llm_status;
+                    n.ended_at = Some(llm_end);
+                    n.duration_ms = Some(llm_dur);
+                    n.input_tokens = t_in;
+                    n.output_tokens = t_out;
+                    n.output_preview = Some(truncate_str(&text_buf, 200));
+                }
+            });
+        }
+
         // Handle cancellation during streaming.
         if was_cancelled {
+            state.run_store.update(&run_id, |r| {
+                r.output_preview = Some(truncate_str(&text_buf, 200));
+                r.finish(runs::RunStatus::Stopped);
+            });
+            if let Some(run) = state.run_store.get(&run_id) {
+                state.run_store.persist(&run);
+            }
+            state.run_store.emit(&run_id, runs::RunEvent::RunStatus {
+                run_id,
+                status: runs::RunStatus::Stopped,
+            });
+            state.run_store.cleanup_channel(&run_id);
             persist_transcript(
                 &state.transcripts,
                 &input.session_id,
@@ -396,6 +498,29 @@ async fn run_turn_inner(
                 total_usage.prompt_tokens as u64,
                 total_usage.completion_tokens as u64,
             );
+
+            // ── Finalize run (success) ───────────────────────────
+            state.run_store.update(&run_id, |r| {
+                r.input_tokens = total_usage.prompt_tokens;
+                r.output_tokens = total_usage.completion_tokens;
+                r.total_tokens = total_usage.total_tokens;
+                r.output_preview = Some(truncate_str(&text_buf, 200));
+                r.finish(runs::RunStatus::Completed);
+            });
+            if let Some(run) = state.run_store.get(&run_id) {
+                state.run_store.persist(&run);
+            }
+            state.run_store.emit(&run_id, runs::RunEvent::RunStatus {
+                run_id,
+                status: runs::RunStatus::Completed,
+            });
+            state.run_store.emit(&run_id, runs::RunEvent::Usage {
+                run_id,
+                input_tokens: total_usage.prompt_tokens,
+                output_tokens: total_usage.completion_tokens,
+                total_tokens: total_usage.total_tokens,
+            });
+            state.run_store.cleanup_channel(&run_id);
 
             // ── Memory auto-capture (fire-and-forget) ─────────────
             if state.config.memory_lifecycle.auto_capture {
@@ -461,6 +586,35 @@ async fn run_turn_inner(
                 return Ok(());
             }
 
+            // ── Track tool node ────────────────────────────────
+            node_seq += 1;
+            let tool_node_id = node_seq;
+            let tool_start = chrono::Utc::now();
+            let tool_input_preview = serde_json::to_string(&tc.arguments)
+                .ok()
+                .map(|s| truncate_str(&s, 200));
+            let tool_node = runs::RunNode {
+                node_id: tool_node_id,
+                kind: runs::NodeKind::ToolCall,
+                name: tc.tool_name.clone(),
+                status: runs::RunStatus::Running,
+                started_at: tool_start,
+                ended_at: None,
+                duration_ms: None,
+                input_preview: tool_input_preview,
+                output_preview: None,
+                is_error: false,
+                input_tokens: 0,
+                output_tokens: 0,
+            };
+            state.run_store.update(&run_id, |r| {
+                r.nodes.push(tool_node.clone());
+            });
+            state.run_store.emit(&run_id, runs::RunEvent::NodeStarted {
+                run_id,
+                node: tool_node,
+            });
+
             let _ = tx
                 .send(TurnEvent::ToolCallEvent {
                     call_id: tc.call_id.clone(),
@@ -477,6 +631,24 @@ async fn run_turn_inner(
                 input.agent.as_ref(),
             )
             .await;
+
+            // ── Finalize tool node ───────────────────────────────
+            let tool_end = chrono::Utc::now();
+            let tool_dur = (tool_end - tool_start).num_milliseconds().max(0) as u64;
+            let tool_status = if is_error {
+                runs::RunStatus::Failed
+            } else {
+                runs::RunStatus::Completed
+            };
+            state.run_store.update(&run_id, |r| {
+                if let Some(n) = r.nodes.iter_mut().find(|n| n.node_id == tool_node_id) {
+                    n.status = tool_status;
+                    n.ended_at = Some(tool_end);
+                    n.duration_ms = Some(tool_dur);
+                    n.output_preview = Some(truncate_str(&result_content, 200));
+                    n.is_error = is_error;
+                }
+            });
 
             let _ = tx
                 .send(TurnEvent::ToolResult {
@@ -710,5 +882,17 @@ fn persist_transcript(
             session_id = session_id,
             "failed to persist transcript line"
         );
+    }
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        let mut end = max;
+        while !s.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
+        format!("{}...", &s[..end])
     }
 }

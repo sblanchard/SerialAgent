@@ -13,6 +13,7 @@ use crate::nodes::registry::NodeRegistry;
 use crate::nodes::router::ToolRouter;
 use crate::runtime::agent::AgentManager;
 use crate::runtime::cancel::CancelMap;
+use crate::runtime::runs::RunStore;
 use crate::runtime::session_lock::SessionLockMap;
 use crate::workspace::bootstrap::BootstrapTracker;
 use crate::workspace::files::WorkspaceReader;
@@ -39,6 +40,8 @@ pub struct AppState {
     pub agents: Option<Arc<AgentManager>>,
     /// Idempotency store for inbound event deduplication.
     pub dedupe: Arc<DedupeStore>,
+    /// Run execution tracker.
+    pub run_store: Arc<RunStore>,
     /// Root directory for import staging (e.g. `./data/import`).
     pub import_root: PathBuf,
 }

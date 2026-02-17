@@ -8,6 +8,8 @@ import SessionDetail from "./pages/SessionDetail.vue";
 import LlmReadiness from "./pages/LlmReadiness.vue";
 import ImportOpenClaw from "./pages/ImportOpenClaw.vue";
 import Staging from "./pages/Staging.vue";
+import Runs from "./pages/Runs.vue";
+import RunDetail from "./pages/RunDetail.vue";
 
 export const router = createRouter({
   history: createWebHashHistory(),
@@ -17,6 +19,8 @@ export const router = createRouter({
     { path: "/agents", name: "agents", component: Agents },
     { path: "/sessions", name: "sessions", component: Sessions },
     { path: "/sessions/:key", name: "session-detail", component: SessionDetail, props: true },
+    { path: "/runs", name: "runs", component: Runs },
+    { path: "/runs/:id", name: "run-detail", component: RunDetail, props: true },
     { path: "/llm", name: "llm-readiness", component: LlmReadiness },
     { path: "/import", name: "import-openclaw", component: ImportOpenClaw },
     { path: "/staging", name: "staging", component: Staging },
