@@ -114,6 +114,15 @@ fn classify_resource_path(path: &str) -> &'static str {
     }
 }
 
+/// List callable skills from the skill engine (web.fetch, etc.).
+pub async fn list_skill_engine(State(state): State<AppState>) -> impl IntoResponse {
+    let specs = state.skill_engine.list();
+    Json(serde_json::json!({
+        "skills": specs,
+        "count": specs.len(),
+    }))
+}
+
 pub async fn reload_skills(State(state): State<AppState>) -> impl IntoResponse {
     match state.skills.reload() {
         Ok(count) => {

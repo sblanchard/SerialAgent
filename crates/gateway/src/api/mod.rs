@@ -4,12 +4,14 @@ pub mod chat;
 pub mod clawhub;
 pub mod context;
 pub mod dashboard;
+pub mod deliveries;
 pub mod import_openclaw;
 pub mod inbound;
 pub mod memory;
 pub mod nodes;
 pub mod providers;
 pub mod runs;
+pub mod schedules;
 pub mod sessions;
 pub mod skills;
 pub mod tools;
@@ -73,6 +75,21 @@ pub fn router() -> Router<AppState> {
         .route("/v1/runs/:id", get(runs::get_run))
         .route("/v1/runs/:id/nodes", get(runs::get_run_nodes))
         .route("/v1/runs/:id/events", get(runs::run_events_sse))
+        // Schedules (cron jobs)
+        .route("/v1/schedules", get(schedules::list_schedules))
+        .route("/v1/schedules", post(schedules::create_schedule))
+        .route("/v1/schedules/events", get(schedules::schedule_events_sse))
+        .route("/v1/schedules/:id", get(schedules::get_schedule))
+        .route("/v1/schedules/:id", put(schedules::update_schedule))
+        .route("/v1/schedules/:id", delete(schedules::delete_schedule))
+        .route("/v1/schedules/:id/run-now", post(schedules::run_schedule_now))
+        // Deliveries (inbox)
+        .route("/v1/deliveries", get(deliveries::list_deliveries))
+        .route("/v1/deliveries/events", get(deliveries::delivery_events_sse))
+        .route("/v1/deliveries/:id", get(deliveries::get_delivery))
+        .route("/v1/deliveries/:id/read", post(deliveries::mark_delivery_read))
+        // Skill engine (callable skills)
+        .route("/v1/skill-engine", get(skills::list_skill_engine))
         // Agents (audit / introspection)
         .route("/v1/agents", get(agents::list_agents))
         // Providers / Models

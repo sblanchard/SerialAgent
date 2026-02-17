@@ -13,8 +13,11 @@ use crate::nodes::registry::NodeRegistry;
 use crate::nodes::router::ToolRouter;
 use crate::runtime::agent::AgentManager;
 use crate::runtime::cancel::CancelMap;
+use crate::runtime::deliveries::DeliveryStore;
 use crate::runtime::runs::RunStore;
+use crate::runtime::schedules::ScheduleStore;
 use crate::runtime::session_lock::SessionLockMap;
+use crate::skills::SkillEngine;
 use crate::workspace::bootstrap::BootstrapTracker;
 use crate::workspace::files::WorkspaceReader;
 
@@ -42,6 +45,12 @@ pub struct AppState {
     pub dedupe: Arc<DedupeStore>,
     /// Run execution tracker.
     pub run_store: Arc<RunStore>,
+    /// Callable skill engine (web.fetch, etc.).
+    pub skill_engine: Arc<SkillEngine>,
+    /// Schedule store (cron jobs).
+    pub schedule_store: Arc<ScheduleStore>,
+    /// Delivery store (inbox notifications from scheduled runs).
+    pub delivery_store: Arc<DeliveryStore>,
     /// Root directory for import staging (e.g. `./data/import`).
     pub import_root: PathBuf,
 }
