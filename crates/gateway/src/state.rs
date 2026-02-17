@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use sa_domain::config::Config;
@@ -38,4 +39,6 @@ pub struct AppState {
     pub agents: Option<Arc<AgentManager>>,
     /// Idempotency store for inbound event deduplication.
     pub dedupe: Arc<DedupeStore>,
+    /// Root directory for import staging (e.g. `./data/import`).
+    pub import_root: PathBuf,
 }

@@ -132,6 +132,11 @@ async fn main() -> anyhow::Result<()> {
     );
     tracing::info!("dedupe store ready (24h TTL)");
 
+    // ── Import staging root ──────────────────────────────────────────
+    let import_root = config.workspace.state_path.join("import");
+    let _ = std::fs::create_dir_all(&import_root);
+    tracing::info!(path = %import_root.display(), "import staging root ready");
+
     // ── App state (without agents — needed for AgentManager init) ───
     let mut state = AppState {
         config: config.clone(),
@@ -151,6 +156,7 @@ async fn main() -> anyhow::Result<()> {
         cancel_map,
         agents: None,
         dedupe,
+        import_root,
     };
 
     // ── Agent manager (sub-agents) ──────────────────────────────────

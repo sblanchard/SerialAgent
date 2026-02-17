@@ -262,6 +262,110 @@ export type SessionStopResponse = {
   stopped: boolean;
 };
 
+// ── Import (staging-based) types ──────────────────────────────────
+
+export type ImportSource =
+  | { local: { path: string; follow_symlinks?: boolean } }
+  | {
+      ssh: {
+        host: string;
+        user?: string;
+        port?: number;
+        remote_path?: string;
+        strict_host_key_checking?: boolean;
+        auth?: SshAuth;
+      };
+    };
+
+export type SshAuth =
+  | "agent"
+  | { key_file: { key_path: string } }
+  | { password: { password: string } };
+
+export type ImportOptions = {
+  include_workspaces?: boolean;
+  include_sessions?: boolean;
+  include_models?: boolean;
+  include_auth_profiles?: boolean;
+};
+
+export type ImportPreviewRequest = {
+  source: ImportSource;
+  options?: ImportOptions;
+};
+
+export type AgentInventory = {
+  agent_id: string;
+  session_files: number;
+  has_models_json: boolean;
+  has_auth_profiles_json: boolean;
+};
+
+export type WorkspaceInventory = {
+  name: string;
+  rel_path: string;
+  approx_files: number;
+  approx_bytes: number;
+};
+
+export type ImportInventory = {
+  agents: AgentInventory[];
+  workspaces: WorkspaceInventory[];
+  totals: { approx_files: number; approx_bytes: number };
+};
+
+export type SensitiveFile = {
+  rel_path: string;
+  key_paths: string[];
+};
+
+export type SensitiveReport = {
+  sensitive_files: SensitiveFile[];
+  redacted_samples: string[];
+};
+
+export type ConflictsHint = {
+  default_workspace_dest: string;
+  default_sessions_dest: string;
+};
+
+export type ImportPreviewResponse = {
+  staging_id: string;
+  staging_dir: string;
+  inventory: ImportInventory;
+  sensitive: SensitiveReport;
+  conflicts_hint: ConflictsHint;
+};
+
+export type MergeStrategy = "merge_safe" | "replace" | "skip_existing";
+
+export type ImportApplyRequestV2 = {
+  staging_id: string;
+  merge_strategy?: MergeStrategy;
+  options?: ImportOptions;
+};
+
+export type ImportedSummary = {
+  agents: string[];
+  workspaces: string[];
+  sessions_copied: number;
+  dest_workspace_root: string;
+  dest_sessions_root: string;
+};
+
+export type ImportApplyResponseV2 = {
+  staging_id: string;
+  imported: ImportedSummary;
+  warnings: string[];
+};
+
+export type TestSshResponse = {
+  ok: boolean;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+};
+
 // ── API functions ──────────────────────────────────────────────────
 
 export const api = {
@@ -291,6 +395,14 @@ export const api = {
     post<ImportApplyResult>("/v1/admin/import/openclaw/apply", req),
   workspaceFiles: () => get<WorkspaceFilesResponse>("/v1/admin/workspace/files"),
   skillsDetailed: () => get<SkillsDetailedResponse>("/v1/admin/skills"),
+
+  // Import (staging-based)
+  importPreview: (req: ImportPreviewRequest) =>
+    post<ImportPreviewResponse>("/v1/import/openclaw/preview", req),
+  importApply: (req: ImportApplyRequestV2) =>
+    post<ImportApplyResponseV2>("/v1/import/openclaw/apply", req),
+  testSsh: (host: string, user?: string, port?: number) =>
+    post<TestSshResponse>("/v1/import/openclaw/test-ssh", { host, user, port }),
 
   // Provider listing
   providers: () => get<{ providers: string[]; count: number }>("/v1/models"),

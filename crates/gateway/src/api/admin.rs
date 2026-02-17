@@ -589,3 +589,139 @@ pub async fn list_skills_detailed(
     }))
     .into_response()
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// POST /v1/import/openclaw/preview — staging-based preview
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub async fn import_openclaw_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<super::import_openclaw::ImportPreviewRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = check_admin_token(&headers) {
+        return e.into_response();
+    }
+
+    let staging_root = state.import_root.join("openclaw");
+    let ws_dest = state.config.workspace.path.clone();
+    let sess_dest = state.config.workspace.state_path.join("sessions");
+
+    match crate::import::openclaw::preview_openclaw_import(
+        req.source,
+        req.options,
+        &staging_root,
+        &ws_dest,
+        &sess_dest,
+    )
+    .await
+    {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => map_import_err(e).into_response(),
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// POST /v1/import/openclaw/apply — apply staged import
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub async fn import_openclaw_apply_v2(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<super::import_openclaw::ImportApplyRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = check_admin_token(&headers) {
+        return e.into_response();
+    }
+
+    let staging_root = state.import_root.join("openclaw");
+    let ws_dest = state.config.workspace.path.clone();
+    let sess_dest = state.config.workspace.state_path.join("sessions");
+
+    match crate::import::openclaw::apply_openclaw_import(
+        req,
+        &staging_root,
+        &ws_dest,
+        &sess_dest,
+    )
+    .await
+    {
+        Ok(resp) => {
+            // Refresh workspace reader after import
+            state.workspace.refresh();
+            Json(resp).into_response()
+        }
+        Err(e) => map_import_err(e).into_response(),
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// POST /v1/import/openclaw/test-ssh — quick SSH connectivity check
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[derive(Debug, Deserialize)]
+pub struct TestSshRequest {
+    pub host: String,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+}
+
+pub async fn import_openclaw_test_ssh(
+    headers: HeaderMap,
+    Json(req): Json<TestSshRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = check_admin_token(&headers) {
+        return e.into_response();
+    }
+
+    let target = match &req.user {
+        Some(u) => format!("{u}@{}", req.host),
+        None => req.host.clone(),
+    };
+
+    let mut cmd = tokio::process::Command::new("ssh");
+    cmd.arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=accept-new")
+        .arg("-o")
+        .arg("ConnectTimeout=10");
+    if let Some(p) = req.port {
+        cmd.arg("-p").arg(p.to_string());
+    }
+    cmd.arg(&target).arg("echo ok");
+
+    match cmd.output().await {
+        Ok(output) => {
+            let ok = output.status.success();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Json(serde_json::json!({
+                "ok": ok,
+                "stdout": stdout,
+                "stderr": if stderr.is_empty() { None } else { Some(stderr) },
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// Map OpenClawImportError to HTTP status + JSON body.
+fn map_import_err(e: crate::import::openclaw::OpenClawImportError) -> (StatusCode, Json<serde_json::Value>) {
+    let msg = e.to_string();
+    let code = match &e {
+        crate::import::openclaw::OpenClawImportError::InvalidPath(_) => StatusCode::BAD_REQUEST,
+        crate::import::openclaw::OpenClawImportError::ArchiveInvalid(_) => StatusCode::BAD_REQUEST,
+        crate::import::openclaw::OpenClawImportError::SshFailed(_) => StatusCode::BAD_GATEWAY,
+        crate::import::openclaw::OpenClawImportError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        crate::import::openclaw::OpenClawImportError::Json(_) => StatusCode::BAD_REQUEST,
+    };
+    (code, Json(serde_json::json!({ "error": msg })))
+}
