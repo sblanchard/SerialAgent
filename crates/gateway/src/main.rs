@@ -211,6 +211,29 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // ── Periodic import staging cleanup (24h TTL, hourly sweep) ─────
+    {
+        let import_root = state.import_root.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                std::time::Duration::from_secs(3_600),
+            );
+            loop {
+                interval.tick().await;
+                match sa_gateway::import::openclaw::cleanup_stale_staging(
+                    &import_root,
+                    86_400, // 24 hours
+                )
+                .await
+                {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(removed = n, "cleaned up stale import staging dirs"),
+                    Err(e) => tracing::warn!(error = %e, "import staging cleanup failed"),
+                }
+            }
+        });
+    }
+
     // ── Router ───────────────────────────────────────────────────────
     // Serve the Vue SPA from apps/dashboard/dist if it exists.
     // The SPA uses hash-based routing so all paths fall back to index.html.

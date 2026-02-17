@@ -98,6 +98,10 @@ pub fn router() -> Router<AppState> {
             "/v1/import/openclaw/test-ssh",
             post(admin::import_openclaw_test_ssh),
         )
+        .route(
+            "/v1/import/openclaw/staging/:id",
+            delete(admin::import_openclaw_delete_staging),
+        )
         // Dashboard
         .route("/dashboard", get(dashboard::index))
         .route("/dashboard/context", get(dashboard::context_pack_page))
