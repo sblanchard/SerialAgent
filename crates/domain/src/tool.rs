@@ -111,4 +111,54 @@ impl MessageContent {
             }),
         }
     }
+
+    /// Extract and join all text content, returning an owned String.
+    ///
+    /// For `Text` variant, returns the string directly.
+    /// For `Parts` variant, joins all `Text` parts with `"\n"`.
+    /// Non-text parts (ToolUse, ToolResult, Image) are skipped.
+    pub fn extract_all_text(&self) -> String {
+        match self {
+            MessageContent::Text(t) => t.clone(),
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_all_text_from_text_variant() {
+        let content = MessageContent::Text("hello world".into());
+        assert_eq!(content.extract_all_text(), "hello world");
+    }
+
+    #[test]
+    fn extract_all_text_from_parts_joins_with_newline() {
+        let content = MessageContent::Parts(vec![
+            ContentPart::Text { text: "line one".into() },
+            ContentPart::ToolUse {
+                id: "c1".into(),
+                name: "exec".into(),
+                input: serde_json::json!({}),
+            },
+            ContentPart::Text { text: "line two".into() },
+        ]);
+        assert_eq!(content.extract_all_text(), "line one\nline two");
+    }
+
+    #[test]
+    fn extract_all_text_empty_parts() {
+        let content = MessageContent::Parts(vec![]);
+        assert_eq!(content.extract_all_text(), "");
+    }
 }

@@ -72,17 +72,22 @@ impl<'a> UserFactsBuilder<'a> {
             }
         }
 
-        // ── 2. Search for relevant facts ─────────────────────────────
+        // ── 2. Search for relevant facts (concurrent) ─────────────────
         let mut retrieved_facts = Vec::new();
-        for query in &self.search_queries {
-            match self
-                .provider
-                .search(RagSearchRequest {
+        let search_futures: Vec<_> = self
+            .search_queries
+            .iter()
+            .map(|query| {
+                self.provider.search(RagSearchRequest {
                     query: query.clone(),
                     limit: Some(5),
                 })
-                .await
-            {
+            })
+            .collect();
+        let search_results = futures_util::future::join_all(search_futures).await;
+
+        for (query, result) in self.search_queries.iter().zip(search_results) {
+            match result {
                 Ok(resp) => {
                     for mem in &resp.memories {
                         let content = mem.content.trim();

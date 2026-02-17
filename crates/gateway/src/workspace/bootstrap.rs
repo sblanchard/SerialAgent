@@ -6,6 +6,26 @@ use parking_lot::RwLock;
 use sa_domain::error::Result;
 use sa_domain::trace::TraceEvent;
 
+/// Validate a workspace_id to prevent path traversal attacks.
+fn validate_workspace_id(id: &str) -> Result<()> {
+    if id.is_empty() {
+        return Err(sa_domain::error::Error::Config(
+            "empty workspace_id".into(),
+        ));
+    }
+    if id.contains("..") || id.contains('/') || id.contains('\\') || id.contains('\0') {
+        return Err(sa_domain::error::Error::Config(format!(
+            "invalid workspace_id: {id:?}"
+        )));
+    }
+    if id.starts_with('.') {
+        return Err(sa_domain::error::Error::Config(format!(
+            "workspace_id must not start with '.': {id:?}"
+        )));
+    }
+    Ok(())
+}
+
 /// Tracks first-run state per workspace.
 pub struct BootstrapTracker {
     state_path: PathBuf,
@@ -41,10 +61,15 @@ impl BootstrapTracker {
     }
 
     pub fn is_first_run(&self, workspace_id: &str) -> bool {
+        if validate_workspace_id(workspace_id).is_err() {
+            tracing::warn!(workspace_id, "rejected invalid workspace_id in is_first_run");
+            return true;
+        }
         !self.completed.read().contains(workspace_id)
     }
 
     pub fn mark_complete(&self, workspace_id: &str) -> Result<()> {
+        validate_workspace_id(workspace_id)?;
         let marker_path = self
             .state_path
             .join("bootstrap")
@@ -64,6 +89,7 @@ impl BootstrapTracker {
     }
 
     pub fn reset(&self, workspace_id: &str) -> Result<()> {
+        validate_workspace_id(workspace_id)?;
         let marker_path = self
             .state_path
             .join("bootstrap")
