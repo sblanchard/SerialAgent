@@ -22,6 +22,14 @@ use sa_protocol::{NodeInfo, WsMessage, PROTOCOL_VERSION};
 use crate::nodes::registry::{ConnectedNode, NodeRegistry};
 use crate::state::AppState;
 
+/// Constant-time token comparison via SHA-256 digest.
+/// Hashing normalizes lengths so ct_eq always compares 32 bytes.
+fn token_eq(a: &str, b: &str) -> bool {
+    let ha = Sha256::digest(a.as_bytes());
+    let hb = Sha256::digest(b.as_bytes());
+    ha.ct_eq(&hb).into()
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Query params
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -57,7 +65,7 @@ pub async fn node_ws(
         let node_hint = query.node_id.as_deref().unwrap_or("");
         let valid = tokens_raw.split(',').any(|pair| {
             if let Some((nid, tok)) = pair.trim().split_once(':') {
-                (node_hint.is_empty() || nid == node_hint) && tok == provided
+                (node_hint.is_empty() || nid == node_hint) && token_eq(tok, provided)
             } else {
                 false
             }
@@ -71,7 +79,7 @@ pub async fn node_ws(
         }
     } else if let Ok(expected) = std::env::var("SA_NODE_TOKEN") {
         // Global token fallback.
-        if provided != expected {
+        if !token_eq(provided, &expected) {
             return (
                 axum::http::StatusCode::UNAUTHORIZED,
                 "invalid or missing node token",

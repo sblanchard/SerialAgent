@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 
 use sa_contextpack::builder::{ContextPackBuilder, SessionMode};
 use sa_domain::stream::{StreamEvent, Usage};
-use sa_domain::tool::{Message, MessageContent, Role, ToolCall};
+use sa_domain::tool::{Message, MessageContent, Role, ToolCall, ToolDefinition};
 use sa_memory::UserFactsBuilder;
 use sa_sessions::transcript::{TranscriptLine, TranscriptWriter};
 
@@ -29,6 +29,17 @@ use self::cancel::CancelToken;
 
 /// Maximum number of tool-call loops before we force-stop.
 const MAX_TOOL_LOOPS: usize = 25;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TurnContext — pre-built state for one turn
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Everything the tool loop needs, built once before the first LLM call.
+struct TurnContext {
+    provider: Arc<dyn sa_providers::LlmProvider>,
+    messages: Vec<Message>,
+    tool_defs: Vec<ToolDefinition>,
+}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // TurnEvent — the SSE event type
@@ -111,7 +122,7 @@ pub struct TurnInput {
 /// Registers a cancel token so `POST /v1/sessions/:key/stop` can abort
 /// the turn cleanly.
 pub fn run_turn(
-    state: Arc<AppState>,
+    state: AppState,
     input: TurnInput,
 ) -> mpsc::Receiver<TurnEvent> {
     let (tx, rx) = mpsc::channel::<TurnEvent>(64);
@@ -119,7 +130,7 @@ pub fn run_turn(
     // Register a cancel token for this session.
     let cancel_token = state.cancel_map.register(&input.session_key);
     let session_key = input.session_key.clone();
-    let state_ref = state.clone();
+    let state_ref = state;
 
     tokio::spawn(async move {
         let result = run_turn_inner(state_ref.clone(), input, tx.clone(), &cancel_token).await;
@@ -140,101 +151,20 @@ pub fn run_turn(
 }
 
 async fn run_turn_inner(
-    state: Arc<AppState>,
+    state: AppState,
     input: TurnInput,
     tx: mpsc::Sender<TurnEvent>,
     cancel: &CancelToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // 1. Resolve the LLM provider (agent models → global roles → any).
-    let provider = resolve_provider(&state, input.model.as_deref(), input.agent.as_ref())?;
+    // ── Phase 1: Build the turn context (provider, messages, tool defs) ──
+    let ctx = prepare_turn_context(&state, &input).await?;
+    let TurnContext {
+        provider,
+        mut messages,
+        tool_defs,
+    } = ctx;
 
-    // 2. Build system context (agent-scoped workspace/skills if present).
-    let system_prompt = build_system_context(&state, input.agent.as_ref()).await;
-
-    // 3. Load raw transcript and check compaction.
-    //    Child agents have compaction disabled by default (short-lived sessions).
-    let mut all_lines = load_raw_transcript(&state.transcripts, &input.session_id);
-
-    let compaction_enabled = input
-        .agent
-        .as_ref()
-        .map_or(state.config.compaction.auto, |a| a.compaction_enabled);
-
-    if compaction_enabled && compact::should_compact(&all_lines, &state.config.compaction) {
-        // Pick the summarizer (or fall back to the executor provider).
-        let summarizer = resolve_summarizer(&state).unwrap_or_else(|| provider.clone());
-        match compact::run_compaction(
-            summarizer.as_ref(),
-            &state.transcripts,
-            &input.session_id,
-            &all_lines,
-            &state.config.compaction,
-        )
-        .await
-        {
-            Ok(summary) => {
-                // Optionally ingest the summary to long-term memory.
-                if state.config.memory_lifecycle.capture_on_compaction && !summary.is_empty() {
-                    let memory = state.memory.clone();
-                    let sk = input.session_key.clone();
-                    let sid = input.session_id.clone();
-                    // Build provenance metadata (includes agent fields for child agents).
-                    let mut meta = agent::provenance_metadata(
-                        input.agent.as_ref(),
-                        &sk,
-                        &sid,
-                    )
-                    .unwrap_or_default();
-                    meta.insert("sa.compaction".into(), serde_json::json!(true));
-                    meta.insert("sa.session_key".into(), serde_json::json!(&sk));
-
-                    tokio::spawn(async move {
-                        let req = sa_memory::MemoryIngestRequest {
-                            content: format!("Session summary (compacted):\n{summary}"),
-                            source: Some("session_summary".into()),
-                            session_id: Some(sid),
-                            metadata: Some(meta),
-                            extract_entities: Some(true),
-                        };
-                        if let Err(e) = memory.ingest(req).await {
-                            tracing::warn!(error = %e, "compaction memory ingest failed");
-                        }
-                    });
-                }
-
-                // Reload transcript (now includes the compaction marker).
-                all_lines = load_raw_transcript(&state.transcripts, &input.session_id);
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "auto-compaction failed, continuing with full history");
-            }
-        }
-    }
-
-    // 4. Convert active transcript lines (after last compaction) to messages.
-    let boundary = compact::compaction_boundary(&all_lines);
-    let history = transcript_lines_to_messages(&all_lines[boundary..]);
-
-    // 5. Build the tool definitions (filtered by agent tool policy).
-    let tool_policy = input.agent.as_ref().map(|a| &a.tool_policy);
-    let tool_defs = tools::build_tool_definitions(&state, tool_policy);
-
-    // 6. Build conversation messages.
-    let mut messages = Vec::new();
-    messages.push(Message::system(&system_prompt));
-    messages.extend(history);
-    messages.push(Message::user(&input.user_message));
-
-    // 7. Persist user message to transcript.
-    persist_transcript(
-        &state.transcripts,
-        &input.session_id,
-        "user",
-        &input.user_message,
-        None,
-    );
-
-    // 8. Tool loop.
+    // ── Phase 2: Tool loop ───────────────────────────────────────────────
     let mut total_usage = Usage {
         prompt_tokens: 0,
         completion_tokens: 0,
@@ -397,36 +327,8 @@ async fn run_turn_inner(
                 total_usage.completion_tokens as u64,
             );
 
-            // ── Memory auto-capture (fire-and-forget) ─────────────
-            if state.config.memory_lifecycle.auto_capture {
-                let memory = state.memory.clone();
-                let user_msg = input.user_message.clone();
-                let final_text = text_buf;
-                let sk = input.session_key.clone();
-                let sid = input.session_id.clone();
-                // Build provenance metadata (includes agent fields for child agents).
-                let mut meta = agent::provenance_metadata(
-                    input.agent.as_ref(),
-                    &sk,
-                    &sid,
-                )
-                .unwrap_or_default();
-                meta.insert("sa.session_key".into(), serde_json::json!(&sk));
-
-                tokio::spawn(async move {
-                    let content = format!("User: {user_msg}\n---\nAssistant: {final_text}");
-                    let req = sa_memory::MemoryIngestRequest {
-                        content,
-                        source: Some("auto_capture".into()),
-                        session_id: Some(sid),
-                        metadata: Some(meta),
-                        extract_entities: Some(true),
-                    };
-                    if let Err(e) = memory.ingest(req).await {
-                        tracing::warn!(error = %e, "auto-capture memory ingest failed");
-                    }
-                });
-            }
+            // ── Phase 3: Memory auto-capture (fire-and-forget) ───
+            fire_auto_capture(&state, &input, &text_buf);
 
             return Ok(());
         }
@@ -443,24 +345,8 @@ async fn run_turn_inner(
             Some(serde_json::json!({ "tool_calls": tc_json })),
         );
 
+        // 1. Emit all ToolCallEvents first (preserves SSE ordering).
         for tc in &pending_tool_calls {
-            // Check cancellation before each tool dispatch.
-            if cancel.is_cancelled() {
-                persist_transcript(
-                    &state.transcripts,
-                    &input.session_id,
-                    "system",
-                    "[run aborted by user during tool dispatch]",
-                    Some(serde_json::json!({ "stopped": true })),
-                );
-                let _ = tx
-                    .send(TurnEvent::Stopped {
-                        content: text_buf.clone(),
-                    })
-                    .await;
-                return Ok(());
-            }
-
             let _ = tx
                 .send(TurnEvent::ToolCallEvent {
                     call_id: tc.call_id.clone(),
@@ -468,16 +354,48 @@ async fn run_turn_inner(
                     arguments: tc.arguments.clone(),
                 })
                 .await;
+        }
 
-            let (result_content, is_error) = tools::dispatch_tool(
-                &state,
-                &tc.tool_name,
-                &tc.arguments,
-                Some(&input.session_key),
-                input.agent.as_ref(),
-            )
-            .await;
+        // 2. Check cancellation once before the batch.
+        if cancel.is_cancelled() {
+            persist_transcript(
+                &state.transcripts,
+                &input.session_id,
+                "system",
+                "[run aborted by user during tool dispatch]",
+                Some(serde_json::json!({ "stopped": true })),
+            );
+            let _ = tx
+                .send(TurnEvent::Stopped {
+                    content: text_buf.clone(),
+                })
+                .await;
+            return Ok(());
+        }
 
+        // 3. Dispatch all tools concurrently.
+        //    Latency = max(tool_latencies) instead of sum(tool_latencies).
+        //    Results are collected in original order via join_all to preserve
+        //    deterministic SSE sequencing. Cancellation is checked once before
+        //    the batch rather than per-tool (acceptable tradeoff).
+        let tool_futures: Vec<_> = pending_tool_calls
+            .iter()
+            .map(|tc| {
+                tools::dispatch_tool(
+                    &state,
+                    &tc.tool_name,
+                    &tc.arguments,
+                    Some(&input.session_key),
+                    input.agent.as_ref(),
+                )
+            })
+            .collect();
+        let tool_results = futures_util::future::join_all(tool_futures).await;
+
+        // 4. Emit results and persist transcripts in original order.
+        for (tc, (result_content, is_error)) in
+            pending_tool_calls.iter().zip(tool_results)
+        {
             let _ = tx
                 .send(TurnEvent::ToolResult {
                     call_id: tc.call_id.clone(),
@@ -514,6 +432,152 @@ async fn run_turn_inner(
     }
 
     Ok(())
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Phase helpers
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Phase 1: Resolve the provider, build the system prompt, load and
+/// compact the transcript, assemble messages, and persist the user turn.
+///
+/// Returns a [`TurnContext`] containing everything the tool loop needs.
+async fn prepare_turn_context(
+    state: &AppState,
+    input: &TurnInput,
+) -> Result<TurnContext, Box<dyn std::error::Error + Send + Sync>> {
+    // 1. Resolve the LLM provider (agent models -> global roles -> any).
+    let provider = resolve_provider(state, input.model.as_deref(), input.agent.as_ref())?;
+
+    // 2. Build system context (agent-scoped workspace/skills if present).
+    let system_prompt = build_system_context(state, input.agent.as_ref()).await;
+
+    // 3. Load raw transcript and check compaction.
+    //    Child agents have compaction disabled by default (short-lived sessions).
+    let mut all_lines = load_raw_transcript(&state.transcripts, &input.session_id);
+
+    let compaction_enabled = input
+        .agent
+        .as_ref()
+        .map_or(state.config.compaction.auto, |a| a.compaction_enabled);
+
+    if compaction_enabled && compact::should_compact(&all_lines, &state.config.compaction) {
+        // Pick the summarizer (or fall back to the executor provider).
+        let summarizer = resolve_summarizer(state).unwrap_or_else(|| provider.clone());
+        match compact::run_compaction(
+            summarizer.as_ref(),
+            &state.transcripts,
+            &input.session_id,
+            &all_lines,
+            &state.config.compaction,
+        )
+        .await
+        {
+            Ok(summary) => {
+                // Optionally ingest the summary to long-term memory.
+                if state.config.memory_lifecycle.capture_on_compaction && !summary.is_empty() {
+                    let memory = state.memory.clone();
+                    let sk = input.session_key.clone();
+                    let sid = input.session_id.clone();
+                    // Build provenance metadata (includes agent fields for child agents).
+                    let mut meta = agent::provenance_metadata(
+                        input.agent.as_ref(),
+                        &sk,
+                        &sid,
+                    )
+                    .unwrap_or_default();
+                    meta.insert("sa.compaction".into(), serde_json::json!(true));
+                    meta.insert("sa.session_key".into(), serde_json::json!(&sk));
+
+                    tokio::spawn(async move {
+                        let req = sa_memory::MemoryIngestRequest {
+                            content: format!("Session summary (compacted):\n{summary}"),
+                            source: Some("session_summary".into()),
+                            session_id: Some(sid),
+                            metadata: Some(meta),
+                            extract_entities: Some(true),
+                        };
+                        if let Err(e) = memory.ingest(req).await {
+                            tracing::warn!(error = %e, "compaction memory ingest failed");
+                        }
+                    });
+                }
+
+                // Reload transcript (now includes the compaction marker).
+                all_lines = load_raw_transcript(&state.transcripts, &input.session_id);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "auto-compaction failed, continuing with full history");
+            }
+        }
+    }
+
+    // 4. Convert active transcript lines (after last compaction) to messages.
+    let boundary = compact::compaction_boundary(&all_lines);
+    let history = transcript_lines_to_messages(&all_lines[boundary..]);
+
+    // 5. Build the tool definitions (filtered by agent tool policy).
+    let tool_policy = input.agent.as_ref().map(|a| &a.tool_policy);
+    let tool_defs = tools::build_tool_definitions(state, tool_policy);
+
+    // 6. Build conversation messages.
+    let mut messages = Vec::new();
+    messages.push(Message::system(&system_prompt));
+    messages.extend(history);
+    messages.push(Message::user(&input.user_message));
+
+    // 7. Persist user message to transcript.
+    persist_transcript(
+        &state.transcripts,
+        &input.session_id,
+        "user",
+        &input.user_message,
+        None,
+    );
+
+    Ok(TurnContext {
+        provider,
+        messages,
+        tool_defs,
+    })
+}
+
+/// Phase 3: Fire-and-forget memory auto-capture of the final exchange.
+///
+/// Spawns a background task that ingests the user message + assistant
+/// response into long-term memory. No-ops when auto-capture is disabled.
+fn fire_auto_capture(state: &AppState, input: &TurnInput, final_text: &str) {
+    if !state.config.memory_lifecycle.auto_capture {
+        return;
+    }
+
+    let memory = state.memory.clone();
+    let user_msg = input.user_message.clone();
+    let final_text = final_text.to_owned();
+    let sk = input.session_key.clone();
+    let sid = input.session_id.clone();
+    // Build provenance metadata (includes agent fields for child agents).
+    let mut meta = agent::provenance_metadata(
+        input.agent.as_ref(),
+        &sk,
+        &sid,
+    )
+    .unwrap_or_default();
+    meta.insert("sa.session_key".into(), serde_json::json!(&sk));
+
+    tokio::spawn(async move {
+        let content = format!("User: {user_msg}\n---\nAssistant: {final_text}");
+        let req = sa_memory::MemoryIngestRequest {
+            content,
+            source: Some("auto_capture".into()),
+            session_id: Some(sid),
+            metadata: Some(meta),
+            extract_entities: Some(true),
+        };
+        if let Err(e) = memory.ingest(req).await {
+            tracing::warn!(error = %e, "auto-capture memory ingest failed");
+        }
+    });
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -586,12 +650,47 @@ async fn build_system_context(
 
     let user_facts = {
         let user_id = &state.config.serial_memory.default_user_id;
-        let facts_builder = UserFactsBuilder::new(
-            state.memory.as_ref(),
-            user_id,
-            state.config.context.user_facts_max_chars,
-        );
-        facts_builder.build().await
+        let cache_ttl = std::time::Duration::from_secs(60);
+
+        // Check cache first.
+        let cached = {
+            let cache = state.user_facts_cache.read();
+            cache.get(user_id.as_str()).and_then(|c| {
+                if c.fetched_at.elapsed() < cache_ttl {
+                    Some(c.content.clone())
+                } else {
+                    None
+                }
+            })
+        };
+
+        if let Some(facts) = cached {
+            facts
+        } else {
+            let facts_builder = UserFactsBuilder::new(
+                state.memory.as_ref(),
+                user_id,
+                state.config.context.user_facts_max_chars,
+            );
+            let facts = facts_builder.build().await;
+
+            // Populate cache (evict expired entries if too large).
+            {
+                const MAX_CACHED_USERS: usize = 500;
+                let mut cache = state.user_facts_cache.write();
+                if cache.len() >= MAX_CACHED_USERS {
+                    cache.retain(|_, v| v.fetched_at.elapsed() < cache_ttl);
+                }
+                cache.insert(
+                    user_id.clone(),
+                    crate::state::CachedUserFacts {
+                        content: facts.clone(),
+                        fetched_at: std::time::Instant::now(),
+                    },
+                );
+            }
+            facts
+        }
     };
     let user_facts_opt = if user_facts.is_empty() {
         None

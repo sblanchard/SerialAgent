@@ -52,6 +52,17 @@ pub struct SessionOrigin {
     pub group: Option<String>,
 }
 
+impl From<&sa_domain::config::InboundMetadata> for SessionOrigin {
+    fn from(meta: &sa_domain::config::InboundMetadata) -> Self {
+        Self {
+            channel: meta.channel.clone(),
+            account: meta.account_id.clone(),
+            peer: meta.peer_id.clone(),
+            group: meta.group_id.clone(),
+        }
+    }
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Session store
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -214,13 +225,28 @@ impl SessionStore {
     }
 
     /// Persist the current session state to disk.
-    pub fn flush(&self) -> Result<()> {
-        let sessions = self.sessions.read();
-        let json = serde_json::to_string_pretty(&*sessions)
+    ///
+    /// Clones the map snapshot under the read lock, then releases the lock
+    /// before serializing + writing, to avoid holding it during I/O.
+    ///
+    /// The blocking `std::fs::write` is offloaded to a dedicated thread via
+    /// [`tokio::task::spawn_blocking`] so the async runtime is never stalled.
+    ///
+    /// **Tradeoff**: mutations between the clone and file write are not
+    /// captured in this flush but will be picked up by the next periodic
+    /// flush (every 30 seconds). This is acceptable because session data
+    /// is not transactional and the reduced lock contention benefits
+    /// concurrent request handling.
+    pub async fn flush(&self) -> Result<()> {
+        let snapshot = self.sessions.read().clone();
+        let json = serde_json::to_string(&snapshot)
             .map_err(|e| Error::Other(format!("serializing sessions: {e}")))?;
-        std::fs::write(&self.sessions_path, json)
-            .map_err(Error::Io)?;
-        Ok(())
+        let path = self.sessions_path.clone();
+        tokio::task::spawn_blocking(move || {
+            std::fs::write(&path, json).map_err(Error::Io)
+        })
+        .await
+        .map_err(|e| Error::Other(format!("flush join error: {e}")))?
     }
 
     /// Return the transcript directory for a given session ID.
@@ -229,5 +255,39 @@ impl SessionStore {
             .parent()
             .unwrap_or(Path::new("."))
             .to_path_buf()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sa_domain::config::InboundMetadata;
+
+    #[test]
+    fn session_origin_from_metadata() {
+        let meta = InboundMetadata {
+            channel: Some("discord".into()),
+            account_id: Some("bot-1".into()),
+            peer_id: Some("user-42".into()),
+            group_id: Some("guild-99".into()),
+            channel_id: None,
+            thread_id: None,
+            is_direct: true,
+        };
+        let origin = SessionOrigin::from(&meta);
+        assert_eq!(origin.channel.as_deref(), Some("discord"));
+        assert_eq!(origin.account.as_deref(), Some("bot-1"));
+        assert_eq!(origin.peer.as_deref(), Some("user-42"));
+        assert_eq!(origin.group.as_deref(), Some("guild-99"));
+    }
+
+    #[test]
+    fn session_origin_from_empty_metadata() {
+        let meta = InboundMetadata::default();
+        let origin = SessionOrigin::from(&meta);
+        assert!(origin.channel.is_none());
+        assert!(origin.account.is_none());
+        assert!(origin.peer.is_none());
+        assert!(origin.group.is_none());
     }
 }
