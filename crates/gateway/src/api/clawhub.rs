@@ -9,9 +9,49 @@
 //!   POST /v1/clawhub/uninstall        — remove installed pack
 
 use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json};
 
 use crate::state::AppState;
+
+/// Verify the admin bearer token from the `Authorization` header.
+fn verify_admin_token(
+    headers: &HeaderMap,
+    admin_config: &sa_domain::config::AdminConfig,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let expected = match std::env::var(&admin_config.token_env) {
+        Ok(t) if !t.is_empty() => t,
+        _ => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "admin endpoints are disabled (SA_ADMIN_TOKEN not set)"
+                })),
+            ));
+        }
+    };
+
+    let provided = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+
+    if provided.len() != expected.len()
+        || !provided
+            .as_bytes()
+            .iter()
+            .zip(expected.as_bytes())
+            .all(|(a, b)| a == b)
+    {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "invalid admin token" })),
+        ));
+    }
+
+    Ok(())
+}
 
 /// List all installed third-party skill packs.
 pub async fn list_installed(State(state): State<AppState>) -> impl IntoResponse {
@@ -48,8 +88,12 @@ fn default_version() -> String {
 /// it into `{skills_root}/third_party/{owner}/{repo}/`.
 pub async fn install_pack(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<PackRef>,
 ) -> impl IntoResponse {
+    if let Err(resp) = verify_admin_token(&headers, &state.config.admin) {
+        return resp.into_response();
+    }
     let skills_root = &state.config.skills.path;
 
     // Download from GitHub via tarball API.
@@ -80,8 +124,12 @@ pub async fn install_pack(
 /// Reinstall (update) a skill pack — same as install but logs as update.
 pub async fn update_pack(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<PackRef>,
 ) -> impl IntoResponse {
+    if let Err(resp) = verify_admin_token(&headers, &state.config.admin) {
+        return resp.into_response();
+    }
     let skills_root = &state.config.skills.path;
 
     // Check if already installed.
@@ -115,8 +163,12 @@ pub async fn update_pack(
 /// Uninstall a skill pack.
 pub async fn uninstall_pack(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<PackRef>,
 ) -> impl IntoResponse {
+    if let Err(resp) = verify_admin_token(&headers, &state.config.admin) {
+        return resp.into_response();
+    }
     let skills_root = &state.config.skills.path;
 
     match sa_skills::installer::uninstall(skills_root, &body.owner, &body.repo) {

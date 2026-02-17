@@ -148,13 +148,15 @@ impl ToolRouter {
 
         // Create the pending request channel.
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().insert(
+        let prev = self.pending.lock().insert(
             request_id.clone(),
             PendingRequest {
                 node_id: node_id.to_string(),
                 tx,
             },
         );
+        // UUID v4 guarantees this, but assert defensively.
+        debug_assert!(prev.is_none(), "request_id collision: {request_id}");
 
         // Send tool_request to the node.
         let msg = WsMessage::ToolRequest {

@@ -6,48 +6,13 @@
 use crate::traits::{
     ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider,
 };
+use crate::util::{from_reqwest, resolve_api_key};
 use sa_domain::capability::LlmCapabilities;
-use sa_domain::config::{AuthConfig, ProviderConfig};
+use sa_domain::config::ProviderConfig;
 use sa_domain::error::{Error, Result};
 use sa_domain::stream::{BoxStream, StreamEvent, Usage};
 use sa_domain::tool::{ContentPart, Message, MessageContent, Role, ToolCall, ToolDefinition};
 use serde_json::Value;
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Helper: convert reqwest errors
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-pub(crate) fn from_reqwest(e: reqwest::Error) -> Error {
-    if e.is_timeout() {
-        Error::Timeout(e.to_string())
-    } else {
-        Error::Http(e.to_string())
-    }
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Auth resolution
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/// Resolve the API key from an [`AuthConfig`].
-///
-/// Precedence: `key` field > `env` field (reads environment variable) > error.
-pub fn resolve_api_key(auth: &AuthConfig) -> Result<String> {
-    if let Some(ref key) = auth.key {
-        return Ok(key.clone());
-    }
-    if let Some(ref env_var) = auth.env {
-        return std::env::var(env_var).map_err(|_| {
-            Error::Auth(format!(
-                "environment variable '{}' not set or not valid UTF-8",
-                env_var
-            ))
-        });
-    }
-    Err(Error::Auth(
-        "no API key configured: set either 'key' or 'env' in AuthConfig".into(),
-    ))
-}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Adapter struct
@@ -167,26 +132,12 @@ fn msg_to_openai(msg: &Message) -> Value {
         Role::Tool => tool_result_to_openai(msg),
         Role::Assistant => assistant_to_openai(msg),
         _ => {
-            let text = extract_text(&msg.content);
+            let text = msg.content.extract_all_text();
             serde_json::json!({
                 "role": role_to_str(msg.role),
                 "content": text,
             })
         }
-    }
-}
-
-fn extract_text(content: &MessageContent) -> String {
-    match content {
-        MessageContent::Text(t) => t.clone(),
-        MessageContent::Parts(parts) => parts
-            .iter()
-            .filter_map(|p| match p {
-                ContentPart::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
     }
 }
 
@@ -434,31 +385,20 @@ fn parse_sse_data(data: &str) -> Option<Result<StreamEvent>> {
     None
 }
 
-/// Process all complete SSE events in the buffer, draining consumed data.
-/// Returns a vec of stream events parsed from `data:` lines.
-fn drain_sse_events(buffer: &mut String) -> Vec<Result<StreamEvent>> {
-    let mut events = Vec::new();
-    while let Some(pos) = buffer.find("\n\n") {
-        let event_block = buffer[..pos].to_string();
-        *buffer = buffer[pos + 2..].to_string();
-
-        for line in event_block.lines() {
-            let line = line.trim();
-            if let Some(data) = line.strip_prefix("data:") {
-                let data = data.trim();
-                if data == "[DONE]" {
-                    // Will be handled by the caller.
-                    events.push(Ok(StreamEvent::Done {
-                        usage: None,
-                        finish_reason: Some("stop".into()),
-                    }));
-                } else if let Some(event) = parse_sse_data(data) {
-                    events.push(event);
-                }
-            }
-        }
+/// Parse a single SSE data line, handling the `[DONE]` sentinel.
+/// Returns a `Vec` for compatibility with the shared SSE infrastructure.
+fn parse_sse_data_vec(data: &str) -> Vec<Result<StreamEvent>> {
+    if data.trim() == "[DONE]" {
+        return vec![Ok(StreamEvent::Done {
+            usage: None,
+            finish_reason: Some("stop".into()),
+        })];
     }
-    events
+
+    match parse_sse_data(data) {
+        Some(event) => vec![event],
+        None => Vec::new(),
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -520,58 +460,7 @@ impl LlmProvider for OpenAiCompatProvider {
             });
         }
 
-        // Use `resp.chunk()` which returns `Option<Bytes>` and is easy to call
-        // inside async_stream without type-erasure gymnastics.
-        let stream = async_stream::stream! {
-            // `resp` is moved into this block.
-            let mut response = resp;
-            let mut buffer = String::new();
-            let mut done_emitted = false;
-
-            loop {
-                match response.chunk().await {
-                    Ok(Some(bytes)) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-                        let events = drain_sse_events(&mut buffer);
-                        for event in events {
-                            if matches!(&event, Ok(StreamEvent::Done { .. })) {
-                                done_emitted = true;
-                            }
-                            yield event;
-                        }
-                    }
-                    Ok(None) => {
-                        // Stream ended. Drain any remaining data.
-                        // Append a trailing \n\n to flush partial last event.
-                        if !buffer.trim().is_empty() {
-                            buffer.push_str("\n\n");
-                            let events = drain_sse_events(&mut buffer);
-                            for event in events {
-                                if matches!(&event, Ok(StreamEvent::Done { .. })) {
-                                    done_emitted = true;
-                                }
-                                yield event;
-                            }
-                        }
-                        break;
-                    }
-                    Err(e) => {
-                        yield Err(from_reqwest(e));
-                        break;
-                    }
-                }
-            }
-
-            if !done_emitted {
-                yield Ok(StreamEvent::Done {
-                    usage: None,
-                    finish_reason: Some("stop".into()),
-                });
-            }
-        };
-
-        Ok(Box::pin(stream))
+        Ok(crate::sse::sse_response_stream(resp, parse_sse_data_vec))
     }
 
     async fn embeddings(&self, req: EmbeddingsRequest) -> Result<EmbeddingsResponse> {
