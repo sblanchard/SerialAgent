@@ -299,8 +299,7 @@ pub async fn run_agent(
         agent: Some(ctx),
     };
 
-    let state_arc = Arc::new(state.clone());
-    let mut rx = run_turn(state_arc, input);
+    let mut rx = run_turn((*state).clone(), input);
 
     // ── Drain events with wall-clock timeout ─────────────────────
     let timeout_ms = runtime.config.limits.max_duration_ms;
