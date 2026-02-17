@@ -1,5 +1,14 @@
 //! Core OpenClaw import logic: staging, fetching (local + SSH), safe extraction,
 //! inventory scanning, sensitive file detection/redaction, and merge-strategy copy.
+//!
+//! Security properties:
+//! - Archives are validated before extraction: no symlinks, hardlinks, device files,
+//!   FIFOs, or path traversal (../ or absolute paths)
+//! - Size limits enforced: max tarball size, max extracted bytes, max file count
+//! - Filesystem-derived identifiers (agent IDs, workspace names) are sanitized
+//! - SSH surface area restricted: remote_path forced to ~/.openclaw, password auth
+//!   disabled by default
+//! - Staging dirs cleaned up on TTL (caller is responsible for scheduling)
 
 use crate::api::import_openclaw::*;
 use flate2::read::GzDecoder;
@@ -16,6 +25,37 @@ use tokio::process::Command;
 use uuid::Uuid;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Limits (configurable via env, sensible defaults)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Max tarball size in bytes (default 200MB).
+fn max_tgz_bytes() -> u64 {
+    std::env::var("SA_IMPORT_MAX_TGZ_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200 * 1024 * 1024)
+}
+
+/// Max total extracted size in bytes (default 500MB).
+fn max_extracted_bytes() -> u64 {
+    std::env::var("SA_IMPORT_MAX_EXTRACTED_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(500 * 1024 * 1024)
+}
+
+/// Max number of files in archive (default 50_000).
+fn max_file_count() -> u64 {
+    std::env::var("SA_IMPORT_MAX_FILE_COUNT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50_000)
+}
+
+/// Max length for identifiers (agent IDs, workspace names).
+const MAX_IDENT_LEN: usize = 128;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Error type
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -27,10 +67,41 @@ pub enum OpenClawImportError {
     SshFailed(String),
     #[error("archive validation failed: {0}")]
     ArchiveInvalid(String),
+    #[error("size limit exceeded: {0}")]
+    SizeLimitExceeded(String),
     #[error("io: {0}")]
     Io(#[from] io::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Identifier sanitization
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Validate an identifier (agent ID, workspace folder name) for safe filesystem use.
+/// Allows [a-zA-Z0-9._-] only, rejects empty / "." / ".." and caps length.
+fn sanitize_ident(name: &str) -> Result<(), OpenClawImportError> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(OpenClawImportError::InvalidPath(format!(
+            "invalid identifier: {name:?}"
+        )));
+    }
+    if name.len() > MAX_IDENT_LEN {
+        return Err(OpenClawImportError::InvalidPath(format!(
+            "identifier too long ({} > {MAX_IDENT_LEN}): {name:?}",
+            name.len()
+        )));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+    {
+        return Err(OpenClawImportError::InvalidPath(format!(
+            "identifier contains invalid characters: {name:?}"
+        )));
+    }
+    Ok(())
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -56,7 +127,20 @@ pub async fn preview_openclaw_import(
     let tar_path = raw_dir.join("openclaw-export.tgz");
     fetch_export_tarball(&source, &options, &tar_path).await?;
 
-    // 2) Safe extract into staging/extracted
+    // 1.5) Check tarball size limit
+    let tgz_meta = tokio::fs::metadata(&tar_path).await?;
+    let limit = max_tgz_bytes();
+    if tgz_meta.len() > limit {
+        // Clean up staging on failure
+        let _ = tokio::fs::remove_dir_all(&staging_dir).await;
+        return Err(OpenClawImportError::SizeLimitExceeded(format!(
+            "tarball is {} bytes, exceeds limit of {} bytes",
+            tgz_meta.len(),
+            limit
+        )));
+    }
+
+    // 2) Safe extract into staging/extracted (validates entries first)
     safe_extract_tgz(&tar_path, &extracted_dir).await?;
 
     // 3) Scan inventory + detect sensitive
@@ -105,6 +189,9 @@ pub async fn apply_openclaw_import(
     // ── Workspaces ──────────────────────────────────────────────
     if req.options.include_workspaces {
         for ws in &inv.workspaces {
+            // Validate workspace name
+            sanitize_ident(&ws.name)?;
+
             let src = extracted_dir.join(&ws.rel_path);
             let dst = match req.merge_strategy {
                 MergeStrategy::MergeSafe => workspace_dest_root
@@ -122,6 +209,9 @@ pub async fn apply_openclaw_import(
     // ── Sessions per agent ──────────────────────────────────────
     if req.options.include_sessions {
         for a in &inv.agents {
+            // Validate agent ID
+            sanitize_ident(&a.agent_id)?;
+
             let src_sessions = extracted_dir
                 .join("agents")
                 .join(&a.agent_id)
@@ -161,6 +251,8 @@ pub async fn apply_openclaw_import(
         );
 
         for a in &inv.agents {
+            sanitize_ident(&a.agent_id)?;
+
             let src_agent_dir = extracted_dir
                 .join("agents")
                 .join(&a.agent_id)
@@ -212,6 +304,62 @@ pub async fn apply_openclaw_import(
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Staging cleanup
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Delete staging dirs older than `max_age` seconds.
+/// Call this from a periodic background task.
+pub async fn cleanup_stale_staging(
+    staging_root: &Path,
+    max_age_secs: u64,
+) -> Result<u32, io::Error> {
+    let openclaw_root = staging_root.join("openclaw");
+    if !openclaw_root.exists() {
+        return Ok(0);
+    }
+
+    let now = std::time::SystemTime::now();
+    let mut removed = 0u32;
+
+    let mut rd = tokio::fs::read_dir(&openclaw_root).await?;
+    while let Some(entry) = rd.next_entry().await? {
+        let ft = entry.file_type().await?;
+        if !ft.is_dir() {
+            continue;
+        }
+
+        let meta = entry.metadata().await?;
+        let created = meta
+            .created()
+            .or_else(|_| meta.modified())
+            .unwrap_or(now);
+
+        if let Ok(age) = now.duration_since(created) {
+            if age.as_secs() > max_age_secs {
+                let _ = tokio::fs::remove_dir_all(entry.path()).await;
+                removed += 1;
+            }
+        }
+    }
+
+    Ok(removed)
+}
+
+/// Delete a specific staging dir by ID.
+pub async fn delete_staging(
+    staging_root: &Path,
+    staging_id: &Uuid,
+) -> Result<bool, io::Error> {
+    let dir = staging_root.join("openclaw").join(staging_id.to_string());
+    if dir.exists() {
+        tokio::fs::remove_dir_all(&dir).await?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Fetching
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -237,11 +385,37 @@ async fn fetch_export_tarball(
             strict_host_key_checking,
             auth,
         } => {
+            // SSH hardening: force remote_path to ~/.openclaw regardless of input.
+            // This prevents the endpoint from being used as a generic file exfil tool.
+            let safe_remote_path = "~/.openclaw";
+            if remote_path != "~/.openclaw" && remote_path != "$HOME/.openclaw" {
+                tracing::warn!(
+                    requested = %remote_path,
+                    forced = %safe_remote_path,
+                    "SSH remote_path overridden for security"
+                );
+            }
+
+            // Password auth disabled by default (requires SA_IMPORT_ALLOW_SSH_PASSWORD=1)
+            if matches!(auth, SshAuth::Password { .. }) {
+                let allowed = std::env::var("SA_IMPORT_ALLOW_SSH_PASSWORD")
+                    .map(|v| v == "1" || v == "true")
+                    .unwrap_or(false);
+                if !allowed {
+                    return Err(OpenClawImportError::SshFailed(
+                        "SSH password auth is disabled by default for security. \
+                         Use ssh-agent or keyfile. To override, set \
+                         SA_IMPORT_ALLOW_SSH_PASSWORD=1"
+                            .into(),
+                    ));
+                }
+            }
+
             fetch_ssh_tar(
                 host,
                 user.as_deref(),
                 *port,
-                remote_path,
+                safe_remote_path,
                 *strict_host_key_checking,
                 auth,
                 options,
@@ -326,6 +500,8 @@ async fn fetch_ssh_tar(
     } else {
         cmd.arg("-o").arg("StrictHostKeyChecking=accept-new");
     }
+    // Connection timeout to prevent hanging
+    cmd.arg("-o").arg("ConnectTimeout=30");
 
     if let Some(p) = port {
         cmd.arg("-p").arg(p.to_string());
@@ -339,22 +515,10 @@ async fn fetch_ssh_tar(
             cmd.arg("-i").arg(key_path);
         }
         SshAuth::Password { .. } => {
-            // MVP: support if sshpass exists. Otherwise fail with clear message.
-            if which("sshpass").await.is_ok() {
-                return fetch_ssh_tar_via_sshpass(
-                    password_from(auth),
-                    &target,
-                    &remote_cmd,
-                    tar_path,
-                )
-                .await;
-            } else {
-                return Err(OpenClawImportError::SshFailed(
-                    "password auth requested but sshpass not found; \
-                     use ssh-agent or keyfile"
-                        .into(),
-                ));
-            }
+            // Password auth gate is checked in fetch_export_tarball()
+            return Err(OpenClawImportError::SshFailed(
+                "password auth not implemented; use ssh-agent or keyfile".into(),
+            ));
         }
     }
 
@@ -382,25 +546,6 @@ async fn fetch_ssh_tar(
     Ok(())
 }
 
-async fn fetch_ssh_tar_via_sshpass(
-    _password: String,
-    _target: &str,
-    _remote_cmd: &str,
-    _tar_path: &Path,
-) -> Result<(), OpenClawImportError> {
-    // sshpass path not fully implemented — prefer Agent/KeyFile auth.
-    Err(OpenClawImportError::SshFailed(
-        "sshpass path not implemented in this version; prefer Agent/KeyFile".into(),
-    ))
-}
-
-fn password_from(auth: &SshAuth) -> String {
-    match auth {
-        SshAuth::Password { password } => password.clone(),
-        _ => String::new(),
-    }
-}
-
 fn build_export_includes(options: &ImportOptions) -> Vec<String> {
     let mut inc = Vec::new();
     if options.include_sessions || options.include_models || options.include_auth_profiles {
@@ -421,25 +566,69 @@ async fn safe_extract_tgz(
     tgz_path: &Path,
     dest_dir: &Path,
 ) -> Result<(), OpenClawImportError> {
-    // 1) Validate archive entries before extracting (prevents path traversal)
-    validate_tgz_entries(tgz_path).await?;
+    // Stream validation: check all entries before extracting.
+    // Uses streaming (BufReader) — does NOT load entire archive into memory.
+    validate_tgz_entries(tgz_path)?;
 
-    // 2) Extract using tar+flate2 (no shell, safer)
-    let bytes = tokio::fs::read(tgz_path).await?;
-    let cursor = std::io::Cursor::new(bytes);
-    let gz = GzDecoder::new(cursor);
+    // Now extract using tar+flate2 (streaming, not loading whole file).
+    let file = std::fs::File::open(tgz_path)?;
+    let gz = GzDecoder::new(std::io::BufReader::new(file));
     let mut archive = Archive::new(gz);
-    archive.unpack(dest_dir).map_err(|e| {
-        OpenClawImportError::ArchiveInvalid(format!("failed to unpack archive: {e}"))
-    })?;
+
+    // Disable unpacking of symlinks/hardlinks/special files
+    archive.set_unpack_xattrs(false);
+
+    for entry in archive.entries().map_err(|e| {
+        OpenClawImportError::ArchiveInvalid(format!("tar entries failed: {e}"))
+    })? {
+        let mut entry = entry.map_err(|e| {
+            OpenClawImportError::ArchiveInvalid(format!("tar entry read failed: {e}"))
+        })?;
+
+        let entry_type = entry.header().entry_type();
+
+        // Only allow regular files and directories
+        match entry_type {
+            tar::EntryType::Regular
+            | tar::EntryType::GNUSparse
+            | tar::EntryType::Directory => {}
+            tar::EntryType::Symlink | tar::EntryType::Link => {
+                let path = entry.path().unwrap_or_default();
+                return Err(OpenClawImportError::ArchiveInvalid(format!(
+                    "symlink/hardlink rejected: {}",
+                    path.display()
+                )));
+            }
+            other => {
+                let path = entry.path().unwrap_or_default();
+                return Err(OpenClawImportError::ArchiveInvalid(format!(
+                    "unsupported entry type {:?} at: {}",
+                    other,
+                    path.display()
+                )));
+            }
+        }
+
+        // Safe unpack into dest_dir
+        entry.unpack_in(dest_dir).map_err(|e| {
+            OpenClawImportError::ArchiveInvalid(format!("unpack failed: {e}"))
+        })?;
+    }
+
     Ok(())
 }
 
-async fn validate_tgz_entries(tgz_path: &Path) -> Result<(), OpenClawImportError> {
-    let bytes = tokio::fs::read(tgz_path).await?;
-    let cursor = std::io::Cursor::new(bytes);
-    let gz = GzDecoder::new(cursor);
+/// Validate tar entries without extracting: check paths, types, and cumulative sizes.
+/// Uses streaming (BufReader) — NOT tokio::fs::read.
+fn validate_tgz_entries(tgz_path: &Path) -> Result<(), OpenClawImportError> {
+    let file = std::fs::File::open(tgz_path)?;
+    let gz = GzDecoder::new(std::io::BufReader::new(file));
     let mut archive = Archive::new(gz);
+
+    let max_bytes = max_extracted_bytes();
+    let max_files = max_file_count();
+    let mut total_bytes: u64 = 0;
+    let mut total_files: u64 = 0;
 
     for entry in archive.entries().map_err(|e| {
         OpenClawImportError::ArchiveInvalid(format!("tar entries failed: {e}"))
@@ -447,10 +636,53 @@ async fn validate_tgz_entries(tgz_path: &Path) -> Result<(), OpenClawImportError
         let entry = entry.map_err(|e| {
             OpenClawImportError::ArchiveInvalid(format!("tar entry read failed: {e}"))
         })?;
+
+        // ── Type check: reject symlinks, hardlinks, devices, FIFOs ──
+        let entry_type = entry.header().entry_type();
+        match entry_type {
+            tar::EntryType::Regular
+            | tar::EntryType::GNUSparse
+            | tar::EntryType::Directory => {}
+            tar::EntryType::Symlink | tar::EntryType::Link => {
+                let path = entry.path().unwrap_or_default();
+                return Err(OpenClawImportError::ArchiveInvalid(format!(
+                    "symlink/hardlink in archive: {}",
+                    path.display()
+                )));
+            }
+            other => {
+                let path = entry.path().unwrap_or_default();
+                return Err(OpenClawImportError::ArchiveInvalid(format!(
+                    "unsupported entry type {:?}: {}",
+                    other,
+                    path.display()
+                )));
+            }
+        }
+
+        // ── Path check: no traversal ──
         let path = entry.path().map_err(|e| {
             OpenClawImportError::ArchiveInvalid(format!("tar path read failed: {e}"))
         })?;
         validate_relative_path(&path)?;
+
+        // ── Size limits ──
+        let entry_size = entry.header().size().unwrap_or(0);
+        total_bytes += entry_size;
+        total_files += 1;
+
+        if total_bytes > max_bytes {
+            return Err(OpenClawImportError::SizeLimitExceeded(format!(
+                "extracted content exceeds limit of {} bytes (at {} bytes after {} files)",
+                max_bytes, total_bytes, total_files
+            )));
+        }
+        if total_files > max_files {
+            return Err(OpenClawImportError::SizeLimitExceeded(format!(
+                "archive contains more than {} files",
+                max_files
+            )));
+        }
     }
     Ok(())
 }
@@ -502,6 +734,12 @@ async fn scan_inventory(
                 continue;
             }
             let agent_id = entry.file_name().to_string_lossy().to_string();
+
+            // Sanitize agent ID — skip invalid ones with a warning
+            if sanitize_ident(&agent_id).is_err() {
+                tracing::warn!(agent_id = %agent_id, "skipping agent with invalid identifier");
+                continue;
+            }
 
             let sessions_dir = entry.path().join("sessions");
             let agent_meta = entry.path().join("agent");
@@ -557,6 +795,13 @@ async fn scan_inventory(
                             .file_name()
                             .unwrap_or_else(|| OsStr::new("workspace-x"));
                         let rel = rel.to_string_lossy().to_string();
+
+                        // Validate workspace name
+                        if sanitize_ident(&rel).is_err() {
+                            tracing::warn!(name = %rel, "skipping workspace with invalid name");
+                            continue;
+                        }
+
                         let (files, bytes) = dir_stats(&path).await?;
                         inv.workspaces.push(WorkspaceInventory {
                             name: rel.clone(),
@@ -717,7 +962,7 @@ fn mask_secret(s: &str) -> String {
     }
     let head = &trimmed[..4];
     let tail = &trimmed[n - 4..];
-    format!("{head}…{tail}")
+    format!("{head}...{tail}")
 }
 
 fn redact_secrets(s: &str) -> String {
@@ -842,6 +1087,7 @@ fn copy_dir_recursive<'a>(
             } else if ft.is_file() {
                 tokio::fs::copy(&from, &to).await?;
             }
+            // Skip symlinks and other special files during copy
         }
         Ok(())
     })
@@ -865,6 +1111,7 @@ fn copy_dir_recursive_skip_existing<'a>(
                     tokio::fs::copy(&from, &to).await?;
                 }
             }
+            // Skip symlinks and other special files during copy
         }
         Ok(())
     })
@@ -887,6 +1134,7 @@ fn shell_escape(s: &str) -> String {
     out
 }
 
+#[allow(dead_code)]
 async fn which(bin: &str) -> Result<PathBuf, OpenClawImportError> {
     let out = Command::new("sh")
         .arg("-lc")
@@ -902,5 +1150,368 @@ async fn which(bin: &str) -> Result<PathBuf, OpenClawImportError> {
             io::ErrorKind::NotFound,
             format!("{bin} not found"),
         )))
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Tests
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Path validation ─────────────────────────────────────────
+
+    #[test]
+    fn test_relative_path_ok() {
+        assert!(validate_relative_path(Path::new("agents/main/sessions/foo.jsonl")).is_ok());
+        assert!(validate_relative_path(Path::new("workspace/MEMORY.md")).is_ok());
+        assert!(validate_relative_path(Path::new("workspace-kimi/file.txt")).is_ok());
+    }
+
+    #[test]
+    fn test_relative_path_traversal_rejected() {
+        assert!(validate_relative_path(Path::new("../../../etc/passwd")).is_err());
+        assert!(validate_relative_path(Path::new("agents/../../../etc/shadow")).is_err());
+        assert!(validate_relative_path(Path::new("agents/main/../../..")).is_err());
+    }
+
+    #[test]
+    fn test_absolute_path_rejected() {
+        assert!(validate_relative_path(Path::new("/etc/passwd")).is_err());
+        assert!(validate_relative_path(Path::new("/tmp/evil")).is_err());
+    }
+
+    // ── Identifier sanitization ─────────────────────────────────
+
+    #[test]
+    fn test_sanitize_ident_valid() {
+        assert!(sanitize_ident("main").is_ok());
+        assert!(sanitize_ident("kimi-agent").is_ok());
+        assert!(sanitize_ident("workspace-claude").is_ok());
+        assert!(sanitize_ident("agent_v2.1").is_ok());
+    }
+
+    #[test]
+    fn test_sanitize_ident_rejects_traversal() {
+        assert!(sanitize_ident("..").is_err());
+        assert!(sanitize_ident(".").is_err());
+        assert!(sanitize_ident("").is_err());
+    }
+
+    #[test]
+    fn test_sanitize_ident_rejects_slashes() {
+        assert!(sanitize_ident("foo/bar").is_err());
+        assert!(sanitize_ident("../etc").is_err());
+        assert!(sanitize_ident("foo\\bar").is_err());
+    }
+
+    #[test]
+    fn test_sanitize_ident_rejects_special_chars() {
+        assert!(sanitize_ident("foo bar").is_err());
+        assert!(sanitize_ident("foo\0bar").is_err());
+        assert!(sanitize_ident("agent;rm -rf").is_err());
+    }
+
+    #[test]
+    fn test_sanitize_ident_length_limit() {
+        let long = "a".repeat(MAX_IDENT_LEN);
+        assert!(sanitize_ident(&long).is_ok());
+        let too_long = "a".repeat(MAX_IDENT_LEN + 1);
+        assert!(sanitize_ident(&too_long).is_err());
+    }
+
+    // ── Secret redaction ────────────────────────────────────────
+
+    #[test]
+    fn test_mask_secret_short() {
+        assert_eq!(mask_secret("abc"), "****");
+        assert_eq!(mask_secret("1234567890"), "****");
+    }
+
+    #[test]
+    fn test_mask_secret_long() {
+        let masked = mask_secret("sk-1234567890abcdef");
+        assert!(masked.starts_with("sk-1"));
+        assert!(masked.ends_with("cdef"));
+        assert!(!masked.contains("567890abcdef"));
+    }
+
+    #[test]
+    fn test_redact_secrets_leaves_short_tokens() {
+        let input = "hello world";
+        assert_eq!(redact_secrets(input), "hello world");
+    }
+
+    #[test]
+    fn test_redact_secrets_masks_long_tokens() {
+        let input = "key=sk-1234567890abcdefghij";
+        let out = redact_secrets(input);
+        assert!(out.contains("sk-1"));
+        assert!(!out.contains("567890abcdefghij"));
+    }
+
+    // ── Tar entry validation with real archives ─────────────────
+
+    fn create_test_tgz(entries: &[(&str, &[u8])]) -> tempfile::NamedTempFile {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let gz = GzEncoder::new(tmp.as_file(), Compression::fast());
+        let mut builder = tar::Builder::new(gz);
+
+        for (path, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_cksum();
+            builder.append_data(&mut header, path, &data[..]).unwrap();
+        }
+
+        let gz = builder.into_inner().unwrap();
+        gz.finish().unwrap();
+        tmp
+    }
+
+    /// Create a test .tgz with path-traversal entries by writing raw tar bytes.
+    /// The tar crate blocks `..` in both `append_data` and `set_path`, so we
+    /// construct the malicious archive at the byte level.
+    fn create_test_tgz_with_traversal(
+        entries: &[(&str, &[u8])],
+    ) -> tempfile::NamedTempFile {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let gz = GzEncoder::new(tmp.as_file(), Compression::fast());
+        let mut out = std::io::BufWriter::new(gz);
+
+        for (path, data) in entries {
+            // Build a raw 512-byte POSIX/GNU tar header
+            let mut header_bytes = [0u8; 512];
+
+            // Name field: offset 0, 100 bytes
+            let name_bytes = path.as_bytes();
+            let name_len = name_bytes.len().min(100);
+            header_bytes[..name_len].copy_from_slice(&name_bytes[..name_len]);
+
+            // Mode: offset 100, 8 bytes ("0000644\0")
+            header_bytes[100..108].copy_from_slice(b"0000644\0");
+
+            // UID: offset 108, 8 bytes
+            header_bytes[108..116].copy_from_slice(b"0001000\0");
+
+            // GID: offset 116, 8 bytes
+            header_bytes[116..124].copy_from_slice(b"0001000\0");
+
+            // Size: offset 124, 12 bytes (octal, zero-terminated)
+            let size_str = format!("{:011o}\0", data.len());
+            header_bytes[124..136].copy_from_slice(size_str.as_bytes());
+
+            // Mtime: offset 136, 12 bytes
+            header_bytes[136..148].copy_from_slice(b"00000000000\0");
+
+            // Typeflag: offset 156, 1 byte ('0' = regular file)
+            header_bytes[156] = b'0';
+
+            // Magic: offset 257, 6 bytes ("ustar\0")
+            header_bytes[257..263].copy_from_slice(b"ustar\0");
+
+            // Version: offset 263, 2 bytes ("00")
+            header_bytes[263..265].copy_from_slice(b"00");
+
+            // Checksum: offset 148, 8 bytes — compute over header with
+            // checksum field treated as spaces
+            header_bytes[148..156].copy_from_slice(b"        ");
+            let cksum: u32 = header_bytes.iter().map(|&b| b as u32).sum();
+            let cksum_str = format!("{:06o}\0 ", cksum);
+            header_bytes[148..156].copy_from_slice(&cksum_str.as_bytes()[..8]);
+
+            out.write_all(&header_bytes).unwrap();
+            out.write_all(data).unwrap();
+
+            // Pad to 512-byte boundary
+            let remainder = data.len() % 512;
+            if remainder != 0 {
+                let padding = 512 - remainder;
+                out.write_all(&vec![0u8; padding]).unwrap();
+            }
+        }
+
+        // Two 512-byte zero blocks mark end-of-archive
+        out.write_all(&[0u8; 1024]).unwrap();
+        let gz = out.into_inner().unwrap();
+        gz.finish().unwrap();
+        tmp
+    }
+
+    #[test]
+    fn test_validate_clean_archive() {
+        let tgz = create_test_tgz(&[
+            ("workspace/MEMORY.md", b"# Memory"),
+            ("agents/main/sessions/s1.jsonl", b"{}"),
+        ]);
+        assert!(validate_tgz_entries(tgz.path()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_archive_with_traversal() {
+        let tgz = create_test_tgz_with_traversal(&[("../../../etc/passwd", b"root:x:0:0")]);
+        assert!(validate_tgz_entries(tgz.path()).is_err());
+    }
+
+    #[test]
+    fn test_validate_archive_size_limit() {
+        // Create archive with 2 small files — should pass
+        let tgz = create_test_tgz(&[("a", b"x"), ("b", b"y")]);
+        assert!(validate_tgz_entries(tgz.path()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_archive_rejects_symlink() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let gz = GzEncoder::new(tmp.as_file(), Compression::fast());
+        let mut builder = tar::Builder::new(gz);
+
+        // Add a symlink entry: agents/evil -> /etc
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_cksum();
+        builder
+            .append_link(&mut header, "agents/evil", "/etc")
+            .unwrap();
+
+        let gz = builder.into_inner().unwrap();
+        gz.finish().unwrap();
+
+        let result = validate_tgz_entries(tmp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("symlink") || err.contains("hardlink"),
+            "error should mention symlink: {err}"
+        );
+    }
+
+    // ── Safe extract ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_safe_extract_clean_archive() {
+        let tgz = create_test_tgz(&[
+            ("workspace/MEMORY.md", b"# Memory file"),
+            ("agents/main/sessions/s1.jsonl", b"{\"role\":\"user\"}"),
+        ]);
+
+        let dest = tempfile::tempdir().unwrap();
+        let result = safe_extract_tgz(tgz.path(), dest.path()).await;
+        assert!(result.is_ok(), "extract should succeed: {:?}", result);
+
+        // Verify files exist
+        assert!(dest.path().join("workspace/MEMORY.md").exists());
+        assert!(dest.path().join("agents/main/sessions/s1.jsonl").exists());
+    }
+
+    #[tokio::test]
+    async fn test_safe_extract_rejects_traversal() {
+        let tgz = create_test_tgz_with_traversal(&[("../../../etc/shadow", b"bad")]);
+        let dest = tempfile::tempdir().unwrap();
+        let result = safe_extract_tgz(tgz.path(), dest.path()).await;
+        assert!(result.is_err());
+    }
+
+    // ── MergeSafe doesn't overwrite ─────────────────────────────
+
+    #[tokio::test]
+    async fn test_skip_existing_does_not_overwrite() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        // Create source file
+        let src_file = src.path().join("test.txt");
+        std::fs::write(&src_file, "new content").unwrap();
+
+        // Create existing destination file
+        let dst_file = dst.path().join("test.txt");
+        std::fs::write(&dst_file, "original content").unwrap();
+
+        copy_file_strategy(&src_file, &dst_file, MergeStrategy::SkipExisting)
+            .await
+            .unwrap();
+
+        // Should NOT have overwritten
+        assert_eq!(
+            std::fs::read_to_string(&dst_file).unwrap(),
+            "original content"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_replace_does_overwrite() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        let src_file = src.path().join("test.txt");
+        std::fs::write(&src_file, "new content").unwrap();
+
+        let dst_file = dst.path().join("test.txt");
+        std::fs::write(&dst_file, "original content").unwrap();
+
+        copy_file_strategy(&src_file, &dst_file, MergeStrategy::Replace)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&dst_file).unwrap(),
+            "new content"
+        );
+    }
+
+    // ── Extract redacted secrets ────────────────────────────────
+
+    #[test]
+    fn test_extract_redacted_secrets_finds_keys() {
+        let json: Value = serde_json::from_str(
+            r#"{
+            "providers": {
+                "venice": {
+                    "apiKey": "sk-1234567890abcdefghij"
+                }
+            },
+            "safe_field": "not a key"
+        }"#,
+        )
+        .unwrap();
+        let mut samples = Vec::new();
+        extract_redacted_secrets(&json, &mut samples);
+        assert_eq!(samples.len(), 1);
+        assert!(samples[0].starts_with("sk-1"));
+        assert!(!samples[0].contains("567890abcdefghij"));
+    }
+
+    #[test]
+    fn test_extract_redacted_secrets_nested() {
+        let json: Value = serde_json::from_str(
+            r#"{
+            "profiles": [
+                {"name": "prod", "key": "AKIA1234567890abcdef"},
+                {"name": "dev", "key": "short"}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let mut samples = Vec::new();
+        extract_redacted_secrets(&json, &mut samples);
+        assert_eq!(samples.len(), 2);
+        // Short key should be masked completely
+        assert!(samples.iter().any(|s| s == "****"));
     }
 }

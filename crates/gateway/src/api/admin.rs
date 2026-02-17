@@ -719,9 +719,38 @@ fn map_import_err(e: crate::import::openclaw::OpenClawImportError) -> (StatusCod
     let code = match &e {
         crate::import::openclaw::OpenClawImportError::InvalidPath(_) => StatusCode::BAD_REQUEST,
         crate::import::openclaw::OpenClawImportError::ArchiveInvalid(_) => StatusCode::BAD_REQUEST,
+        crate::import::openclaw::OpenClawImportError::SizeLimitExceeded(_) => StatusCode::PAYLOAD_TOO_LARGE,
         crate::import::openclaw::OpenClawImportError::SshFailed(_) => StatusCode::BAD_GATEWAY,
         crate::import::openclaw::OpenClawImportError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
         crate::import::openclaw::OpenClawImportError::Json(_) => StatusCode::BAD_REQUEST,
     };
     (code, Json(serde_json::json!({ "error": msg })))
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// DELETE /v1/import/openclaw/staging/:id — delete specific staging dir
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub async fn import_openclaw_delete_staging(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(staging_id): axum::extract::Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    if let Err(e) = check_admin_token(&headers) {
+        return e.into_response();
+    }
+
+    match crate::import::openclaw::delete_staging(&state.import_root, &staging_id).await {
+        Ok(true) => Json(serde_json::json!({ "deleted": true })).into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "staging dir not found" })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
 }
