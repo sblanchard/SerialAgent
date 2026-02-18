@@ -532,10 +532,25 @@ export type RunListParams = {
 // ── Schedule types ───────────────────────────────────────────────────
 
 export type ScheduleStatus = "active" | "paused" | "error";
+export type MissedPolicy = "skip" | "run_once" | "catch_up";
+export type DigestMode = "full" | "changes_only";
 
 export type DeliveryTarget =
   | { kind: "in_app" }
   | { kind: "webhook"; url: string };
+
+export type FetchConfig = {
+  timeout_ms: number;
+  user_agent: string;
+  max_size_bytes: number;
+};
+
+export type SourceState = {
+  last_fetched_at?: string;
+  last_content_hash?: string;
+  last_http_status?: number;
+  last_error?: string;
+};
 
 export type Schedule = {
   id: string;
@@ -552,7 +567,17 @@ export type Schedule = {
   last_run_id?: string;
   last_run_at?: string;
   next_run_at?: string;
+  /** Computed by the backend from enabled + consecutive_failures. */
   status: ScheduleStatus;
+  missed_policy: MissedPolicy;
+  max_concurrency: number;
+  timeout_ms?: number;
+  digest_mode: DigestMode;
+  fetch_config: FetchConfig;
+  source_states: Record<string, SourceState>;
+  last_error?: string;
+  last_error_at?: string;
+  consecutive_failures: number;
 };
 
 export type ScheduleListResponse = {
@@ -574,6 +599,11 @@ export type CreateScheduleRequest = {
   prompt_template: string;
   sources?: string[];
   delivery_targets?: DeliveryTarget[];
+  missed_policy?: MissedPolicy;
+  max_concurrency?: number;
+  timeout_ms?: number;
+  digest_mode?: DigestMode;
+  fetch_config?: Partial<FetchConfig>;
 };
 
 export type UpdateScheduleRequest = {
@@ -585,6 +615,11 @@ export type UpdateScheduleRequest = {
   prompt_template?: string;
   sources?: string[];
   delivery_targets?: DeliveryTarget[];
+  missed_policy?: MissedPolicy;
+  max_concurrency?: number;
+  timeout_ms?: number | null;
+  digest_mode?: DigestMode;
+  fetch_config?: Partial<FetchConfig>;
 };
 
 // ── Delivery types ──────────────────────────────────────────────────

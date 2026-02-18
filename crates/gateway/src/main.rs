@@ -267,77 +267,15 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Schedule runner (tick every 30s, trigger due schedules) ───────
     {
-        let sched_store = schedule_store.clone();
-        let deliv_store = delivery_store.clone();
         let state_for_sched = state.clone();
         tokio::spawn(async move {
+            let runner = sa_gateway::runtime::schedule_runner::ScheduleRunner::new();
             let mut interval = tokio::time::interval(
                 std::time::Duration::from_secs(30),
             );
             loop {
                 interval.tick().await;
-                let due = sched_store.due_schedules().await;
-                for schedule in due {
-                    tracing::info!(schedule_id = %schedule.id, name = %schedule.name, "triggering scheduled run");
-
-                    // Build user prompt from template + sources
-                    let user_prompt = if schedule.sources.is_empty() {
-                        schedule.prompt_template.clone()
-                    } else {
-                        format!(
-                            "{}\n\nURLs:\n{}",
-                            schedule.prompt_template,
-                            schedule.sources.iter().map(|u| format!("- {}", u)).collect::<Vec<_>>().join("\n")
-                        )
-                    };
-
-                    let session_key = format!("schedule:{}", schedule.id);
-                    let session_id = format!("sched-{}-{}", schedule.id, chrono::Utc::now().format("%Y%m%d%H%M%S"));
-
-                    let input = sa_gateway::runtime::TurnInput {
-                        session_key: session_key.clone(),
-                        session_id,
-                        user_message: user_prompt,
-                        model: None,
-                        agent: None,
-                    };
-
-                    let (run_id, mut rx) = sa_gateway::runtime::run_turn(state_for_sched.clone(), input);
-
-                    // Record the run on the schedule
-                    sched_store.record_run(&schedule.id, run_id).await;
-
-                    // Spawn a task to collect the result and create a delivery
-                    let sched = schedule.clone();
-                    let ds = deliv_store.clone();
-                    tokio::spawn(async move {
-                        let mut final_content = String::new();
-                        while let Some(event) = rx.recv().await {
-                            match event {
-                                sa_gateway::runtime::TurnEvent::Final { content } => {
-                                    final_content = content;
-                                }
-                                sa_gateway::runtime::TurnEvent::Error { message } => {
-                                    final_content = format!("Error: {}", message);
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        // Create a delivery
-                        let mut delivery = sa_gateway::runtime::deliveries::Delivery::new(
-                            format!("{} — {}", sched.name, chrono::Utc::now().format("%Y-%m-%d %H:%M")),
-                            final_content,
-                        );
-                        delivery.schedule_id = Some(sched.id);
-                        delivery.schedule_name = Some(sched.name.clone());
-                        delivery.run_id = Some(run_id);
-                        delivery.sources = sched.sources.clone();
-                        ds.insert(delivery).await;
-
-                        tracing::info!(schedule_id = %sched.id, run_id = %run_id, "scheduled run completed, delivery created");
-                    });
-                }
+                runner.tick(&state_for_sched).await;
             }
         });
     }
