@@ -134,4 +134,4 @@ GitHub Actions workflow runs on every push:
 
 ## License
 
-Proprietary. All rights reserved.
+MIT
