@@ -356,6 +356,31 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(256);
     tracing::info!(max_concurrent, "concurrency limit set");
 
+    // ── Rate-limit layer (per-IP token bucket via governor) ─────────
+    let governor_layer = config.server.rate_limit.as_ref().map(|rl| {
+        use tower_governor::governor::GovernorConfigBuilder;
+        use tower_governor::GovernorLayer;
+
+        let gov_config = GovernorConfigBuilder::default()
+            .per_second(rl.requests_per_second)
+            .burst_size(rl.burst_size)
+            .finish()
+            .expect("rate_limit: requests_per_second and burst_size must be > 0");
+
+        tracing::info!(
+            requests_per_second = rl.requests_per_second,
+            burst_size = rl.burst_size,
+            "per-IP rate limiting enabled"
+        );
+
+        GovernorLayer {
+            config: std::sync::Arc::new(gov_config),
+        }
+    });
+    if governor_layer.is_none() {
+        tracing::info!("per-IP rate limiting disabled (no [server.rate_limit] in config)");
+    }
+
     // ── Router ───────────────────────────────────────────────────────
     // Serve the Vue SPA from apps/dashboard/dist if it exists.
     // The SPA uses hash-based routing so all paths fall back to index.html.
@@ -364,17 +389,25 @@ async fn main() -> anyhow::Result<()> {
         let index_html = dashboard_dist.join("index.html");
         let spa = ServeDir::new(dashboard_dist)
             .not_found_service(ServeFile::new(index_html));
-        api::router(state.clone())
+        let router = api::router(state.clone())
             .nest_service("/app", spa)
             .layer(cors_layer)
-            .layer(tower::limit::ConcurrencyLimitLayer::new(max_concurrent))
-            .with_state(state)
+            .layer(tower::limit::ConcurrencyLimitLayer::new(max_concurrent));
+        if let Some(gov) = governor_layer {
+            router.layer(gov).with_state(state)
+        } else {
+            router.with_state(state)
+        }
     } else {
         tracing::info!("apps/dashboard/dist not found — SPA not served (run `npm run build` in apps/dashboard)");
-        api::router(state.clone())
+        let router = api::router(state.clone())
             .layer(cors_layer)
-            .layer(tower::limit::ConcurrencyLimitLayer::new(max_concurrent))
-            .with_state(state)
+            .layer(tower::limit::ConcurrencyLimitLayer::new(max_concurrent));
+        if let Some(gov) = governor_layer {
+            router.layer(gov).with_state(state)
+        } else {
+            router.with_state(state)
+        }
     };
 
     // ── Bind ─────────────────────────────────────────────────────────
