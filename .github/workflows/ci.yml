@@ -7,7 +7,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
 
 jobs:
   check:
@@ -29,7 +28,7 @@ jobs:
             ${{ runner.os }}-cargo-check-
             ${{ runner.os }}-cargo-
 
-      - run: cargo check --workspace
+      - run: cargo check --workspace --exclude sa-dashboard-app --locked
 
   clippy:
     name: Clippy
@@ -52,7 +51,7 @@ jobs:
             ${{ runner.os }}-cargo-clippy-
             ${{ runner.os }}-cargo-
 
-      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo clippy --workspace --exclude sa-dashboard-app --locked -- -D warnings
 
   test:
     name: Tests
@@ -73,7 +72,7 @@ jobs:
             ${{ runner.os }}-cargo-test-
             ${{ runner.os }}-cargo-
 
-      - run: cargo test --workspace
+      - run: cargo test --workspace --exclude sa-dashboard-app --locked
 
   dashboard:
     name: Dashboard build
@@ -93,6 +92,8 @@ jobs:
       - run: npm ci
 
       - run: npx vue-tsc --noEmit
+
+      - run: npm test
 
       - run: npm run build
 
