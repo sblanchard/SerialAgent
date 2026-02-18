@@ -147,8 +147,12 @@ pub async fn exec(
 
     let session_arc = manager.register(session);
 
+    // Notify used to wake the foreground waiter when the process finishes,
+    // eliminating the need for a 50ms polling loop.
+    let done_notify = Arc::new(Notify::new());
+
     // Spawn the background monitoring task.
-    spawn_monitor(child, session_arc.clone(), stdin_rx, kill_rx, timeout_sec);
+    spawn_monitor(child, session_arc.clone(), stdin_rx, kill_rx, timeout_sec, done_notify.clone());
 
     // If background: return immediately.
     if req.background {
@@ -161,39 +165,35 @@ pub async fn exec(
         };
     }
 
-    // Foreground: wait up to yield_ms for completion.
-    let deadline = if yield_ms > 0 {
-        tokio::time::Instant::now() + std::time::Duration::from_millis(yield_ms)
+    // Foreground: wait for completion or yield deadline, whichever comes first.
+    let yield_dur = if yield_ms > 0 {
+        std::time::Duration::from_millis(yield_ms)
     } else {
         // "0 yield" with foreground: wait up to timeout_sec
-        tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_sec)
+        std::time::Duration::from_secs(timeout_sec)
     };
 
-    loop {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let s = session_arc.read();
-        if s.status != ProcessStatus::Running {
-            // Process finished within the yield window.
-            return ExecResponse {
+    tokio::select! {
+        _ = done_notify.notified() => {
+            let s = session_arc.read();
+            ExecResponse {
                 status: s.status,
                 exit_code: s.exit_code,
                 output: Some(s.output.combined.clone()),
                 session_id: None,
                 tail: None,
-            };
+            }
         }
-
-        if tokio::time::Instant::now() >= deadline {
+        _ = tokio::time::sleep(yield_dur) => {
             // Auto-background: process is still running.
-            let tail = s.output.tail(20);
-            return ExecResponse {
+            let tail = session_arc.read().output.tail(20);
+            ExecResponse {
                 status: ProcessStatus::Running,
                 exit_code: None,
                 output: None,
                 session_id: Some(session_id),
                 tail: Some(tail),
-            };
+            }
         }
     }
 }
@@ -205,6 +205,7 @@ fn spawn_monitor(
     mut stdin_rx: mpsc::Receiver<StdinMessage>,
     mut kill_rx: mpsc::Receiver<()>,
     timeout_sec: u64,
+    done_notify: Arc<Notify>,
 ) {
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -315,6 +316,9 @@ fn spawn_monitor(
                 status = ProcessStatus::TimedOut;
             }
         }
+
+        // Wake any foreground waiter.
+        done_notify.notify_waiters();
 
         tracing::debug!(
             session_id = %session.read().id,
