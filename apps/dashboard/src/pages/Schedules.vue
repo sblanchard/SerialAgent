@@ -6,6 +6,7 @@ import type { Schedule, CreateScheduleRequest } from "@/api/client";
 import Card from "@/components/Card.vue";
 import EmptyState from "@/components/EmptyState.vue";
 import LoadingPanel from "@/components/LoadingPanel.vue";
+import TimezonePicker from "@/components/TimezonePicker.vue";
 
 const router = useRouter();
 
@@ -35,30 +36,6 @@ const formMaxConcurrency = ref(1);
 const formMaxCatchupRuns = ref(5);
 const formSubmitting = ref(false);
 const formError = ref("");
-
-const COMMON_TIMEZONES = [
-  "UTC",
-  "US/Eastern",
-  "US/Central",
-  "US/Mountain",
-  "US/Pacific",
-  "America/New_York",
-  "America/Chicago",
-  "America/Denver",
-  "America/Los_Angeles",
-  "America/Toronto",
-  "America/Sao_Paulo",
-  "Europe/London",
-  "Europe/Paris",
-  "Europe/Berlin",
-  "Europe/Moscow",
-  "Asia/Tokyo",
-  "Asia/Shanghai",
-  "Asia/Kolkata",
-  "Asia/Singapore",
-  "Australia/Sydney",
-  "Pacific/Auckland",
-];
 
 // Delete confirmation
 const confirmDeleteId = ref<string | null>(null);
@@ -285,9 +262,7 @@ function goToSchedule(id: string) {
 
       <div class="field">
         <label>Timezone</label>
-        <select v-model="formTimezone">
-          <option v-for="tz in COMMON_TIMEZONES" :key="tz" :value="tz">{{ tz }}</option>
-        </select>
+        <TimezonePicker v-model="formTimezone" />
       </div>
 
       <div class="field">
