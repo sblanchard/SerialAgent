@@ -407,7 +407,7 @@ fn parse_sse_data_vec(data: &str) -> Vec<Result<StreamEvent>> {
 
 #[async_trait::async_trait]
 impl LlmProvider for OpenAiCompatProvider {
-    async fn chat(&self, req: ChatRequest) -> Result<ChatResponse> {
+    async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse> {
         let url = format!("{}/chat/completions", self.base_url);
         let body = self.build_chat_body(&req, false);
 
@@ -436,7 +436,7 @@ impl LlmProvider for OpenAiCompatProvider {
 
     async fn chat_stream(
         &self,
-        req: ChatRequest,
+        req: &ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamEvent>>> {
         let url = format!("{}/chat/completions", self.base_url);
         let body = self.build_chat_body(&req, true);

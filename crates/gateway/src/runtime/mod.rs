@@ -224,7 +224,8 @@ async fn run_turn_inner(
                 "system",
                 "[run aborted by user]",
                 Some(serde_json::json!({ "stopped": true })),
-            );
+            )
+            .await;
             let _ = tx
                 .send(TurnEvent::Stopped {
                     content: String::new(),
@@ -270,7 +271,7 @@ async fn run_turn_inner(
             model: input.model.clone(),
         };
 
-        let mut stream = provider.chat_stream(req).await?;
+        let mut stream = provider.chat_stream(&req).await?;
 
         // Accumulate the response.
         let mut text_buf = String::new();
@@ -376,7 +377,8 @@ async fn run_turn_inner(
                 "system",
                 &format!("[run aborted by user] partial: {text_buf}"),
                 Some(serde_json::json!({ "stopped": true })),
-            );
+            )
+            .await;
             let _ = tx
                 .send(TurnEvent::Stopped {
                     content: text_buf,
@@ -411,7 +413,8 @@ async fn run_turn_inner(
                 "assistant",
                 &text_buf,
                 None,
-            );
+            )
+            .await;
 
             let _ = tx
                 .send(TurnEvent::Final {
@@ -472,7 +475,8 @@ async fn run_turn_inner(
             "assistant",
             &text_buf,
             Some(serde_json::json!({ "tool_calls": tc_json })),
-        );
+        )
+        .await;
 
         // 1. Emit all ToolCallEvents and create run nodes.
         let mut tool_node_info: Vec<(u32, chrono::DateTime<chrono::Utc>)> = Vec::new();
@@ -485,7 +489,8 @@ async fn run_turn_inner(
                     "system",
                     "[run aborted by user during tool dispatch]",
                     Some(serde_json::json!({ "stopped": true })),
-                );
+                )
+                .await;
                 let _ = tx
                     .send(TurnEvent::Stopped {
                         content: text_buf.clone(),
@@ -541,7 +546,8 @@ async fn run_turn_inner(
                 "system",
                 "[run aborted by user during tool dispatch]",
                 Some(serde_json::json!({ "stopped": true })),
-            );
+            )
+            .await;
             let _ = tx
                 .send(TurnEvent::Stopped {
                     content: text_buf.clone(),
@@ -611,7 +617,8 @@ async fn run_turn_inner(
                     "tool_name": tc.tool_name,
                     "is_error": is_error,
                 })),
-            );
+            )
+            .await;
         }
 
         if loop_idx == MAX_TOOL_LOOPS - 1 {
@@ -727,7 +734,8 @@ async fn prepare_turn_context(
         "user",
         &input.user_message,
         None,
-    );
+    )
+    .await;
 
     Ok(TurnContext {
         provider,
@@ -926,7 +934,7 @@ async fn build_system_context(
 fn load_raw_transcript(
     transcripts: &Arc<TranscriptWriter>,
     session_id: &str,
-) -> Vec<TranscriptLine> {
+) -> std::sync::Arc<Vec<TranscriptLine>> {
     transcripts.read(session_id).unwrap_or_default()
 }
 
@@ -988,7 +996,7 @@ fn build_assistant_tool_message(text: &str, tool_calls: &[ToolCall]) -> Message 
     }
 }
 
-fn persist_transcript(
+async fn persist_transcript(
     transcripts: &Arc<TranscriptWriter>,
     session_id: &str,
     role: &str,
@@ -997,7 +1005,7 @@ fn persist_transcript(
 ) {
     let mut line = TranscriptWriter::line(role, content);
     line.metadata = metadata;
-    if let Err(e) = transcripts.append(session_id, &[line]) {
+    if let Err(e) = transcripts.append_async(session_id, &[line]).await {
         tracing::warn!(
             error = %e,
             session_id = session_id,

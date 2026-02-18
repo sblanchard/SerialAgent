@@ -67,12 +67,12 @@ pub struct EmbeddingsResponse {
 #[async_trait::async_trait]
 pub trait LlmProvider: Send + Sync {
     /// Send a chat completion request and wait for the full response.
-    async fn chat(&self, req: ChatRequest) -> Result<ChatResponse>;
+    async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse>;
 
     /// Send a chat completion request and return a stream of events.
     async fn chat_stream(
         &self,
-        req: ChatRequest,
+        req: &ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamEvent>>>;
 
     /// Generate text embeddings.

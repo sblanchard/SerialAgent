@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use chrono::Utc;
 use parking_lot::RwLock;
@@ -29,7 +30,7 @@ pub struct TranscriptLine {
 /// cache so reads never hit disk after the first load.
 pub struct TranscriptWriter {
     base_dir: PathBuf,
-    cache: RwLock<HashMap<String, Vec<TranscriptLine>>>,
+    cache: RwLock<HashMap<String, Arc<Vec<TranscriptLine>>>>,
 }
 
 impl TranscriptWriter {
@@ -57,10 +58,10 @@ impl TranscriptWriter {
 
         {
             let mut cache = self.cache.write();
-            cache
+            let entry = cache
                 .entry(session_id.to_owned())
-                .or_default()
-                .extend(lines.iter().cloned());
+                .or_default();
+            Arc::make_mut(entry).extend(lines.iter().cloned());
         }
 
         TraceEvent::TranscriptAppend {
@@ -106,10 +107,10 @@ impl TranscriptWriter {
 
         {
             let mut cache = self.cache.write();
-            cache
+            let entry = cache
                 .entry(session_id.to_owned())
-                .or_default()
-                .extend(lines.iter().cloned());
+                .or_default();
+            Arc::make_mut(entry).extend(lines.iter().cloned());
         }
 
         TraceEvent::TranscriptAppend {
@@ -133,32 +134,35 @@ impl TranscriptWriter {
 
     /// Read back a transcript. Returns cached lines if available, otherwise
     /// loads from disk and populates the cache.
-    pub fn read(&self, session_id: &str) -> Result<Vec<TranscriptLine>> {
+    ///
+    /// Returns an `Arc` so callers can share the snapshot without cloning the
+    /// full `Vec`.
+    pub fn read(&self, session_id: &str) -> Result<Arc<Vec<TranscriptLine>>> {
         // Fast path: return from cache.
         {
             let cache = self.cache.read();
             if let Some(lines) = cache.get(session_id) {
-                return Ok(lines.clone());
+                return Ok(Arc::clone(lines));
             }
         }
 
         // Slow path: load from disk and populate cache.
-        let lines = self.read_from_disk(session_id)?;
+        let lines = Arc::new(self.read_from_disk(session_id)?);
         {
             let mut cache = self.cache.write();
-            cache.insert(session_id.to_owned(), lines.clone());
+            cache.insert(session_id.to_owned(), Arc::clone(&lines));
         }
         Ok(lines)
     }
 
     /// Read back a transcript (async). Returns cached lines if available,
     /// otherwise loads from disk via `spawn_blocking` and populates the cache.
-    pub async fn read_async(&self, session_id: &str) -> Result<Vec<TranscriptLine>> {
+    pub async fn read_async(&self, session_id: &str) -> Result<Arc<Vec<TranscriptLine>>> {
         // Fast path: return from cache.
         {
             let cache = self.cache.read();
             if let Some(lines) = cache.get(session_id) {
-                return Ok(lines.clone());
+                return Ok(Arc::clone(lines));
             }
         }
 
@@ -173,9 +177,10 @@ impl TranscriptWriter {
         .map_err(|e| Error::Other(format!("spawn_blocking join: {e}")))??;
 
         // Populate cache.
+        let lines = Arc::new(lines);
         {
             let mut cache = self.cache.write();
-            cache.insert(session_id.to_owned(), lines.clone());
+            cache.insert(session_id.to_owned(), Arc::clone(&lines));
         }
         Ok(lines)
     }

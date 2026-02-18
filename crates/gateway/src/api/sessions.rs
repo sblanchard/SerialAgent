@@ -223,7 +223,7 @@ pub async fn get_transcript(
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
 
-    let page: Vec<_> = lines.into_iter().skip(offset).take(limit).collect();
+    let page: Vec<_> = lines.iter().skip(offset).take(limit).cloned().collect();
 
     Json(serde_json::json!({
         "session_key": key,
