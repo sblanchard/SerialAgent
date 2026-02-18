@@ -3403,6 +3403,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "futures-core",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
