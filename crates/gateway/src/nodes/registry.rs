@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
@@ -55,6 +56,9 @@ pub struct NodeRegistry {
     /// Monotonically increasing counter, bumped on every register/remove.
     /// Used by tool-definition caching to detect staleness.
     generation: AtomicU64,
+    /// Cached `list()` output, invalidated by generation changes.
+    /// Avoids deep-cloning all node data on every call.
+    list_cache: RwLock<(u64, Arc<Vec<NodeInfo>>)>,
 }
 
 impl Default for NodeRegistry {
@@ -69,6 +73,7 @@ impl NodeRegistry {
             nodes: RwLock::new(HashMap::new()),
             allowlists: RwLock::new(HashMap::new()),
             generation: AtomicU64::new(0),
+            list_cache: RwLock::new((0, Arc::new(Vec::new()))),
         }
     }
 
@@ -254,8 +259,23 @@ impl NodeRegistry {
     }
 
     /// List all connected nodes.
-    pub fn list(&self) -> Vec<NodeInfo> {
-        self.nodes
+    ///
+    /// Uses a generation-gated cache so repeated calls (e.g. from
+    /// `build_tool_definitions` + `all_base_tool_names` in the same turn)
+    /// share one allocation instead of deep-cloning all node data each time.
+    pub fn list(&self) -> Arc<Vec<NodeInfo>> {
+        let current_gen = self.generation.load(Ordering::Relaxed);
+
+        // Fast path: return cached list if generation hasn't changed.
+        {
+            let cached = self.list_cache.read();
+            if cached.0 == current_gen {
+                return Arc::clone(&cached.1);
+            }
+        }
+
+        // Slow path: rebuild and cache.
+        let infos: Vec<NodeInfo> = self.nodes
             .read()
             .values()
             .map(|n| NodeInfo {
@@ -269,7 +289,10 @@ impl NodeRegistry {
                 connected_at: n.connected_at,
                 last_seen: n.last_seen,
             })
-            .collect()
+            .collect();
+        let arc = Arc::new(infos);
+        *self.list_cache.write() = (current_gen, Arc::clone(&arc));
+        arc
     }
 
     /// Number of connected nodes.

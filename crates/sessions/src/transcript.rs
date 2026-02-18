@@ -216,7 +216,7 @@ impl TranscriptWriter {
 
 /// Serialize transcript lines to a JSONL string.
 fn serialize_lines(lines: &[TranscriptLine]) -> Result<String> {
-    let mut buf = String::new();
+    let mut buf = String::with_capacity(lines.len() * 256);
     for line in lines {
         let json = serde_json::to_string(line)
             .map_err(|e| Error::Other(format!("serializing transcript line: {e}")))?;

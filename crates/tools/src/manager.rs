@@ -81,11 +81,28 @@ impl OutputBuffer {
     }
 
     pub fn tail(&self, lines: usize) -> String {
-        let all_lines: Vec<&str> = self.combined.lines().collect();
-        if all_lines.len() <= lines {
+        if lines == 0 {
+            return String::new();
+        }
+        // Scan backwards to find the start of the last N lines, avoiding
+        // a full Vec allocation of all lines.
+        let bytes = self.combined.as_bytes();
+        let mut newline_count = 0usize;
+        let mut start = bytes.len();
+        for i in (0..bytes.len()).rev() {
+            if bytes[i] == b'\n' {
+                newline_count += 1;
+                if newline_count >= lines {
+                    start = i + 1;
+                    break;
+                }
+            }
+        }
+        if newline_count < lines {
+            // Fewer lines than requested — return all content.
             self.combined.clone()
         } else {
-            all_lines[all_lines.len() - lines..].join("\n")
+            self.combined[start..].to_owned()
         }
     }
 

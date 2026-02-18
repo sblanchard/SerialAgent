@@ -47,8 +47,10 @@ fn default_remote_path() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SshAuth {
     /// Use ssh-agent / default key resolution (best).
+    #[default]
     Agent,
     /// Use a specific private key path on the gateway machine.
     KeyFile { key_path: PathBuf },
@@ -56,11 +58,6 @@ pub enum SshAuth {
     Password { password: String },
 }
 
-impl Default for SshAuth {
-    fn default() -> Self {
-        SshAuth::Agent
-    }
-}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Import options

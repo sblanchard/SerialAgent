@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use parking_lot::RwLock;
 
@@ -10,7 +11,7 @@ use crate::types::SkillEntry;
 
 /// In-memory skills registry.
 pub struct SkillsRegistry {
-    entries: RwLock<Vec<SkillEntry>>,
+    entries: RwLock<Arc<Vec<SkillEntry>>>,
     skills_root: PathBuf,
 }
 
@@ -24,14 +25,14 @@ impl SkillsRegistry {
             "skills registry loaded"
         );
         Ok(Self {
-            entries: RwLock::new(entries),
+            entries: RwLock::new(Arc::new(entries)),
             skills_root: skills_root.to_path_buf(),
         })
     }
 
     pub fn empty() -> Self {
         Self {
-            entries: RwLock::new(Vec::new()),
+            entries: RwLock::new(Arc::new(Vec::new())),
             skills_root: PathBuf::new(),
         }
     }
@@ -126,8 +127,8 @@ impl SkillsRegistry {
         Ok(content)
     }
 
-    pub fn list(&self) -> Vec<SkillEntry> {
-        self.entries.read().clone()
+    pub fn list(&self) -> Arc<Vec<SkillEntry>> {
+        Arc::clone(&self.entries.read())
     }
 
     /// List only skills that are ready to use.
@@ -166,7 +167,7 @@ impl SkillsRegistry {
         let new_entries = loader::scan_skills(&self.skills_root)?;
         let count = new_entries.len();
         let ready = new_entries.iter().filter(|e| e.is_ready()).count();
-        *self.entries.write() = new_entries;
+        *self.entries.write() = Arc::new(new_entries);
         tracing::info!(
             skills_count = count,
             ready_count = ready,

@@ -34,7 +34,7 @@ pub struct CachedUserFacts {
 /// Cached tool definitions keyed on (node generation, policy fingerprint).
 #[derive(Clone)]
 pub struct CachedToolDefs {
-    pub defs: Vec<sa_domain::tool::ToolDefinition>,
+    pub defs: Arc<Vec<sa_domain::tool::ToolDefinition>>,
     pub generation: u64,
     pub policy_key: String,
 }

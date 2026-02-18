@@ -91,6 +91,16 @@ pub async fn node_ws(
         }
     }
 
+    // Log authentication mode for observability.
+    let auth_mode = if std::env::var("SA_NODE_TOKENS").is_ok() {
+        "per_node_token"
+    } else if std::env::var("SA_NODE_TOKEN").is_ok() {
+        "global_token"
+    } else {
+        "unauthenticated"
+    };
+    tracing::debug!(auth_mode, "node WS upgrade accepted");
+
     ws.on_upgrade(move |socket| handle_socket(socket, state))
         .into_response()
 }

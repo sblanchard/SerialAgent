@@ -90,7 +90,7 @@ async fn fetch_local_tar(
 
     let mut child = cmd.spawn()?;
     let mut out = child.stdout.take().ok_or_else(|| {
-        OpenClawImportError::Io(io::Error::new(io::ErrorKind::Other, "missing tar stdout"))
+        OpenClawImportError::Io(io::Error::other("missing tar stdout"))
     })?;
 
     let mut file = tokio::fs::File::create(tar_path).await?;
@@ -102,14 +102,14 @@ async fn fetch_local_tar(
         if let Some(mut e) = child.stderr.take() {
             let _ = e.read_to_string(&mut stderr).await;
         }
-        return Err(OpenClawImportError::Io(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(OpenClawImportError::Io(io::Error::other(
             format!("tar failed: {stderr}"),
         )));
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn fetch_ssh_tar(
     host: &str,
     user: Option<&str>,
@@ -178,7 +178,7 @@ async fn fetch_ssh_tar(
 
     let mut child = cmd.spawn()?;
     let mut out = child.stdout.take().ok_or_else(|| {
-        OpenClawImportError::Io(io::Error::new(io::ErrorKind::Other, "missing ssh stdout"))
+        OpenClawImportError::Io(io::Error::other("missing ssh stdout"))
     })?;
 
     let mut file = tokio::fs::File::create(tar_path).await?;

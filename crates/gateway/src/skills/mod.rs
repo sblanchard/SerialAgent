@@ -74,6 +74,12 @@ pub struct SkillEngine {
     skills: HashMap<String, Arc<dyn Skill>>,
 }
 
+impl Default for SkillEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SkillEngine {
     pub fn new() -> Self {
         Self {

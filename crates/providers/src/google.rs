@@ -413,6 +413,18 @@ fn parse_gemini_sse_data(data: &str, _model: &str) -> Vec<Result<StreamEvent>> {
     events
 }
 
+/// Redact API key from URL for safe logging.
+fn redact_url_key(url: &str) -> String {
+    if let Some(idx) = url.find("key=") {
+        let prefix = &url[..idx + 4];
+        let rest = &url[idx + 4..];
+        let end = rest.find('&').unwrap_or(rest.len());
+        format!("{prefix}[REDACTED]{}", &rest[end..])
+    } else {
+        url.to_string()
+    }
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Trait implementation
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -425,9 +437,9 @@ impl LlmProvider for GoogleProvider {
             .clone()
             .unwrap_or_else(|| self.default_model.clone());
         let url = self.generate_url(&model);
-        let body = self.build_body(&req);
+        let body = self.build_body(req);
 
-        tracing::debug!(provider = %self.id, url = %url, "google chat request");
+        tracing::debug!(provider = %self.id, url = %redact_url_key(&url), "google chat request");
 
         let resp = self
             .client
@@ -461,11 +473,11 @@ impl LlmProvider for GoogleProvider {
             .clone()
             .unwrap_or_else(|| self.default_model.clone());
         let url = self.stream_url(&model);
-        let body = self.build_body(&req);
+        let body = self.build_body(req);
         let provider_id = self.id.clone();
         let model_owned = model.clone();
 
-        tracing::debug!(provider = %self.id, url = %url, "google stream request");
+        tracing::debug!(provider = %self.id, url = %redact_url_key(&url), "google stream request");
 
         let resp = self
             .client

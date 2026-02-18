@@ -95,7 +95,7 @@ pub async fn invoke_tool(
                 let cap = state
                     .nodes
                     .find_for_tool(&req.tool)
-                    .map(|(_, _)| {
+                    .and_then(|(_, _)| {
                         // Extract the longest matching capability prefix.
                         state
                             .nodes
@@ -107,8 +107,7 @@ pub async fn invoke_tool(
                             })
                             .max_by_key(|c| c.len())
                             .cloned()
-                    })
-                    .flatten();
+                    });
                 serde_json::json!({
                     "kind": "node",
                     "node_id": node_id,
@@ -159,7 +158,7 @@ pub async fn invoke_tool(
     } else {
         // Try to parse the content as JSON for structured result.
         let result: serde_json::Value = serde_json::from_str(&content)
-            .unwrap_or_else(|_| serde_json::Value::String(content));
+            .unwrap_or(serde_json::Value::String(content));
 
         Json(serde_json::json!({
             "request_id": request_id,

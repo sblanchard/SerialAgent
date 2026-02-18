@@ -414,7 +414,7 @@ impl RunStore {
         let inner = self.inner.read();
         let mut counts = HashMap::new();
         for run in inner.runs.iter() {
-            let key = serde_json::to_value(&run.status)
+            let key = serde_json::to_value(run.status)
                 .ok()
                 .and_then(|v| v.as_str().map(String::from))
                 .unwrap_or_else(|| format!("{:?}", run.status).to_lowercase());

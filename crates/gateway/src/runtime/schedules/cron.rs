@@ -15,7 +15,7 @@ fn cron_field_matches(field: &str, value: u32) -> bool {
     // Handle */N (every N)
     if let Some(step) = field.strip_prefix("*/") {
         if let Ok(n) = step.parse::<u32>() {
-            return n > 0 && value % n == 0;
+            return n > 0 && value.is_multiple_of(n);
         }
     }
     // Handle comma-separated values

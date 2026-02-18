@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::injection;
 use crate::report::{ContextReport, FileReport};
 use crate::truncation::{self, Section};
@@ -82,8 +84,14 @@ impl ContextPackBuilder {
         // Build sections from provided files
         let mut sections: Vec<Section> = Vec::new();
 
+        // Index files by name for O(1) lookup instead of linear search.
+        let file_map: HashMap<&str, &WorkspaceFile> = files
+            .iter()
+            .map(|f| (f.name.as_str(), f))
+            .collect();
+
         for &expected_name in &filenames {
-            let ws_file = files.iter().find(|f| f.name == expected_name);
+            let ws_file = file_map.get(expected_name).copied();
 
             match ws_file.and_then(|f| f.content.as_ref()) {
                 Some(raw_content) => {

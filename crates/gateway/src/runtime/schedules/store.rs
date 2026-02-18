@@ -77,7 +77,7 @@ impl ScheduleStore {
             .read()
             .await
             .values()
-            .any(|s| s.name.to_lowercase() == lower && exclude_id.map_or(true, |id| s.id != *id))
+            .any(|s| s.name.to_lowercase() == lower && exclude_id.is_none_or(|id| s.id != *id))
     }
 
     pub async fn insert(&self, mut schedule: Schedule) -> Schedule {
@@ -90,7 +90,7 @@ impl ScheduleStore {
         self.inner.write().await.insert(id, schedule.clone());
         self.persist().await;
         let _ = self.event_tx.send(ScheduleEvent::ScheduleUpdated {
-            schedule: schedule.to_view(),
+            schedule: Box::new(schedule.to_view()),
         });
         schedule
     }
@@ -104,7 +104,7 @@ impl ScheduleStore {
             drop(map);
             self.persist().await;
             let _ = self.event_tx.send(ScheduleEvent::ScheduleUpdated {
-                schedule: s.to_view(),
+                schedule: Box::new(s.to_view()),
             });
             Some(s)
         } else {
@@ -153,8 +153,8 @@ impl ScheduleStore {
             .values()
             .filter(|s| {
                 s.enabled
-                    && s.next_run_at.map_or(false, |next| next <= now)
-                    && s.cooldown_until.map_or(true, |cu| cu <= now)
+                    && s.next_run_at.is_some_and(|next| next <= now)
+                    && s.cooldown_until.is_none_or(|cu| cu <= now)
             })
             .cloned()
             .collect()
@@ -173,7 +173,7 @@ impl ScheduleStore {
             drop(map);
             self.persist().await;
             let _ = self.event_tx.send(ScheduleEvent::ScheduleUpdated {
-                schedule: view,
+                schedule: Box::new(view),
             });
         }
     }
@@ -195,7 +195,7 @@ impl ScheduleStore {
             drop(map);
             self.persist().await;
             let _ = self.event_tx.send(ScheduleEvent::ScheduleUpdated {
-                schedule: view,
+                schedule: Box::new(view),
             });
         }
     }
@@ -213,7 +213,7 @@ impl ScheduleStore {
             drop(map);
             self.persist().await;
             let _ = self.event_tx.send(ScheduleEvent::ScheduleUpdated {
-                schedule: view,
+                schedule: Box::new(view),
             });
             true
         } else {
