@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use axum::http::{HeaderValue, Method};
+use clap::Parser;
 use sha2::{Digest, Sha256};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
@@ -9,6 +10,7 @@ use tracing_subscriber::EnvFilter;
 
 use sa_domain::config::Config;
 use sa_gateway::api;
+use sa_gateway::cli::{Cli, Command, ConfigCommand};
 use sa_gateway::state::AppState;
 use sa_gateway::workspace::bootstrap::BootstrapTracker;
 use sa_gateway::workspace::files::WorkspaceReader;
@@ -23,7 +25,48 @@ use sa_gateway::nodes::router::ToolRouter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // ── Tracing ──────────────────────────────────────────────────────
+    let cli = Cli::parse();
+
+    match cli.command {
+        // Default to serve when no subcommand is given.
+        None | Some(Command::Serve) => {
+            init_tracing();
+            let (config, _config_path) = sa_gateway::cli::load_config()?;
+            run_server(Arc::new(config)).await
+        }
+        Some(Command::Doctor) => {
+            let (config, config_path) = sa_gateway::cli::load_config()?;
+            let passed = sa_gateway::cli::doctor::run(&config, &config_path).await?;
+            if !passed {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Some(Command::Config(ConfigCommand::Validate)) => {
+            let (config, config_path) = sa_gateway::cli::load_config()?;
+            let valid = sa_gateway::cli::config::validate(&config, &config_path);
+            if !valid {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Some(Command::Config(ConfigCommand::Show)) => {
+            let (config, _config_path) = sa_gateway::cli::load_config()?;
+            sa_gateway::cli::config::show(&config);
+            Ok(())
+        }
+        Some(Command::Version) => {
+            println!(
+                "serialagent {}",
+                env!("CARGO_PKG_VERSION"),
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Initialize structured JSON tracing (only for the `serve` command).
+fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
@@ -31,22 +74,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .json()
         .init();
+}
 
+/// Start the gateway server with the given configuration.
+async fn run_server(config: Arc<Config>) -> anyhow::Result<()> {
     tracing::info!("SerialAgent starting");
-
-    // ── Config ───────────────────────────────────────────────────────
-    let config_path = std::env::var("SA_CONFIG").unwrap_or_else(|_| "config.toml".into());
-
-    let config: Config = if std::path::Path::new(&config_path).exists() {
-        let raw = std::fs::read_to_string(&config_path)
-            .with_context(|| format!("reading {config_path}"))?;
-        toml::from_str(&raw).with_context(|| format!("parsing {config_path}"))?
-    } else {
-        tracing::warn!(path = %config_path, "config file not found, using defaults");
-        Config::default()
-    };
-
-    let config = Arc::new(config);
 
     // ── Workspace reader ─────────────────────────────────────────────
     let workspace = Arc::new(WorkspaceReader::new(config.workspace.path.clone()));
@@ -456,7 +488,7 @@ fn build_cors_layer(cors: &sa_domain::config::CorsConfig) -> CorsLayer {
 
     for origin in &cors.allowed_origins {
         if origin.ends_with(":*") {
-            // e.g. "http://localhost:*" → prefix "http://localhost:"
+            // e.g. "http://localhost:*" -> prefix "http://localhost:"
             let prefix = origin.trim_end_matches('*').to_owned();
             wildcard_prefixes.push(prefix);
         } else if let Ok(hv) = origin.parse::<HeaderValue>() {
@@ -475,7 +507,7 @@ fn build_cors_layer(cors: &sa_domain::config::CorsConfig) -> CorsLayer {
             if exact.iter().any(|e| e.as_bytes() == origin.as_bytes()) {
                 return true;
             }
-            // Check wildcard-port patterns — validate remainder is digits only
+            // Check wildcard-port patterns -- validate remainder is digits only
             // to prevent prefix-based bypass (e.g. "http://localhost:3000.evil.com").
             wildcard_prefixes.iter().any(|prefix| {
                 origin_str

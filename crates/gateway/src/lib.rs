@@ -1,4 +1,5 @@
 pub mod api;
+pub mod cli;
 pub mod import;
 pub mod nodes;
 pub mod pruning;
