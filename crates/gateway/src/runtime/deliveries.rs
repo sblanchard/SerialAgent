@@ -3,8 +3,9 @@
 //! Deliveries are the output of scheduled runs: digest summaries, alerts, etc.
 //! They are persisted to JSONL and kept in a bounded in-memory ring.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -78,8 +79,12 @@ const MAX_DELIVERIES: usize = 1000;
 
 pub struct DeliveryStore {
     inner: RwLock<VecDeque<Delivery>>,
+    /// O(1) lookup index: id → position in deque (rebuilt on load, maintained on insert).
+    index: RwLock<HashMap<Uuid, usize>>,
     persist_path: PathBuf,
     event_tx: broadcast::Sender<DeliveryEvent>,
+    /// Dirty flag: set when mark_read mutates in-memory state but disk is stale.
+    dirty: AtomicBool,
 }
 
 impl DeliveryStore {
@@ -89,8 +94,10 @@ impl DeliveryStore {
 
         let mut store = Self {
             inner: RwLock::new(VecDeque::new()),
+            index: RwLock::new(HashMap::new()),
             persist_path,
             event_tx,
+            dirty: AtomicBool::new(false),
         };
         store.load();
         store
@@ -114,6 +121,13 @@ impl DeliveryStore {
             if count < original_count {
                 Self::rewrite_jsonl(&self.persist_path, &deliveries);
             }
+            // Build O(1) lookup index.
+            let idx: HashMap<Uuid, usize> = deliveries
+                .iter()
+                .enumerate()
+                .map(|(i, d)| (d.id, i))
+                .collect();
+            self.index = RwLock::new(idx);
             self.inner = RwLock::new(deliveries);
             if count > 0 {
                 tracing::info!(count, "loaded deliveries from disk");
@@ -166,10 +180,25 @@ impl DeliveryStore {
     pub async fn insert(&self, delivery: Delivery) -> Delivery {
         let d = delivery.clone();
         let mut inner = self.inner.write().await;
+        let pos = inner.len();
         inner.push_back(delivery.clone());
-        // Bound the ring
+        // Bound the ring — remove oldest and rebuild index if needed.
+        let mut needs_reindex = false;
         while inner.len() > MAX_DELIVERIES {
-            inner.pop_front();
+            if let Some(evicted) = inner.pop_front() {
+                self.index.write().await.remove(&evicted.id);
+                needs_reindex = true;
+            }
+        }
+        if needs_reindex {
+            // Positions shifted — rebuild index.
+            let mut idx = self.index.write().await;
+            idx.clear();
+            for (i, d) in inner.iter().enumerate() {
+                idx.insert(d.id, i);
+            }
+        } else {
+            self.index.write().await.insert(d.id, pos);
         }
         drop(inner);
 
@@ -196,25 +225,42 @@ impl DeliveryStore {
     }
 
     pub async fn get(&self, id: &Uuid) -> Option<Delivery> {
-        self.inner
-            .read()
-            .await
-            .iter()
-            .find(|d| d.id == *id)
-            .cloned()
+        let idx = self.index.read().await;
+        if let Some(&pos) = idx.get(id) {
+            let inner = self.inner.read().await;
+            inner.get(pos).cloned()
+        } else {
+            None
+        }
     }
 
     pub async fn mark_read(&self, id: &Uuid) -> bool {
+        let idx = self.index.read().await;
+        let pos = match idx.get(id) {
+            Some(&p) => p,
+            None => return false,
+        };
+        drop(idx);
         let mut inner = self.inner.write().await;
-        if let Some(d) = inner.iter_mut().find(|d| d.id == *id) {
+        if let Some(d) = inner.get_mut(pos) {
             d.read = true;
-            // Persist the read state to disk so it survives restarts.
-            Self::rewrite_jsonl(&self.persist_path, &inner);
+            // Mark dirty — flushed periodically, not on every call.
+            self.dirty.store(true, Ordering::Relaxed);
             let _ = self.event_tx.send(DeliveryEvent::DeliveryRead { id: *id });
             true
         } else {
             false
         }
+    }
+
+    /// Flush dirty state to disk if needed.  Called from the periodic
+    /// cleanup loop in main.rs (every 60 s).
+    pub async fn flush_if_dirty(&self) {
+        if !self.dirty.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        let inner = self.inner.read().await;
+        Self::rewrite_jsonl(&self.persist_path, &inner);
     }
 
     /// List deliveries scoped to a specific schedule.
@@ -402,6 +448,7 @@ mod tests {
             let id = d.id;
             store.insert(d).await;
             store.mark_read(&id).await;
+            store.flush_if_dirty().await;
             id
         };
         // Reload from disk — read flag should be preserved.

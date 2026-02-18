@@ -152,7 +152,13 @@ pub fn run_turn(
     let session_key = input.session_key.clone();
     let state_ref = state;
 
-    tokio::spawn(async move {
+    let turn_span = tracing::info_span!(
+        "turn",
+        %run_id,
+        session_key = %session_key,
+    );
+    tokio::spawn(tracing::Instrument::instrument(async move {
+        tracing::debug!("turn started");
         let result =
             run_turn_inner(state_ref.clone(), input, tx.clone(), &cancel_token, run_id).await;
 
@@ -182,7 +188,7 @@ pub fn run_turn(
                 })
                 .await;
         }
-    });
+    }, turn_span));
 
     (run_id, rx)
 }
@@ -341,6 +347,7 @@ async fn run_turn_inner(
     };
 
     for loop_idx in 0..MAX_TOOL_LOOPS {
+        tracing::debug!(loop_idx, "tool loop iteration");
         // ── Check cancellation before each LLM call ──────────────
         // (lightweight: no run-store update since we haven't started yet)
         if cancel.is_cancelled() {

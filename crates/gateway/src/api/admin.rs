@@ -12,6 +12,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
+
 use crate::import::openclaw::sanitize::sanitize_ident;
 use crate::state::AppState;
 
@@ -19,10 +22,16 @@ use crate::state::AppState;
 // Admin auth guard
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-fn check_admin_token(headers: &HeaderMap) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    let expected = match std::env::var("SA_ADMIN_TOKEN") {
-        Ok(t) if !t.is_empty() => t,
-        _ => return Ok(()), // no token configured → dev mode, allow all
+/// Check the admin bearer token using the pre-hashed digest from `AppState`.
+/// Uses SHA-256 + constant-time comparison (same pattern as API auth in
+/// `auth.rs`) to prevent timing side-channel attacks.
+fn check_admin_token(
+    headers: &HeaderMap,
+    admin_token_hash: &Option<Vec<u8>>,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let expected_hash = match admin_token_hash {
+        Some(h) => h,
+        None => return Ok(()), // no token configured → dev mode, allow all
     };
 
     let provided = headers
@@ -31,19 +40,11 @@ fn check_admin_token(headers: &HeaderMap) -> Result<(), (StatusCode, Json<serde_
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    // Constant-time comparison to prevent timing attacks.
-    if provided.len() != expected.len() {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({ "error": "invalid admin token" })),
-        ));
-    }
-    let equal = provided
-        .as_bytes()
-        .iter()
-        .zip(expected.as_bytes())
-        .fold(0u8, |acc, (a, b)| acc | (a ^ b));
-    if equal != 0 {
+    // Hash the provided token to a fixed-length digest, then compare
+    // in constant time.  This avoids leaking the token length.
+    let provided_hash = Sha256::digest(provided.as_bytes());
+
+    if !bool::from(provided_hash.ct_eq(expected_hash.as_slice())) {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({ "error": "invalid admin token" })),
@@ -61,6 +62,277 @@ pub async fn health() -> impl IntoResponse {
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
     }))
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /v1/openapi.json — OpenAPI 3.0 spec (public, no auth)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub async fn openapi_spec() -> impl IntoResponse {
+    use axum::http::header;
+
+    let spec = serde_json::json!({
+        "openapi": "3.0.3",
+        "info": {
+            "title": "SerialAgent Gateway API",
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": "SerialAgent gateway — agentic runtime with cron scheduling, multi-provider LLM routing, and tool dispatch."
+        },
+        "servers": [{ "url": "/", "description": "Current host" }],
+        "security": [{ "BearerAuth": [] }],
+        "components": {
+            "securitySchemes": {
+                "BearerAuth": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "description": "SA_API_TOKEN bearer token"
+                }
+            },
+            "schemas": {
+                "Error": {
+                    "type": "object",
+                    "properties": {
+                        "error": { "type": "string" }
+                    }
+                }
+            }
+        },
+        "paths": {
+            "/v1/health": {
+                "get": {
+                    "summary": "Health probe",
+                    "tags": ["Admin"],
+                    "security": [],
+                    "responses": { "200": { "description": "Server is healthy" } }
+                }
+            },
+            "/v1/chat": {
+                "post": {
+                    "summary": "Send a chat message (non-streaming)",
+                    "tags": ["Chat"],
+                    "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["message"], "properties": { "message": { "type": "string" }, "session_key": { "type": "string" }, "model": { "type": "string" } } } } } },
+                    "responses": { "200": { "description": "Chat response" } }
+                }
+            },
+            "/v1/chat/stream": {
+                "post": {
+                    "summary": "Send a chat message (SSE streaming)",
+                    "tags": ["Chat"],
+                    "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["message"], "properties": { "message": { "type": "string" }, "session_key": { "type": "string" }, "model": { "type": "string" } } } } } },
+                    "responses": { "200": { "description": "SSE event stream" } }
+                }
+            },
+            "/v1/sessions": {
+                "get": {
+                    "summary": "List all sessions",
+                    "tags": ["Sessions"],
+                    "responses": { "200": { "description": "Array of sessions" } }
+                }
+            },
+            "/v1/sessions/{key}": {
+                "get": {
+                    "summary": "Get session by key",
+                    "tags": ["Sessions"],
+                    "parameters": [{ "name": "key", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": { "200": { "description": "Session object" }, "404": { "description": "Not found" } }
+                }
+            },
+            "/v1/sessions/{key}/transcript": {
+                "get": {
+                    "summary": "Get session transcript",
+                    "tags": ["Sessions"],
+                    "parameters": [{ "name": "key", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": { "200": { "description": "Transcript lines" } }
+                }
+            },
+            "/v1/schedules": {
+                "get": {
+                    "summary": "List all schedules",
+                    "tags": ["Schedules"],
+                    "responses": { "200": { "description": "Array of schedule views" } }
+                },
+                "post": {
+                    "summary": "Create a new schedule",
+                    "tags": ["Schedules"],
+                    "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "cron", "agent_id", "prompt_template"], "properties": { "name": { "type": "string" }, "cron": { "type": "string", "description": "5-field cron expression" }, "timezone": { "type": "string", "default": "UTC" }, "agent_id": { "type": "string" }, "prompt_template": { "type": "string" }, "sources": { "type": "array", "items": { "type": "string" } }, "delivery_targets": { "type": "array" } } } } } },
+                    "responses": { "201": { "description": "Created schedule" }, "400": { "description": "Validation error" } }
+                }
+            },
+            "/v1/schedules/{id}": {
+                "get": {
+                    "summary": "Get schedule by ID",
+                    "tags": ["Schedules"],
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+                    "responses": { "200": { "description": "Schedule view" }, "404": { "description": "Not found" } }
+                },
+                "put": {
+                    "summary": "Update a schedule",
+                    "tags": ["Schedules"],
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+                    "responses": { "200": { "description": "Updated schedule" }, "404": { "description": "Not found" } }
+                },
+                "delete": {
+                    "summary": "Delete a schedule",
+                    "tags": ["Schedules"],
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+                    "responses": { "200": { "description": "Deleted" }, "404": { "description": "Not found" } }
+                }
+            },
+            "/v1/schedules/{id}/run-now": {
+                "post": {
+                    "summary": "Trigger an immediate run for a schedule",
+                    "tags": ["Schedules"],
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+                    "responses": { "200": { "description": "Run started" }, "404": { "description": "Not found" } }
+                }
+            },
+            "/v1/runs": {
+                "get": {
+                    "summary": "List runs with optional filters",
+                    "tags": ["Runs"],
+                    "parameters": [
+                        { "name": "schedule_id", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+                        { "name": "status", "in": "query", "schema": { "type": "string" } },
+                        { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 } },
+                        { "name": "offset", "in": "query", "schema": { "type": "integer", "default": 0 } }
+                    ],
+                    "responses": { "200": { "description": "Paginated run list" } }
+                }
+            },
+            "/v1/runs/{id}": {
+                "get": {
+                    "summary": "Get run by ID",
+                    "tags": ["Runs"],
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+                    "responses": { "200": { "description": "Run object" }, "404": { "description": "Not found" } }
+                }
+            },
+            "/v1/deliveries": {
+                "get": {
+                    "summary": "List deliveries (inbox)",
+                    "tags": ["Deliveries"],
+                    "parameters": [
+                        { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 } },
+                        { "name": "offset", "in": "query", "schema": { "type": "integer", "default": 0 } }
+                    ],
+                    "responses": { "200": { "description": "Paginated delivery list" } }
+                }
+            },
+            "/v1/deliveries/{id}": {
+                "get": {
+                    "summary": "Get delivery by ID",
+                    "tags": ["Deliveries"],
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+                    "responses": { "200": { "description": "Delivery object" }, "404": { "description": "Not found" } }
+                }
+            },
+            "/v1/deliveries/{id}/read": {
+                "post": {
+                    "summary": "Mark a delivery as read",
+                    "tags": ["Deliveries"],
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+                    "responses": { "200": { "description": "Marked as read" }, "404": { "description": "Not found" } }
+                }
+            },
+            "/v1/memory/search": {
+                "post": {
+                    "summary": "Search long-term memory",
+                    "tags": ["Memory"],
+                    "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["query"], "properties": { "query": { "type": "string" }, "limit": { "type": "integer" } } } } } },
+                    "responses": { "200": { "description": "Search results" } }
+                }
+            },
+            "/v1/memory/ingest": {
+                "post": {
+                    "summary": "Ingest content into memory",
+                    "tags": ["Memory"],
+                    "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["content"], "properties": { "content": { "type": "string" }, "source": { "type": "string" }, "metadata": { "type": "object" } } } } } },
+                    "responses": { "200": { "description": "Ingested" } }
+                }
+            },
+            "/v1/skills": {
+                "get": {
+                    "summary": "List available skills",
+                    "tags": ["Skills"],
+                    "responses": { "200": { "description": "Array of skill descriptors" } }
+                }
+            },
+            "/v1/models": {
+                "get": {
+                    "summary": "List configured LLM providers",
+                    "tags": ["Providers"],
+                    "responses": { "200": { "description": "Provider list" } }
+                }
+            },
+            "/v1/models/readiness": {
+                "get": {
+                    "summary": "Provider readiness check",
+                    "tags": ["Providers"],
+                    "security": [],
+                    "responses": { "200": { "description": "Readiness status" } }
+                }
+            },
+            "/v1/nodes": {
+                "get": {
+                    "summary": "List connected tool nodes",
+                    "tags": ["Nodes"],
+                    "responses": { "200": { "description": "Node list" } }
+                }
+            },
+            "/v1/tools/exec": {
+                "post": {
+                    "summary": "Execute a tool directly",
+                    "tags": ["Tools"],
+                    "responses": { "200": { "description": "Tool execution result" } }
+                }
+            },
+            "/v1/metrics": {
+                "get": {
+                    "summary": "Runtime metrics",
+                    "tags": ["Admin"],
+                    "responses": { "200": { "description": "Metrics object" } }
+                }
+            },
+            "/v1/admin/info": {
+                "get": {
+                    "summary": "System info (admin-only)",
+                    "tags": ["Admin"],
+                    "responses": { "200": { "description": "System info" }, "401": { "description": "Unauthorized" } }
+                }
+            },
+            "/v1/context": {
+                "get": {
+                    "summary": "Get current context pack",
+                    "tags": ["Context"],
+                    "responses": { "200": { "description": "Context data" } }
+                }
+            },
+            "/v1/inbound": {
+                "post": {
+                    "summary": "Inbound channel connector",
+                    "tags": ["Inbound"],
+                    "responses": { "200": { "description": "Processed" } }
+                }
+            }
+        },
+        "tags": [
+            { "name": "Chat", "description": "Core chat/turn execution" },
+            { "name": "Sessions", "description": "Session lifecycle management" },
+            { "name": "Schedules", "description": "Cron-based schedule management" },
+            { "name": "Runs", "description": "Run execution tracking" },
+            { "name": "Deliveries", "description": "Inbox/notification deliveries" },
+            { "name": "Memory", "description": "Long-term memory (SerialMemory proxy)" },
+            { "name": "Skills", "description": "Skill registry and engine" },
+            { "name": "Providers", "description": "LLM provider management" },
+            { "name": "Nodes", "description": "Tool node registry" },
+            { "name": "Tools", "description": "Direct tool execution" },
+            { "name": "Context", "description": "Context pack introspection" },
+            { "name": "Inbound", "description": "Channel connector endpoint" },
+            { "name": "Admin", "description": "Administrative and system endpoints" }
+        ]
+    });
+
+    ([(header::CONTENT_TYPE, "application/json")], Json(spec))
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -116,12 +388,10 @@ pub async fn system_info(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(e) = check_admin_token(&headers) {
+    if let Err(e) = check_admin_token(&headers, &state.admin_token_hash) {
         return e.into_response();
     }
-    let admin_token_set = std::env::var("SA_ADMIN_TOKEN")
-        .map(|t| !t.is_empty())
-        .unwrap_or(false);
+    let admin_token_set = state.admin_token_hash.is_some();
 
     Json(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -306,11 +576,11 @@ fn scan_openclaw_dir(root: &Path) -> ScanResult {
 }
 
 pub async fn scan_openclaw(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<ScanRequest>,
 ) -> impl IntoResponse {
-    if let Err(e) = check_admin_token(&headers) {
+    if let Err(e) = check_admin_token(&headers, &state.admin_token_hash) {
         return e.into_response();
     }
 
@@ -381,7 +651,7 @@ pub async fn apply_openclaw_import(
     headers: HeaderMap,
     Json(body): Json<ImportApplyRequest>,
 ) -> impl IntoResponse {
-    if let Err(e) = check_admin_token(&headers) {
+    if let Err(e) = check_admin_token(&headers, &state.admin_token_hash) {
         return e.into_response();
     }
 
@@ -471,7 +741,9 @@ pub async fn apply_openclaw_import(
     // ── Import agents ────────────────────────────────────────────
     let agents_import_dir = dest_state.join("imported_agents");
     if !body.agents.is_empty() {
-        let _ = std::fs::create_dir_all(&agents_import_dir);
+        if let Err(e) = std::fs::create_dir_all(&agents_import_dir) {
+            tracing::warn!(path = %agents_import_dir.display(), error = %e, "failed to create agents import dir");
+        }
     }
 
     for agent_name in &body.agents {
@@ -489,7 +761,9 @@ pub async fn apply_openclaw_import(
         }
 
         let dest_agent = agents_import_dir.join(agent_name);
-        let _ = std::fs::create_dir_all(&dest_agent);
+        if let Err(e) = std::fs::create_dir_all(&dest_agent) {
+            tracing::warn!(path = %dest_agent.display(), error = %e, "failed to create agent dir");
+        }
 
         // models.json
         if body.import_models {
@@ -528,7 +802,9 @@ pub async fn apply_openclaw_import(
             let sessions_src = source.join("agents").join(agent_name).join("sessions");
             if sessions_src.is_dir() {
                 let dest_sessions = dest_agent.join("sessions");
-                let _ = std::fs::create_dir_all(&dest_sessions);
+                if let Err(e) = std::fs::create_dir_all(&dest_sessions) {
+                    tracing::warn!(path = %dest_sessions.display(), error = %e, "failed to create sessions dir");
+                }
                 if let Ok(entries) = std::fs::read_dir(&sessions_src) {
                     for entry in entries.flatten() {
                         if entry
@@ -575,7 +851,7 @@ pub async fn list_workspace_files(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(e) = check_admin_token(&headers) {
+    if let Err(e) = check_admin_token(&headers, &state.admin_token_hash) {
         return e.into_response();
     }
 
@@ -609,7 +885,7 @@ pub async fn list_skills_detailed(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(e) = check_admin_token(&headers) {
+    if let Err(e) = check_admin_token(&headers, &state.admin_token_hash) {
         return e.into_response();
     }
 
@@ -646,7 +922,7 @@ pub async fn import_openclaw_preview(
     headers: HeaderMap,
     Json(req): Json<super::import_openclaw::ImportPreviewRequest>,
 ) -> impl IntoResponse {
-    if let Err(e) = check_admin_token(&headers) {
+    if let Err(e) = check_admin_token(&headers, &state.admin_token_hash) {
         return e.into_response();
     }
 
@@ -677,7 +953,7 @@ pub async fn import_openclaw_apply_v2(
     headers: HeaderMap,
     Json(req): Json<super::import_openclaw::ImportApplyRequest>,
 ) -> impl IntoResponse {
-    if let Err(e) = check_admin_token(&headers) {
+    if let Err(e) = check_admin_token(&headers, &state.admin_token_hash) {
         return e.into_response();
     }
 
@@ -716,11 +992,44 @@ pub struct TestSshRequest {
 }
 
 pub async fn import_openclaw_test_ssh(
+    State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<TestSshRequest>,
 ) -> impl IntoResponse {
-    if let Err(e) = check_admin_token(&headers) {
+    if let Err(e) = check_admin_token(&headers, &state.admin_token_hash) {
         return e.into_response();
+    }
+
+    // Validate host: alphanumeric, dots, hyphens, colons (IPv6) only.
+    fn is_valid_host(s: &str) -> bool {
+        !s.is_empty()
+            && s.len() <= 253
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == ':')
+    }
+    // Validate user: alphanumeric, dots, underscores, hyphens only.
+    fn is_valid_user(s: &str) -> bool {
+        !s.is_empty()
+            && s.len() <= 64
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+    }
+
+    if !is_valid_host(&req.host) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invalid hostname" })),
+        )
+            .into_response();
+    }
+    if let Some(ref u) = req.user {
+        if !is_valid_user(u) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid username" })),
+            )
+                .into_response();
+        }
     }
 
     let target = match &req.user {
@@ -768,7 +1077,7 @@ pub async fn import_openclaw_list_staging(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(e) = check_admin_token(&headers) {
+    if let Err(e) = check_admin_token(&headers, &state.admin_token_hash) {
         return e.into_response();
     }
 
@@ -809,7 +1118,7 @@ pub async fn import_openclaw_delete_staging(
     headers: HeaderMap,
     axum::extract::Path(staging_id): axum::extract::Path<uuid::Uuid>,
 ) -> impl IntoResponse {
-    if let Err(e) = check_admin_token(&headers) {
+    if let Err(e) = check_admin_token(&headers, &state.admin_token_hash) {
         return e.into_response();
     }
 

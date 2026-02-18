@@ -136,7 +136,9 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Import staging root ──────────────────────────────────────────
     let import_root = config.workspace.state_path.join("import");
-    let _ = std::fs::create_dir_all(&import_root);
+    if let Err(e) = std::fs::create_dir_all(&import_root) {
+        tracing::warn!(path = %import_root.display(), error = %e, "failed to create import staging root");
+    }
     tracing::info!(path = %import_root.display(), "import staging root ready");
 
     // ── Run store ────────────────────────────────────────────────────
@@ -182,6 +184,20 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // ── Admin token (read once, hash for constant-time comparison) ──
+    let admin_token_hash = match std::env::var("SA_ADMIN_TOKEN") {
+        Ok(token) if !token.is_empty() => {
+            tracing::info!("admin bearer-token auth enabled");
+            Some(Sha256::digest(token.as_bytes()).to_vec())
+        }
+        _ => {
+            tracing::warn!(
+                "admin bearer-token auth DISABLED — set SA_ADMIN_TOKEN to enable"
+            );
+            None
+        }
+    };
+
     // ── Compile exec denied-patterns at startup ──────────────────────
     let denied_command_set = Arc::new(
         regex::RegexSet::new(&config.tools.exec_security.denied_patterns)
@@ -219,6 +235,7 @@ async fn main() -> anyhow::Result<()> {
         user_facts_cache: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
         tool_defs_cache: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
         api_token_hash,
+        admin_token_hash,
         denied_command_set,
     };
 
@@ -241,6 +258,20 @@ async fn main() -> anyhow::Result<()> {
                 if let Err(e) = sessions.flush().await {
                     tracing::warn!(error = %e, "session store flush failed");
                 }
+            }
+        });
+    }
+
+    // ── Periodic delivery flush ──────────────────────────────────────
+    {
+        let delivery_store = delivery_store.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                std::time::Duration::from_secs(30),
+            );
+            loop {
+                interval.tick().await;
+                delivery_store.flush_if_dirty().await;
             }
         });
     }

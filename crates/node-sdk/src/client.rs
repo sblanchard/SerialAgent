@@ -189,7 +189,9 @@ impl NodeClient {
         );
 
         // ── Message loop with heartbeat ──────────────────────────────
-        let ws = sink.reunite(stream).expect("reunite failed");
+        let ws = sink
+            .reunite(stream)
+            .map_err(|e| anyhow::anyhow!("failed to reunite WebSocket halves: {e}"))?;
         let (mut sink, mut stream) = ws.split();
 
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<WsMessage>(64);

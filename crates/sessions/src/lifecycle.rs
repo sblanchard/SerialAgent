@@ -127,10 +127,13 @@ fn crossed_daily_boundary(
     }
 
     // Find the most recent reset boundary at `hour:00` before `now`.
-    let today_boundary = now
+    let Some(today_boundary) = now
         .date_naive()
         .and_hms_opt(hour as u32, 0, 0)
-        .expect("valid hour");
+    else {
+        // hour >= 24: invalid configuration — treat as no boundary crossed.
+        return false;
+    };
     let today_boundary = today_boundary.and_utc();
 
     let boundary = if now >= today_boundary {
