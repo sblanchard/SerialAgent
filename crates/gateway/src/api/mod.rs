@@ -10,6 +10,7 @@ pub mod import_openclaw;
 pub mod inbound;
 pub mod memory;
 pub mod nodes;
+pub mod openai_compat;
 pub mod providers;
 pub mod runs;
 pub mod schedules;
@@ -73,6 +74,11 @@ pub fn router(state: AppState) -> Router<AppState> {
         // Chat (core runtime)
         .route("/v1/chat", post(chat::chat))
         .route("/v1/chat/stream", post(chat::chat_stream))
+        // OpenAI-compatible chat completions
+        .route(
+            "/v1/chat/completions",
+            post(openai_compat::chat_completions),
+        )
         // Inbound (channel connector contract)
         .route("/v1/inbound", post(inbound::inbound))
         // Tools (exec / process / invoke)
