@@ -107,7 +107,7 @@ pub async fn generate_summary(
         model: None,
     };
 
-    let resp = provider.chat(req).await?;
+    let resp = provider.chat(&req).await?;
     Ok(resp.content)
 }
 

@@ -242,7 +242,7 @@ impl LlmRouter {
         req: &ChatRequest,
     ) -> Result<ChatResponse> {
         let timeout = std::time::Duration::from_millis(self.default_timeout_ms);
-        match tokio::time::timeout(timeout, provider.chat(req.clone())).await {
+        match tokio::time::timeout(timeout, provider.chat(req)).await {
             Ok(result) => result,
             Err(_) => Err(Error::Timeout(format!(
                 "provider '{}' timed out after {}ms",

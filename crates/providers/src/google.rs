@@ -419,7 +419,7 @@ fn parse_gemini_sse_data(data: &str, _model: &str) -> Vec<Result<StreamEvent>> {
 
 #[async_trait::async_trait]
 impl LlmProvider for GoogleProvider {
-    async fn chat(&self, req: ChatRequest) -> Result<ChatResponse> {
+    async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse> {
         let model = req
             .model
             .clone()
@@ -454,7 +454,7 @@ impl LlmProvider for GoogleProvider {
 
     async fn chat_stream(
         &self,
-        req: ChatRequest,
+        req: &ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamEvent>>> {
         let model = req
             .model
