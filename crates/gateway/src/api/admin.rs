@@ -53,6 +53,62 @@ fn check_admin_token(headers: &HeaderMap) -> Result<(), (StatusCode, Json<serde_
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /v1/health — lightweight health probe (public, no auth)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub async fn health() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /v1/metrics — runtime metrics (protected)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+    let schedules = state.schedule_store.list().await;
+    let active = schedules.iter().filter(|s| s.enabled && s.consecutive_failures == 0).count();
+    let paused = schedules.iter().filter(|s| !s.enabled).count();
+    let errored = schedules.iter().filter(|s| s.enabled && s.consecutive_failures > 0).count();
+
+    let total_input_tokens: u64 = schedules.iter().map(|s| s.total_input_tokens).sum();
+    let total_output_tokens: u64 = schedules.iter().map(|s| s.total_output_tokens).sum();
+    let total_schedule_runs: u64 = schedules.iter().map(|s| s.total_runs).sum();
+
+    let (_, run_total) = state.run_store.list(None, None, None, 0, 0);
+    let sessions = state.sessions.list();
+    let (_, delivery_total, delivery_unread) = state.delivery_store.list_with_unread(0, 0).await;
+
+    Json(serde_json::json!({
+        "schedules": {
+            "total": schedules.len(),
+            "active": active,
+            "paused": paused,
+            "errored": errored,
+        },
+        "runs": {
+            "total": run_total,
+        },
+        "sessions": {
+            "total": sessions.len(),
+        },
+        "deliveries": {
+            "total": delivery_total,
+            "unread": delivery_unread,
+        },
+        "tokens": {
+            "total_input": total_input_tokens,
+            "total_output": total_output_tokens,
+            "total_schedule_runs": total_schedule_runs,
+        },
+        "providers": state.llm.len(),
+        "nodes": state.nodes.list().len(),
+    }))
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // GET /v1/admin/info — system info
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

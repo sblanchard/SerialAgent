@@ -753,6 +753,13 @@ export const api = {
   getScheduleDeliveries: (id: string, limit = 25, offset = 0) =>
     get<{ deliveries: Delivery[]; total: number }>(`/v1/schedules/${encodeURIComponent(id)}/deliveries?limit=${limit}&offset=${offset}`),
 
+  dryRunSchedule: (id: string) =>
+    post<unknown>(`/v1/schedules/${encodeURIComponent(id)}/dry-run`, {}),
+
+  // Health & metrics
+  getHealth: () => get<{ status: string; version: string }>("/v1/health"),
+  getMetrics: () => get<unknown>("/v1/metrics"),
+
   // Deliveries (inbox)
   getDeliveries: (limit = 25, offset = 0) =>
     get<DeliveryListResponse>(`/v1/deliveries?limit=${limit}&offset=${offset}`),

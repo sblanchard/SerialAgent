@@ -221,7 +221,7 @@ pub async fn get_transcript(
 
     let total = lines.len();
     let offset = query.offset.unwrap_or(0);
-    let limit = query.limit.unwrap_or(usize::MAX);
+    let limit = query.limit.unwrap_or(500).min(500);
 
     let page: Vec<_> = lines.iter().skip(offset).take(limit).cloned().collect();
 

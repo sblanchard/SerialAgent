@@ -1,16 +1,22 @@
 //! Schedule CRUD + run-now + SSE events API.
 
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
-use axum::response::{IntoResponse, Json};
+use axum::response::{IntoResponse, Json, Response};
 use futures_util::stream::Stream;
 use serde::Deserialize;
 
 use crate::runtime::schedules::{
-    cron_next_n_tz, parse_tz, validate_cron, DeliveryTarget, DigestMode, FetchConfig, MissedPolicy,
-    ScheduleEvent,
+    cron_next_n_tz, parse_tz, validate_cron, validate_timezone, validate_url, DeliveryTarget,
+    DigestMode, FetchConfig, MissedPolicy, ScheduleEvent,
 };
 use crate::state::AppState;
+
+/// Build a standardized JSON error response: `{ "error": "<message>" }`.
+fn api_error(status: StatusCode, message: impl Into<String>) -> Response {
+    (status, Json(serde_json::json!({ "error": message.into() }))).into_response()
+}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // GET /v1/schedules
@@ -44,11 +50,7 @@ pub async fn get_schedule(
             }))
             .into_response()
         }
-        None => (
-            axum::http::StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "schedule not found" })),
-        )
-            .into_response(),
+        None => api_error(StatusCode::NOT_FOUND, "schedule not found"),
     }
 }
 
@@ -106,13 +108,35 @@ pub async fn create_schedule(
     State(state): State<AppState>,
     Json(req): Json<CreateScheduleRequest>,
 ) -> impl IntoResponse {
+    // Validate name uniqueness
+    if state.schedule_store.name_exists(&req.name, None).await {
+        return api_error(StatusCode::CONFLICT, format!("a schedule named '{}' already exists", req.name));
+    }
+
     // Validate cron expression
     if let Err(msg) = validate_cron(&req.cron) {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": format!("invalid cron expression: {}", msg) })),
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, format!("invalid cron expression: {}", msg));
+    }
+
+    // Validate timezone
+    if let Err(msg) = validate_timezone(&req.timezone) {
+        return api_error(StatusCode::BAD_REQUEST, msg);
+    }
+
+    // Validate source URLs (SSRF prevention)
+    for url in &req.sources {
+        if let Err(msg) = validate_url(url) {
+            return api_error(StatusCode::BAD_REQUEST, format!("invalid source URL '{}': {}", url, msg));
+        }
+    }
+
+    // Validate webhook delivery target URLs (SSRF prevention)
+    for target in &req.delivery_targets {
+        if let DeliveryTarget::Webhook { url } = target {
+            if let Err(msg) = validate_url(url) {
+                return api_error(StatusCode::BAD_REQUEST, format!("invalid webhook URL '{}': {}", url, msg));
+            }
+        }
     }
 
     let now = chrono::Utc::now();
@@ -149,7 +173,7 @@ pub async fn create_schedule(
 
     let created = state.schedule_store.insert(schedule).await;
     (
-        axum::http::StatusCode::CREATED,
+        StatusCode::CREATED,
         Json(serde_json::json!({ "schedule": created.to_view() })),
     )
         .into_response()
@@ -182,14 +206,44 @@ pub async fn update_schedule(
     Path(id): Path<uuid::Uuid>,
     Json(req): Json<UpdateScheduleRequest>,
 ) -> impl IntoResponse {
+    // Validate name uniqueness if changing name
+    if let Some(ref name) = req.name {
+        if state.schedule_store.name_exists(name, Some(&id)).await {
+            return api_error(StatusCode::CONFLICT, format!("a schedule named '{}' already exists", name));
+        }
+    }
+
     // Validate cron if provided
     if let Some(ref cron) = req.cron {
         if let Err(msg) = validate_cron(cron) {
-            return (
-                axum::http::StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": format!("invalid cron expression: {}", msg) })),
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, format!("invalid cron expression: {}", msg));
+        }
+    }
+
+    // Validate timezone if provided
+    if let Some(ref tz) = req.timezone {
+        if let Err(msg) = validate_timezone(tz) {
+            return api_error(StatusCode::BAD_REQUEST, msg);
+        }
+    }
+
+    // Validate source URLs if provided (SSRF prevention)
+    if let Some(ref sources) = req.sources {
+        for url in sources {
+            if let Err(msg) = validate_url(url) {
+                return api_error(StatusCode::BAD_REQUEST, format!("invalid source URL '{}': {}", url, msg));
+            }
+        }
+    }
+
+    // Validate webhook delivery target URLs if provided (SSRF prevention)
+    if let Some(ref targets) = req.delivery_targets {
+        for target in targets {
+            if let DeliveryTarget::Webhook { url } = target {
+                if let Err(msg) = validate_url(url) {
+                    return api_error(StatusCode::BAD_REQUEST, format!("invalid webhook URL '{}': {}", url, msg));
+                }
+            }
         }
     }
 
@@ -242,11 +296,7 @@ pub async fn update_schedule(
         .await
     {
         Some(schedule) => Json(serde_json::json!({ "schedule": schedule.to_view() })).into_response(),
-        None => (
-            axum::http::StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "schedule not found" })),
-        )
-            .into_response(),
+        None => api_error(StatusCode::NOT_FOUND, "schedule not found"),
     }
 }
 
@@ -275,13 +325,7 @@ pub async fn run_schedule_now(
 ) -> impl IntoResponse {
     let schedule = match state.schedule_store.get(&id).await {
         Some(s) => s,
-        None => {
-            return (
-                axum::http::StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "schedule not found" })),
-            )
-                .into_response();
-        }
+        None => return api_error(StatusCode::NOT_FOUND, "schedule not found"),
     };
 
     // Reuse the shared run-spawning logic (digest pipeline, timeout, usage, webhooks).
@@ -305,11 +349,7 @@ pub async fn reset_schedule_errors(
     if state.schedule_store.reset_errors(&id).await {
         Json(serde_json::json!({ "reset": true })).into_response()
     } else {
-        (
-            axum::http::StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "schedule not found" })),
-        )
-            .into_response()
+        api_error(StatusCode::NOT_FOUND, "schedule not found")
     }
 }
 
@@ -317,12 +357,21 @@ pub async fn reset_schedule_errors(
 // GET /v1/schedules/:id/deliveries
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+const MAX_PAGE_LIMIT: usize = 200;
+
 #[derive(Debug, Deserialize)]
 pub struct PaginationParams {
     #[serde(default = "default_limit")]
     pub limit: usize,
     #[serde(default)]
     pub offset: usize,
+}
+
+impl PaginationParams {
+    /// Clamp limit to MAX_PAGE_LIMIT to prevent unbounded queries.
+    pub fn clamped_limit(&self) -> usize {
+        self.limit.min(MAX_PAGE_LIMIT)
+    }
 }
 
 fn default_limit() -> usize {
@@ -336,22 +385,71 @@ pub async fn list_schedule_deliveries(
 ) -> impl IntoResponse {
     // Verify schedule exists
     if state.schedule_store.get(&id).await.is_none() {
-        return (
-            axum::http::StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "schedule not found" })),
-        )
-            .into_response();
+        return api_error(StatusCode::NOT_FOUND, "schedule not found");
     }
 
+    let limit = params.clamped_limit();
     let (items, total) = state
         .delivery_store
-        .list_by_schedule(&id, params.limit, params.offset)
+        .list_by_schedule(&id, limit, params.offset)
         .await;
     Json(serde_json::json!({
         "deliveries": items,
         "total": total,
-        "limit": params.limit,
+        "limit": limit,
         "offset": params.offset,
+    }))
+    .into_response()
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// POST /v1/schedules/:id/dry-run
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Dry-run a schedule: fetch sources, build the digest prompt, and return
+/// the assembled prompt without actually executing the LLM run.
+pub async fn dry_run_schedule(
+    State(state): State<AppState>,
+    Path(id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    let schedule = match state.schedule_store.get(&id).await {
+        Some(s) => s,
+        None => return api_error(StatusCode::NOT_FOUND, "schedule not found"),
+    };
+
+    if schedule.sources.is_empty() {
+        return Json(serde_json::json!({
+            "schedule_id": id,
+            "prompt": schedule.prompt_template,
+            "sources_fetched": 0,
+            "sources_changed": 0,
+            "errors": serde_json::Value::Array(vec![]),
+        }))
+        .into_response();
+    }
+
+    // Fetch all sources.
+    let results = crate::runtime::digest::fetch_all_sources(&schedule).await;
+
+    let errors: Vec<_> = results
+        .iter()
+        .filter_map(|r| {
+            r.error
+                .as_ref()
+                .map(|e| serde_json::json!({ "url": r.url, "error": e }))
+        })
+        .collect();
+
+    let changed_count = results.iter().filter(|r| r.changed).count();
+    let prompt = crate::runtime::digest::build_digest_prompt(&schedule, &results);
+
+    Json(serde_json::json!({
+        "schedule_id": id,
+        "prompt": prompt,
+        "prompt_length": prompt.len(),
+        "sources_fetched": results.len(),
+        "sources_changed": changed_count,
+        "errors": errors,
     }))
     .into_response()
 }

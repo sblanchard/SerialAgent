@@ -274,7 +274,9 @@ impl DeliveryStore {
 
 /// Fire-and-forget: POST delivery content to all webhook targets.
 /// Spawns one task per webhook URL. Logs errors but never fails the caller.
-pub fn dispatch_webhooks(delivery: &Delivery, targets: &[DeliveryTarget]) {
+///
+/// `user_agent` overrides the default User-Agent header if provided.
+pub fn dispatch_webhooks(delivery: &Delivery, targets: &[DeliveryTarget], user_agent: Option<&str>) {
     let webhook_urls: Vec<String> = targets
         .iter()
         .filter_map(|t| match t {
@@ -298,8 +300,13 @@ pub fn dispatch_webhooks(delivery: &Delivery, targets: &[DeliveryTarget]) {
         "created_at": delivery.created_at,
     });
 
+    let ua = user_agent.unwrap_or("SerialAgent-Webhook/1.0").to_string();
+    // Derive jitter seed from delivery ID to avoid thundering herd on retries.
+    let jitter_seed = delivery.id.as_bytes()[15] as u64;
+
     for url in webhook_urls {
         let payload = payload.clone();
+        let ua = ua.clone();
         tokio::spawn(async move {
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
@@ -311,7 +318,7 @@ pub fn dispatch_webhooks(delivery: &Delivery, targets: &[DeliveryTarget]) {
                 match client
                     .post(&url)
                     .header("Content-Type", "application/json")
-                    .header("User-Agent", "SerialAgent-Webhook/1.0")
+                    .header("User-Agent", &ua)
                     .json(&payload)
                     .send()
                     .await
@@ -345,8 +352,10 @@ pub fn dispatch_webhooks(delivery: &Delivery, targets: &[DeliveryTarget]) {
                         return;
                     }
                 }
-                // Exponential back-off: 1s, 2s
-                tokio::time::sleep(std::time::Duration::from_secs(1 << (attempt - 1))).await;
+                // Exponential back-off with jitter: base 1s/2s + 0-255ms jitter
+                let base_ms = (1u64 << (attempt - 1)) * 1000;
+                let jitter_ms = (jitter_seed.wrapping_mul(attempt as u64 * 37)) % 256;
+                tokio::time::sleep(std::time::Duration::from_millis(base_ms + jitter_ms)).await;
             }
         });
     }
