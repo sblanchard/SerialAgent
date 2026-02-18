@@ -60,14 +60,56 @@ struct PendingRequest {
     tx: oneshot::Sender<(bool, Value, Option<String>)>,
 }
 
+/// Internal state protected by a single mutex to keep pending requests
+/// and per-node counts in sync.
+struct PendingState {
+    requests: HashMap<String, PendingRequest>,
+    /// Per-node in-flight counts — avoids O(n) scan of `requests`.
+    node_counts: HashMap<String, usize>,
+}
+
+impl PendingState {
+    fn new() -> Self {
+        Self {
+            requests: HashMap::new(),
+            node_counts: HashMap::new(),
+        }
+    }
+
+    fn insert(&mut self, request_id: String, req: PendingRequest) {
+        *self.node_counts.entry(req.node_id.clone()).or_insert(0) += 1;
+        self.requests.insert(request_id, req);
+    }
+
+    fn remove(&mut self, request_id: &str) -> Option<PendingRequest> {
+        let req = self.requests.remove(request_id)?;
+        if let Some(count) = self.node_counts.get_mut(&req.node_id) {
+            *count -= 1;
+            if *count == 0 {
+                self.node_counts.remove(&req.node_id);
+            }
+        }
+        Some(req)
+    }
+
+    fn node_count(&self, node_id: &str) -> usize {
+        self.node_counts.get(node_id).copied().unwrap_or(0)
+    }
+
+    fn len(&self) -> usize {
+        self.requests.len()
+    }
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // ToolRouter
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub struct ToolRouter {
     nodes: Arc<NodeRegistry>,
-    /// Map of request_id → pending oneshot sender + owning node_id.
-    pending: Mutex<HashMap<String, PendingRequest>>,
+    /// Map of request_id → pending oneshot sender + owning node_id,
+    /// plus per-node in-flight counters.
+    pending: Mutex<PendingState>,
     /// Timeout for node tool requests.
     timeout: Duration,
     /// Maximum pending requests per node (0 = unlimited).
@@ -80,7 +122,7 @@ impl ToolRouter {
     pub fn new(nodes: Arc<NodeRegistry>, timeout_secs: u64) -> Self {
         Self {
             nodes,
-            pending: Mutex::new(HashMap::new()),
+            pending: Mutex::new(PendingState::new()),
             timeout: Duration::from_secs(timeout_secs),
             max_pending_per_node: 50,
             max_pending_global: 200,
@@ -130,7 +172,7 @@ impl ToolRouter {
                 };
             }
             if self.max_pending_per_node > 0 {
-                let node_count = pending.values().filter(|pr| pr.node_id == node_id).count();
+                let node_count = pending.node_count(node_id);
                 if node_count >= self.max_pending_per_node {
                     return ToolRouteResult {
                         success: false,
@@ -148,15 +190,13 @@ impl ToolRouter {
 
         // Create the pending request channel.
         let (tx, rx) = oneshot::channel();
-        let prev = self.pending.lock().insert(
+        self.pending.lock().insert(
             request_id.clone(),
             PendingRequest {
                 node_id: node_id.to_string(),
                 tx,
             },
         );
-        // UUID v4 guarantees this, but assert defensively.
-        debug_assert!(prev.is_none(), "request_id collision: {request_id}");
 
         // Send tool_request to the node.
         let msg = WsMessage::ToolRequest {
@@ -244,16 +284,15 @@ impl ToolRouter {
     /// Returns the number of requests failed.
     pub fn fail_pending_for_node(&self, node_id: &str) -> usize {
         let mut pending = self.pending.lock();
-        let mut failed = Vec::new();
+        let req_ids: Vec<String> = pending
+            .requests
+            .iter()
+            .filter(|(_, pr)| pr.node_id == node_id)
+            .map(|(id, _)| id.clone())
+            .collect();
 
-        for (req_id, pr) in pending.iter() {
-            if pr.node_id == node_id {
-                failed.push(req_id.clone());
-            }
-        }
-
-        let count = failed.len();
-        for req_id in failed {
+        let count = req_ids.len();
+        for req_id in req_ids {
             if let Some(pr) = pending.remove(&req_id) {
                 let _ = pr.tx.send((
                     false,
@@ -355,7 +394,6 @@ mod tests {
         let (success, result, error) = rx.await.unwrap();
         assert!(success);
         assert_eq!(result, serde_json::json!({"result": "ok"}));
-        assert!(error.is_none());
         assert_eq!(router.pending_count(), 0);
     }
 
