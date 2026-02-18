@@ -165,7 +165,7 @@ pub async fn run_events_sse(
     }
 
     // Subscribe to live events.
-    let mut rx = state.run_store.subscribe(&run_id);
+    let rx = state.run_store.subscribe(&run_id);
 
     let stream = make_run_event_stream(rx);
 

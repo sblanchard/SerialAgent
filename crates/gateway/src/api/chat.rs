@@ -82,8 +82,7 @@ pub async fn chat(
         agent: None,
     };
 
-    let state_arc = std::sync::Arc::new(state.clone());
-    let (_run_id, mut rx) = run_turn(state_arc, input);
+    let (_run_id, mut rx) = run_turn(state.clone(), input);
 
     // Drain all events and collect the final response.
     let mut final_content = String::new();
@@ -205,8 +204,7 @@ pub async fn chat_stream(
         agent: None,
     };
 
-    let state_arc = std::sync::Arc::new(state.clone());
-    let (_run_id, rx) = run_turn(state_arc, input);
+    let (_run_id, rx) = run_turn(state.clone(), input);
 
     let stream = make_sse_stream(rx, permit);
 
@@ -324,24 +322,11 @@ fn resolve_session(
     }
 
     // Resolve or create the session.
-    let origin = SessionOrigin {
-        channel: body
-            .channel_context
-            .as_ref()
-            .and_then(|c| c.channel.clone()),
-        account: body
-            .channel_context
-            .as_ref()
-            .and_then(|c| c.account_id.clone()),
-        peer: body
-            .channel_context
-            .as_ref()
-            .and_then(|c| c.peer_id.clone()),
-        group: body
-            .channel_context
-            .as_ref()
-            .and_then(|c| c.group_id.clone()),
-    };
+    let origin = body
+        .channel_context
+        .as_ref()
+        .map(SessionOrigin::from)
+        .unwrap_or_default();
 
     let (entry, is_new) = state.sessions.resolve_or_create(&session_key, origin);
     if is_new {

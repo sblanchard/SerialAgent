@@ -1,6 +1,9 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
+use parking_lot::RwLock;
 use sa_domain::config::Config;
 use sa_memory::provider::SerialMemoryProvider;
 use sa_providers::registry::ProviderRegistry;
@@ -20,6 +23,21 @@ use crate::runtime::session_lock::SessionLockMap;
 use crate::skills::SkillEngine;
 use crate::workspace::bootstrap::BootstrapTracker;
 use crate::workspace::files::WorkspaceReader;
+
+/// Cached user facts with a TTL.
+#[derive(Clone)]
+pub struct CachedUserFacts {
+    pub content: String,
+    pub fetched_at: Instant,
+}
+
+/// Cached tool definitions keyed on (node generation, policy fingerprint).
+#[derive(Clone)]
+pub struct CachedToolDefs {
+    pub defs: Vec<sa_domain::tool::ToolDefinition>,
+    pub generation: u64,
+    pub policy_key: String,
+}
 
 /// Shared application state passed to all API handlers.
 #[derive(Clone)]
@@ -53,4 +71,9 @@ pub struct AppState {
     pub delivery_store: Arc<DeliveryStore>,
     /// Root directory for import staging (e.g. `./data/import`).
     pub import_root: PathBuf,
+    /// Per-user TTL cache for user facts (avoids network calls every turn).
+    pub user_facts_cache: Arc<RwLock<HashMap<String, CachedUserFacts>>>,
+    /// Cached tool definitions keyed on policy fingerprint; invalidated by
+    /// node registry generation counter.
+    pub tool_defs_cache: Arc<RwLock<HashMap<String, CachedToolDefs>>>,
 }

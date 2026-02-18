@@ -186,6 +186,8 @@ async fn main() -> anyhow::Result<()> {
         schedule_store: schedule_store.clone(),
         delivery_store: delivery_store.clone(),
         import_root,
+        user_facts_cache: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
+        tool_defs_cache: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
     };
 
     // ── Agent manager (sub-agents) ──────────────────────────────────
@@ -204,7 +206,7 @@ async fn main() -> anyhow::Result<()> {
             );
             loop {
                 interval.tick().await;
-                if let Err(e) = sessions.flush() {
+                if let Err(e) = sessions.flush().await {
                     tracing::warn!(error = %e, "session store flush failed");
                 }
             }
@@ -300,8 +302,7 @@ async fn main() -> anyhow::Result<()> {
                         agent: None,
                     };
 
-                    let state_arc = std::sync::Arc::new(state_for_sched.clone());
-                    let (run_id, mut rx) = sa_gateway::runtime::run_turn(state_arc, input);
+                    let (run_id, mut rx) = sa_gateway::runtime::run_turn(state_for_sched.clone(), input);
 
                     // Record the run on the schedule
                     sched_store.record_run(&schedule.id, run_id).await;
