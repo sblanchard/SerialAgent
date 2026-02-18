@@ -12,6 +12,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
+use crate::import::openclaw::sanitize::sanitize_ident;
 use crate::state::AppState;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -122,16 +123,6 @@ pub struct ScannedWorkspace {
     pub total_size_bytes: u64,
 }
 
-/// Sanitize a path component to prevent traversal attacks.
-fn sanitize_component(s: &str) -> bool {
-    !s.is_empty()
-        && !s.contains('/')
-        && !s.contains('\\')
-        && s != ".."
-        && s != "."
-        && !s.contains('\0')
-}
-
 /// Scan an OpenClaw root directory and report what's importable.
 fn scan_openclaw_dir(root: &Path) -> ScanResult {
     let mut result = ScanResult {
@@ -153,7 +144,7 @@ fn scan_openclaw_dir(root: &Path) -> ScanResult {
         if let Ok(entries) = std::fs::read_dir(&agents_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if !sanitize_component(&name) {
+                if sanitize_ident(&name).is_err() {
                     continue;
                 }
                 let agent_root = entry.path();
@@ -225,7 +216,7 @@ fn scan_openclaw_dir(root: &Path) -> ScanResult {
             if !name.starts_with("workspace") || !entry.path().is_dir() {
                 continue;
             }
-            if !sanitize_component(&name) {
+            if sanitize_ident(&name).is_err() {
                 continue;
             }
 
@@ -364,7 +355,7 @@ pub async fn apply_openclaw_import(
 
     // ── Import workspaces ────────────────────────────────────────
     for ws_name in &body.workspaces {
-        if !sanitize_component(ws_name) {
+        if sanitize_ident(ws_name).is_err() {
             result.errors.push(format!("invalid workspace name: {ws_name}"));
             continue;
         }
@@ -428,7 +419,7 @@ pub async fn apply_openclaw_import(
     }
 
     for agent_name in &body.agents {
-        if !sanitize_component(agent_name) {
+        if sanitize_ident(agent_name).is_err() {
             result.errors.push(format!("invalid agent name: {agent_name}"));
             continue;
         }

@@ -44,7 +44,10 @@
 //! - Periodic hourly sweep deletes staging >24h old
 //! - Filesystem identifiers (agent IDs, workspace names) validated via [`sanitize_ident()`]
 
+pub(crate) mod sanitize;
+
 use crate::api::import_openclaw::*;
+use sanitize::sanitize_ident;
 use flate2::read::GzDecoder;
 use glob::glob;
 use serde_json::Value;
@@ -86,9 +89,6 @@ fn max_file_count() -> u64 {
         .unwrap_or(50_000)
 }
 
-/// Max length for identifiers (agent IDs, workspace names).
-const MAX_IDENT_LEN: usize = 128;
-
 /// Max path depth to prevent zip-bomb-style deeply nested directories.
 const MAX_PATH_DEPTH: usize = 64;
 
@@ -114,35 +114,6 @@ pub enum OpenClawImportError {
     Io(#[from] io::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Identifier sanitization
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/// Validate an identifier (agent ID, workspace folder name) for safe filesystem use.
-/// Allows [a-zA-Z0-9._-] only, rejects empty / "." / ".." and caps length.
-fn sanitize_ident(name: &str) -> Result<(), OpenClawImportError> {
-    if name.is_empty() || name == "." || name == ".." {
-        return Err(OpenClawImportError::InvalidPath(format!(
-            "invalid identifier: {name:?}"
-        )));
-    }
-    if name.len() > MAX_IDENT_LEN {
-        return Err(OpenClawImportError::InvalidPath(format!(
-            "identifier too long ({} > {MAX_IDENT_LEN}): {name:?}",
-            name.len()
-        )));
-    }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
-    {
-        return Err(OpenClawImportError::InvalidPath(format!(
-            "identifier contains invalid characters: {name:?}"
-        )));
-    }
-    Ok(())
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1467,25 +1438,6 @@ fn shell_escape(s: &str) -> String {
     out
 }
 
-#[allow(dead_code)]
-async fn which(bin: &str) -> Result<PathBuf, OpenClawImportError> {
-    let out = Command::new("sh")
-        .arg("-lc")
-        .arg(format!("command -v {}", bin))
-        .output()
-        .await?;
-    if out.status.success() {
-        Ok(PathBuf::from(
-            String::from_utf8_lossy(&out.stdout).trim(),
-        ))
-    } else {
-        Err(OpenClawImportError::Io(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("{bin} not found"),
-        )))
-    }
-}
-
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Tests
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1542,45 +1494,6 @@ mod tests {
             .collect::<Vec<_>>()
             .join("/");
         assert!(validate_relative_path(Path::new(&at_limit)).is_ok());
-    }
-
-    // ── Identifier sanitization ─────────────────────────────────
-
-    #[test]
-    fn test_sanitize_ident_valid() {
-        assert!(sanitize_ident("main").is_ok());
-        assert!(sanitize_ident("kimi-agent").is_ok());
-        assert!(sanitize_ident("workspace-claude").is_ok());
-        assert!(sanitize_ident("agent_v2.1").is_ok());
-    }
-
-    #[test]
-    fn test_sanitize_ident_rejects_traversal() {
-        assert!(sanitize_ident("..").is_err());
-        assert!(sanitize_ident(".").is_err());
-        assert!(sanitize_ident("").is_err());
-    }
-
-    #[test]
-    fn test_sanitize_ident_rejects_slashes() {
-        assert!(sanitize_ident("foo/bar").is_err());
-        assert!(sanitize_ident("../etc").is_err());
-        assert!(sanitize_ident("foo\\bar").is_err());
-    }
-
-    #[test]
-    fn test_sanitize_ident_rejects_special_chars() {
-        assert!(sanitize_ident("foo bar").is_err());
-        assert!(sanitize_ident("foo\0bar").is_err());
-        assert!(sanitize_ident("agent;rm -rf").is_err());
-    }
-
-    #[test]
-    fn test_sanitize_ident_length_limit() {
-        let long = "a".repeat(MAX_IDENT_LEN);
-        assert!(sanitize_ident(&long).is_ok());
-        let too_long = "a".repeat(MAX_IDENT_LEN + 1);
-        assert!(sanitize_ident(&too_long).is_err());
     }
 
     // ── Secret redaction ────────────────────────────────────────
