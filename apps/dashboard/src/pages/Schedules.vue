@@ -186,8 +186,9 @@ function formatNextRun(iso?: string): string {
 }
 
 function statusLabel(schedule: Schedule): string {
-  if (schedule.enabled) return "Enabled";
-  return "Paused";
+  if (schedule.status === "error") return "Error";
+  if (schedule.status === "paused") return "Paused";
+  return "Active";
 }
 
 function statusClass(schedule: Schedule): string {
@@ -292,7 +293,7 @@ function goToSchedule(id: string) {
             <td class="mono">{{ s.cron }}</td>
             <td>
               <span class="status-badge" :class="statusClass(s)">{{ statusLabel(s) }}</span>
-              <span v-if="s.status === 'error'" class="status-badge status-error">Error</span>
+              <span v-if="s.last_error" class="error-hint" :title="s.last_error">{{ s.consecutive_failures }}x</span>
             </td>
             <td class="dim">{{ formatNextRun(s.next_run_at) }}</td>
             <td class="dim">{{ timeAgo(s.last_run_at) }}</td>
@@ -483,7 +484,13 @@ function goToSchedule(id: string) {
 .status-error {
   background: rgba(248, 81, 73, 0.15);
   color: var(--red);
+}
+
+.error-hint {
+  font-size: 0.72rem;
+  color: var(--red);
   margin-left: 0.3rem;
+  cursor: help;
 }
 
 /* ── Action buttons ─────────────────────────────────────────── */

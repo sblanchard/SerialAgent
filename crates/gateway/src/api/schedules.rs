@@ -7,7 +7,7 @@ use futures_util::stream::Stream;
 use serde::Deserialize;
 
 use crate::runtime::schedules::{
-    cron_next_n, DeliveryTarget, Schedule, ScheduleEvent, ScheduleStatus,
+    cron_next_n_tz, parse_tz, DeliveryTarget, DigestMode, FetchConfig, MissedPolicy, ScheduleEvent,
 };
 use crate::state::AppState;
 
@@ -17,9 +17,11 @@ use crate::state::AppState;
 
 pub async fn list_schedules(State(state): State<AppState>) -> impl IntoResponse {
     let schedules = state.schedule_store.list().await;
+    let views: Vec<_> = schedules.iter().map(|s| s.to_view()).collect();
+    let count = views.len();
     Json(serde_json::json!({
-        "schedules": schedules,
-        "count": schedules.len(),
+        "schedules": views,
+        "count": count,
     }))
 }
 
@@ -33,9 +35,10 @@ pub async fn get_schedule(
 ) -> impl IntoResponse {
     match state.schedule_store.get(&id).await {
         Some(schedule) => {
-            let next_5 = cron_next_n(&schedule.cron, &chrono::Utc::now(), 5);
+            let tz = parse_tz(&schedule.timezone);
+            let next_5 = cron_next_n_tz(&schedule.cron, &chrono::Utc::now(), 5, tz);
             Json(serde_json::json!({
-                "schedule": schedule,
+                "schedule": schedule.to_view(),
                 "next_occurrences": next_5,
             }))
             .into_response()
@@ -67,6 +70,16 @@ pub struct CreateScheduleRequest {
     pub sources: Vec<String>,
     #[serde(default = "default_delivery_targets")]
     pub delivery_targets: Vec<DeliveryTarget>,
+    #[serde(default)]
+    pub missed_policy: MissedPolicy,
+    #[serde(default = "default_max_concurrency")]
+    pub max_concurrency: u32,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub digest_mode: DigestMode,
+    #[serde(default)]
+    pub fetch_config: FetchConfig,
 }
 
 fn default_timezone() -> String {
@@ -77,6 +90,9 @@ fn default_true() -> bool {
 }
 fn default_delivery_targets() -> Vec<DeliveryTarget> {
     vec![DeliveryTarget::InApp]
+}
+fn default_max_concurrency() -> u32 {
+    1
 }
 
 pub async fn create_schedule(
@@ -94,7 +110,7 @@ pub async fn create_schedule(
     }
 
     let now = chrono::Utc::now();
-    let schedule = Schedule {
+    let schedule = crate::runtime::schedules::Schedule {
         id: uuid::Uuid::new_v4(),
         name: req.name,
         cron: req.cron,
@@ -109,13 +125,21 @@ pub async fn create_schedule(
         last_run_id: None,
         last_run_at: None,
         next_run_at: None,
-        status: ScheduleStatus::Active,
+        missed_policy: req.missed_policy,
+        max_concurrency: req.max_concurrency,
+        timeout_ms: req.timeout_ms,
+        digest_mode: req.digest_mode,
+        fetch_config: req.fetch_config,
+        source_states: std::collections::HashMap::new(),
+        last_error: None,
+        last_error_at: None,
+        consecutive_failures: 0,
     };
 
     let created = state.schedule_store.insert(schedule).await;
     (
         axum::http::StatusCode::CREATED,
-        Json(serde_json::json!({ "schedule": created })),
+        Json(serde_json::json!({ "schedule": created.to_view() })),
     )
         .into_response()
 }
@@ -134,6 +158,11 @@ pub struct UpdateScheduleRequest {
     pub prompt_template: Option<String>,
     pub sources: Option<Vec<String>>,
     pub delivery_targets: Option<Vec<DeliveryTarget>>,
+    pub missed_policy: Option<MissedPolicy>,
+    pub max_concurrency: Option<u32>,
+    pub timeout_ms: Option<Option<u64>>,
+    pub digest_mode: Option<DigestMode>,
+    pub fetch_config: Option<FetchConfig>,
 }
 
 pub async fn update_schedule(
@@ -167,11 +196,6 @@ pub async fn update_schedule(
             }
             if let Some(enabled) = req.enabled {
                 s.enabled = enabled;
-                if enabled {
-                    s.status = ScheduleStatus::Active;
-                } else {
-                    s.status = ScheduleStatus::Paused;
-                }
             }
             if let Some(agent_id) = req.agent_id {
                 s.agent_id = agent_id;
@@ -185,10 +209,25 @@ pub async fn update_schedule(
             if let Some(dt) = req.delivery_targets {
                 s.delivery_targets = dt;
             }
+            if let Some(mp) = req.missed_policy {
+                s.missed_policy = mp;
+            }
+            if let Some(mc) = req.max_concurrency {
+                s.max_concurrency = mc;
+            }
+            if let Some(tm) = req.timeout_ms {
+                s.timeout_ms = tm;
+            }
+            if let Some(dm) = req.digest_mode {
+                s.digest_mode = dm;
+            }
+            if let Some(fc) = req.fetch_config {
+                s.fetch_config = fc;
+            }
         })
         .await
     {
-        Some(schedule) => Json(serde_json::json!({ "schedule": schedule })).into_response(),
+        Some(schedule) => Json(serde_json::json!({ "schedule": schedule.to_view() })).into_response(),
         None => (
             axum::http::StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "schedule not found" })),
