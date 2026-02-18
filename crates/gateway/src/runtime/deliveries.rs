@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
+use super::schedules::DeliveryTarget;
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Delivery model
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -27,6 +29,13 @@ pub struct Delivery {
     /// Source URLs or identifiers used to produce this delivery
     pub sources: Vec<String>,
     pub read: bool,
+    /// Token usage for this delivery's run.
+    #[serde(default)]
+    pub input_tokens: u32,
+    #[serde(default)]
+    pub output_tokens: u32,
+    #[serde(default)]
+    pub total_tokens: u32,
     pub metadata: serde_json::Value,
 }
 
@@ -42,6 +51,9 @@ impl Delivery {
             body,
             sources: Vec::new(),
             read: false,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
             metadata: serde_json::Value::Null,
         }
     }
@@ -197,6 +209,83 @@ impl DeliveryStore {
 
     pub fn subscribe(&self) -> broadcast::Receiver<DeliveryEvent> {
         self.event_tx.subscribe()
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Webhook dispatcher
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Webhook POST payload.
+#[derive(Serialize)]
+struct WebhookPayload<'a> {
+    delivery_id: Uuid,
+    schedule_id: Option<Uuid>,
+    schedule_name: Option<&'a str>,
+    run_id: Option<Uuid>,
+    title: &'a str,
+    body: &'a str,
+    sources: &'a [String],
+    created_at: DateTime<Utc>,
+}
+
+/// Fire-and-forget: POST delivery content to all webhook targets.
+/// Spawns one task per webhook URL. Logs errors but never fails the caller.
+pub fn dispatch_webhooks(delivery: &Delivery, targets: &[DeliveryTarget]) {
+    let webhook_urls: Vec<String> = targets
+        .iter()
+        .filter_map(|t| match t {
+            DeliveryTarget::Webhook { url } => Some(url.clone()),
+            _ => None,
+        })
+        .collect();
+
+    if webhook_urls.is_empty() {
+        return;
+    }
+
+    let payload = serde_json::json!({
+        "delivery_id": delivery.id,
+        "schedule_id": delivery.schedule_id,
+        "schedule_name": delivery.schedule_name,
+        "run_id": delivery.run_id,
+        "title": delivery.title,
+        "body": delivery.body,
+        "sources": delivery.sources,
+        "created_at": delivery.created_at,
+    });
+
+    for url in webhook_urls {
+        let payload = payload.clone();
+        tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default();
+
+            match client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "SerialAgent-Webhook/1.0")
+                .json(&payload)
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    tracing::info!(url = %url, status = %resp.status(), "webhook delivered");
+                }
+                Ok(resp) => {
+                    tracing::warn!(
+                        url = %url,
+                        status = %resp.status(),
+                        "webhook returned non-success status"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(url = %url, error = %e, "webhook delivery failed");
+                }
+            }
+        });
     }
 }
 

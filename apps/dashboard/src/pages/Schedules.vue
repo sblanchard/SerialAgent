@@ -18,10 +18,35 @@ const showForm = ref(false);
 const formName = ref("");
 const formCron = ref("");
 const formPrompt = ref("");
+const formTimezone = ref("UTC");
 const formSources = ref("");
 const formEnabled = ref(true);
 const formSubmitting = ref(false);
 const formError = ref("");
+
+const COMMON_TIMEZONES = [
+  "UTC",
+  "US/Eastern",
+  "US/Central",
+  "US/Mountain",
+  "US/Pacific",
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "America/Toronto",
+  "America/Sao_Paulo",
+  "Europe/London",
+  "Europe/Paris",
+  "Europe/Berlin",
+  "Europe/Moscow",
+  "Asia/Tokyo",
+  "Asia/Shanghai",
+  "Asia/Kolkata",
+  "Asia/Singapore",
+  "Australia/Sydney",
+  "Pacific/Auckland",
+];
 
 // Delete confirmation
 const confirmDeleteId = ref<string | null>(null);
@@ -68,6 +93,7 @@ function openForm() {
   showForm.value = true;
   formName.value = "";
   formCron.value = "";
+  formTimezone.value = "UTC";
   formPrompt.value = "";
   formSources.value = "";
   formEnabled.value = true;
@@ -94,6 +120,7 @@ async function submitForm() {
   const req: CreateScheduleRequest = {
     name: formName.value.trim(),
     cron: formCron.value.trim(),
+    timezone: formTimezone.value,
     prompt_template: formPrompt.value.trim(),
     sources: sources.length > 0 ? sources : undefined,
     enabled: formEnabled.value,
@@ -228,6 +255,13 @@ function goToSchedule(id: string) {
       <div class="field">
         <label>Cron Expression</label>
         <input v-model="formCron" placeholder="*/30 * * * *" />
+      </div>
+
+      <div class="field">
+        <label>Timezone</label>
+        <select v-model="formTimezone">
+          <option v-for="tz in COMMON_TIMEZONES" :key="tz" :value="tz">{{ tz }}</option>
+        </select>
       </div>
 
       <div class="field">
@@ -373,7 +407,8 @@ function goToSchedule(id: string) {
 }
 
 .field input,
-.field textarea {
+.field textarea,
+.field select {
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);

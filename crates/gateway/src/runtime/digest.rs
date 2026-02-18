@@ -284,10 +284,15 @@ mod tests {
             timeout_ms: None,
             digest_mode: mode,
             fetch_config: FetchConfig::default(),
+            max_catchup_runs: 5,
             source_states: HashMap::new(),
             last_error: None,
             last_error_at: None,
             consecutive_failures: 0,
+            cooldown_until: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_runs: 0,
         }
     }
 

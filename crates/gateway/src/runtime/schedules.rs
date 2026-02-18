@@ -101,6 +101,22 @@ fn default_max_concurrency() -> u32 {
     1
 }
 
+fn default_max_catchup_runs() -> usize {
+    5
+}
+
+const MAX_COOLDOWN_MINUTES: u64 = 24 * 60; // 24 hours
+
+/// Compute cooldown duration in minutes: 2^(failures - 1), capped at 24h.
+pub fn cooldown_minutes(consecutive_failures: u32) -> u64 {
+    if consecutive_failures == 0 {
+        return 0;
+    }
+    let exp = (consecutive_failures - 1).min(20); // prevent overflow
+    let minutes = 1u64.checked_shl(exp).unwrap_or(MAX_COOLDOWN_MINUTES);
+    minutes.min(MAX_COOLDOWN_MINUTES)
+}
+
 /// Persisted schedule. `status` is NOT stored — it is derived from
 /// `enabled` + `consecutive_failures` via [`Schedule::computed_status`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -143,6 +159,11 @@ pub struct Schedule {
     #[serde(default)]
     pub source_states: HashMap<String, SourceState>,
 
+    // ── Catch-up configuration ─────────────────────────────────────
+    /// Maximum catch-up runs per tick when using CatchUp missed policy.
+    #[serde(default = "default_max_catchup_runs")]
+    pub max_catchup_runs: usize,
+
     // ── Error tracking (replaces the old persisted `status` field) ────
     /// Most recent error message from a failed run.
     #[serde(default)]
@@ -153,6 +174,20 @@ pub struct Schedule {
     /// Number of consecutive failed runs (resets on success).
     #[serde(default)]
     pub consecutive_failures: u32,
+    /// Schedule is in cooldown until this time (exponential back-off).
+    #[serde(default)]
+    pub cooldown_until: Option<DateTime<Utc>>,
+
+    // ── Usage tracking ───────────────────────────────────────────────
+    /// Cumulative input tokens across all runs.
+    #[serde(default)]
+    pub total_input_tokens: u64,
+    /// Cumulative output tokens across all runs.
+    #[serde(default)]
+    pub total_output_tokens: u64,
+    /// Total number of completed runs.
+    #[serde(default)]
+    pub total_runs: u64,
 }
 
 impl Schedule {
@@ -456,7 +491,7 @@ impl ScheduleStore {
         }
     }
 
-    /// Get all enabled schedules that are due.
+    /// Get all enabled schedules that are due and not in cooldown.
     pub async fn due_schedules(&self) -> Vec<Schedule> {
         let now = Utc::now();
         self.inner
@@ -466,18 +501,20 @@ impl ScheduleStore {
             .filter(|s| {
                 s.enabled
                     && s.next_run_at.map_or(false, |next| next <= now)
+                    && s.cooldown_until.map_or(true, |cu| cu <= now)
             })
             .cloned()
             .collect()
     }
 
-    /// Record a successful run: reset error tracking, update run info.
+    /// Record a successful run: reset error tracking, clear cooldown.
     pub async fn record_success(&self, id: &Uuid) {
         let mut map = self.inner.write().await;
         if let Some(schedule) = map.get_mut(id) {
             schedule.consecutive_failures = 0;
             schedule.last_error = None;
             schedule.last_error_at = None;
+            schedule.cooldown_until = None;
             schedule.updated_at = Utc::now();
             let view = schedule.to_view();
             drop(map);
@@ -488,7 +525,7 @@ impl ScheduleStore {
         }
     }
 
-    /// Record a failed run: increment failure counter, store error.
+    /// Record a failed run: increment failure counter, store error, set cooldown.
     pub async fn record_failure(&self, id: &Uuid, error: &str) {
         let now = Utc::now();
         let mut map = self.inner.write().await;
@@ -496,6 +533,10 @@ impl ScheduleStore {
             schedule.consecutive_failures += 1;
             schedule.last_error = Some(error.to_string());
             schedule.last_error_at = Some(now);
+            // Exponential back-off: 2^(n-1) minutes, capped at 24 hours.
+            let cooldown_minutes = cooldown_minutes(schedule.consecutive_failures);
+            schedule.cooldown_until =
+                Some(now + chrono::Duration::minutes(cooldown_minutes as i64));
             schedule.updated_at = now;
             let view = schedule.to_view();
             drop(map);
@@ -503,6 +544,19 @@ impl ScheduleStore {
             let _ = self.event_tx.send(ScheduleEvent::ScheduleUpdated {
                 schedule: view,
             });
+        }
+    }
+
+    /// Accumulate token usage from a completed run.
+    pub async fn add_usage(&self, id: &Uuid, input_tokens: u32, output_tokens: u32) {
+        let mut map = self.inner.write().await;
+        if let Some(schedule) = map.get_mut(id) {
+            schedule.total_input_tokens += input_tokens as u64;
+            schedule.total_output_tokens += output_tokens as u64;
+            schedule.total_runs += 1;
+            schedule.updated_at = Utc::now();
+            drop(map);
+            self.persist().await;
         }
     }
 
@@ -548,6 +602,7 @@ mod tests {
             timeout_ms: None,
             digest_mode: DigestMode::default(),
             fetch_config: FetchConfig::default(),
+            max_catchup_runs: 5,
             source_states: HashMap::new(),
             last_error: if consecutive_failures > 0 {
                 Some("test error".into())
@@ -556,6 +611,10 @@ mod tests {
             },
             last_error_at: None,
             consecutive_failures,
+            cooldown_until: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_runs: 0,
         }
     }
 
@@ -809,5 +868,48 @@ mod tests {
     fn parse_tz_invalid_returns_utc() {
         assert_eq!(parse_tz("Not/Real"), chrono_tz::UTC);
         assert_eq!(parse_tz(""), chrono_tz::UTC);
+    }
+
+    // ── Cooldown / exponential back-off tests ──────────────────────────
+
+    #[test]
+    fn cooldown_minutes_zero_failures() {
+        assert_eq!(cooldown_minutes(0), 0);
+    }
+
+    #[test]
+    fn cooldown_minutes_exponential() {
+        assert_eq!(cooldown_minutes(1), 1);   // 2^0 = 1 min
+        assert_eq!(cooldown_minutes(2), 2);   // 2^1 = 2 min
+        assert_eq!(cooldown_minutes(3), 4);   // 2^2 = 4 min
+        assert_eq!(cooldown_minutes(4), 8);   // 2^3 = 8 min
+        assert_eq!(cooldown_minutes(5), 16);  // 2^4 = 16 min
+    }
+
+    #[test]
+    fn cooldown_minutes_capped_at_24h() {
+        // 2^20 = 1_048_576 minutes, but capped at 1440 (24h).
+        assert_eq!(cooldown_minutes(21), 24 * 60);
+        assert_eq!(cooldown_minutes(50), 24 * 60);
+    }
+
+    #[test]
+    fn schedule_backward_compat_no_cooldown_field() {
+        let json = serde_json::json!({
+            "id": Uuid::new_v4(),
+            "name": "legacy",
+            "cron": "0 9 * * *",
+            "timezone": "UTC",
+            "enabled": true,
+            "agent_id": "",
+            "prompt_template": "test",
+            "sources": [],
+            "delivery_targets": [],
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+        });
+        let s: Schedule = serde_json::from_value(json).unwrap();
+        assert!(s.cooldown_until.is_none());
+        assert_eq!(s.max_catchup_runs, 5);
     }
 }

@@ -12,6 +12,7 @@ import Runs from "./pages/Runs.vue";
 import RunDetail from "./pages/RunDetail.vue";
 import Inbox from "./pages/Inbox.vue";
 import Schedules from "./pages/Schedules.vue";
+import ScheduleDetail from "./pages/ScheduleDetail.vue";
 import SkillsEngine from "./pages/SkillsEngine.vue";
 import Usage from "./pages/Usage.vue";
 import Chat from "./pages/Chat.vue";
@@ -25,6 +26,7 @@ export const router = createRouter({
     { path: "/inbox", name: "inbox", component: Inbox },
     { path: "/chat", name: "chat", component: Chat },
     { path: "/schedules", name: "schedules", component: Schedules },
+    { path: "/schedules/:id", name: "schedule-detail", component: ScheduleDetail, props: true },
     { path: "/runs", name: "runs", component: Runs },
     { path: "/runs/:id", name: "run-detail", component: RunDetail, props: true },
     { path: "/skills", name: "skills-engine", component: SkillsEngine },
