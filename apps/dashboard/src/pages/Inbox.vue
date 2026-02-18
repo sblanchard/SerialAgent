@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
+import { useRouter } from "vue-router";
 import { api, ApiError } from "@/api/client";
 import type { Delivery } from "@/api/client";
+
+const router = useRouter();
 import { subscribeSSE } from "@/api/sse";
 import Card from "@/components/Card.vue";
 import EmptyState from "@/components/EmptyState.vue";
@@ -205,12 +208,15 @@ onUnmounted(() => {
                   <div class="detail-meta">
                     <span class="meta-label">Created:</span>
                     <span class="mono">{{ formatDate(delivery.created_at) }}</span>
-                    <span v-if="delivery.schedule_name" class="meta-sep">|</span>
-                    <span v-if="delivery.schedule_name" class="meta-label">Schedule:</span>
-                    <span v-if="delivery.schedule_name">{{ delivery.schedule_name }}</span>
+                    <span v-if="delivery.schedule_id" class="meta-sep">|</span>
+                    <span v-if="delivery.schedule_id" class="meta-label">Schedule:</span>
+                    <a v-if="delivery.schedule_id" class="meta-link" @click.stop="router.push(`/schedules/${delivery.schedule_id}`)">{{ delivery.schedule_name }}</a>
                     <span v-if="delivery.run_id" class="meta-sep">|</span>
                     <span v-if="delivery.run_id" class="meta-label">Run:</span>
-                    <span v-if="delivery.run_id" class="mono">{{ delivery.run_id }}</span>
+                    <a v-if="delivery.run_id" class="meta-link mono" @click.stop="router.push(`/runs/${delivery.run_id}`)">{{ delivery.run_id.slice(0, 8) }}</a>
+                    <span v-if="delivery.total_tokens > 0" class="meta-sep">|</span>
+                    <span v-if="delivery.total_tokens > 0" class="meta-label">Tokens:</span>
+                    <span v-if="delivery.total_tokens > 0" class="mono">{{ delivery.total_tokens }}</span>
                   </div>
                   <div v-if="delivery.sources && delivery.sources.length > 0" class="detail-sources">
                     <span class="meta-label">Sources:</span>
@@ -363,6 +369,8 @@ onUnmounted(() => {
 }
 
 .meta-label { font-weight: 600; color: var(--text-dim); }
+.meta-link { color: var(--accent); cursor: pointer; text-decoration: none; }
+.meta-link:hover { text-decoration: underline; }
 .meta-sep { color: var(--border); margin: 0 0.2rem; }
 
 .detail-sources {

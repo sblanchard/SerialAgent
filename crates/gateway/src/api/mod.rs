@@ -97,6 +97,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/v1/schedules/:id", put(schedules::update_schedule))
         .route("/v1/schedules/:id", delete(schedules::delete_schedule))
         .route("/v1/schedules/:id/run-now", post(schedules::run_schedule_now))
+        .route("/v1/schedules/:id/reset-errors", post(schedules::reset_schedule_errors))
+        .route("/v1/schedules/:id/deliveries", get(schedules::list_schedule_deliveries))
         // Deliveries (inbox)
         .route("/v1/deliveries", get(deliveries::list_deliveries))
         .route("/v1/deliveries/events", get(deliveries::delivery_events_sse))

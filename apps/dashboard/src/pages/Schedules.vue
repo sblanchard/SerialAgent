@@ -21,6 +21,10 @@ const formPrompt = ref("");
 const formTimezone = ref("UTC");
 const formSources = ref("");
 const formEnabled = ref(true);
+const formMissedPolicy = ref<"skip" | "run_once" | "catch_up">("run_once");
+const formDigestMode = ref<"full" | "changes_only">("full");
+const formMaxConcurrency = ref(1);
+const formMaxCatchupRuns = ref(5);
 const formSubmitting = ref(false);
 const formError = ref("");
 
@@ -97,6 +101,10 @@ function openForm() {
   formPrompt.value = "";
   formSources.value = "";
   formEnabled.value = true;
+  formMissedPolicy.value = "run_once";
+  formDigestMode.value = "full";
+  formMaxConcurrency.value = 1;
+  formMaxCatchupRuns.value = 5;
   formError.value = "";
 }
 
@@ -124,6 +132,10 @@ async function submitForm() {
     prompt_template: formPrompt.value.trim(),
     sources: sources.length > 0 ? sources : undefined,
     enabled: formEnabled.value,
+    missed_policy: formMissedPolicy.value,
+    digest_mode: formDigestMode.value,
+    max_concurrency: formMaxConcurrency.value,
+    max_catchup_runs: formMaxCatchupRuns.value,
   };
 
   formSubmitting.value = true;
@@ -154,8 +166,8 @@ async function toggleEnabled(schedule: Schedule) {
 async function runNow(schedule: Schedule, event: Event) {
   event.stopPropagation();
   try {
-    const res = await api.runScheduleNow(schedule.id);
-    router.push(`/runs/${res.run_id}`);
+    await api.runScheduleNow(schedule.id);
+    await load();
   } catch (e: unknown) {
     error.value = e instanceof ApiError ? e.friendly : String(e);
   }
@@ -272,6 +284,32 @@ function goToSchedule(id: string) {
       <div class="field">
         <label>URLs / Sources (one per line)</label>
         <textarea v-model="formSources" rows="3" placeholder="https://example.com/feed&#10;https://another.com/api"></textarea>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label>Missed Policy</label>
+          <select v-model="formMissedPolicy">
+            <option value="run_once">Run Once</option>
+            <option value="catch_up">Catch Up</option>
+            <option value="skip">Skip</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Digest Mode</label>
+          <select v-model="formDigestMode">
+            <option value="full">Full</option>
+            <option value="changes_only">Changes Only</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Max Concurrency</label>
+          <input type="number" v-model.number="formMaxConcurrency" min="1" max="10" />
+        </div>
+        <div class="field">
+          <label>Max Catch-up Runs</label>
+          <input type="number" v-model.number="formMaxCatchupRuns" min="1" max="100" />
+        </div>
       </div>
 
       <div class="field toggle-field">
@@ -394,6 +432,14 @@ function goToSchedule(id: string) {
 .total { margin-left: auto; }
 
 /* ── Form ───────────────────────────────────────────────────── */
+.field-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.8rem;
+  margin-bottom: 0.8rem;
+}
+.field-row .field { margin-bottom: 0; }
+
 .field {
   display: flex;
   flex-direction: column;

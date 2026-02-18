@@ -104,15 +104,46 @@ impl DeliveryStore {
                     deliveries.push_back(d);
                 }
             }
+            let original_count = deliveries.len();
             // Keep only the most recent
             while deliveries.len() > MAX_DELIVERIES {
                 deliveries.pop_front();
             }
             let count = deliveries.len();
+            // Truncate JSONL on disk if we trimmed entries.
+            if count < original_count {
+                Self::rewrite_jsonl(&self.persist_path, &deliveries);
+            }
             self.inner = RwLock::new(deliveries);
             if count > 0 {
                 tracing::info!(count, "loaded deliveries from disk");
             }
+        }
+    }
+
+    /// Rewrite the entire JSONL file from the in-memory ring.
+    fn rewrite_jsonl(path: &std::path::Path, deliveries: &VecDeque<Delivery>) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let tmp = path.with_extension("jsonl.tmp");
+        let mut ok = false;
+        if let Ok(mut f) = std::fs::File::create(&tmp) {
+            use std::io::Write;
+            ok = true;
+            for d in deliveries {
+                if let Ok(json) = serde_json::to_string(d) {
+                    if writeln!(f, "{}", json).is_err() {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if ok {
+            let _ = std::fs::rename(&tmp, path);
+        } else {
+            let _ = std::fs::remove_file(&tmp);
         }
     }
 
@@ -177,11 +208,36 @@ impl DeliveryStore {
         let mut inner = self.inner.write().await;
         if let Some(d) = inner.iter_mut().find(|d| d.id == *id) {
             d.read = true;
+            // Persist the read state to disk so it survives restarts.
+            Self::rewrite_jsonl(&self.persist_path, &inner);
             let _ = self.event_tx.send(DeliveryEvent::DeliveryRead { id: *id });
             true
         } else {
             false
         }
+    }
+
+    /// List deliveries scoped to a specific schedule.
+    pub async fn list_by_schedule(
+        &self,
+        schedule_id: &Uuid,
+        limit: usize,
+        offset: usize,
+    ) -> (Vec<Delivery>, usize) {
+        let inner = self.inner.read().await;
+        let matching: Vec<&Delivery> = inner
+            .iter()
+            .filter(|d| d.schedule_id.as_ref() == Some(schedule_id))
+            .collect();
+        let total = matching.len();
+        let items: Vec<Delivery> = matching
+            .into_iter()
+            .rev()
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect();
+        (items, total)
     }
 
     /// List deliveries and compute unread count under a single lock acquisition.
@@ -215,19 +271,6 @@ impl DeliveryStore {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Webhook dispatcher
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/// Webhook POST payload.
-#[derive(Serialize)]
-struct WebhookPayload<'a> {
-    delivery_id: Uuid,
-    schedule_id: Option<Uuid>,
-    schedule_name: Option<&'a str>,
-    run_id: Option<Uuid>,
-    title: &'a str,
-    body: &'a str,
-    sources: &'a [String],
-    created_at: DateTime<Utc>,
-}
 
 /// Fire-and-forget: POST delivery content to all webhook targets.
 /// Spawns one task per webhook URL. Logs errors but never fails the caller.
@@ -263,27 +306,47 @@ pub fn dispatch_webhooks(delivery: &Delivery, targets: &[DeliveryTarget]) {
                 .build()
                 .unwrap_or_default();
 
-            match client
-                .post(&url)
-                .header("Content-Type", "application/json")
-                .header("User-Agent", "SerialAgent-Webhook/1.0")
-                .json(&payload)
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => {
-                    tracing::info!(url = %url, status = %resp.status(), "webhook delivered");
+            const MAX_ATTEMPTS: u32 = 3;
+            for attempt in 1..=MAX_ATTEMPTS {
+                match client
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .header("User-Agent", "SerialAgent-Webhook/1.0")
+                    .json(&payload)
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        tracing::info!(url = %url, status = %resp.status(), attempt, "webhook delivered");
+                        return;
+                    }
+                    Ok(resp) if resp.status().is_server_error() && attempt < MAX_ATTEMPTS => {
+                        tracing::warn!(
+                            url = %url,
+                            status = %resp.status(),
+                            attempt,
+                            "webhook 5xx, will retry"
+                        );
+                    }
+                    Ok(resp) => {
+                        tracing::warn!(
+                            url = %url,
+                            status = %resp.status(),
+                            attempt,
+                            "webhook returned non-success status"
+                        );
+                        return; // 4xx or final 5xx — don't retry
+                    }
+                    Err(e) if attempt < MAX_ATTEMPTS => {
+                        tracing::warn!(url = %url, error = %e, attempt, "webhook failed, will retry");
+                    }
+                    Err(e) => {
+                        tracing::warn!(url = %url, error = %e, attempt, "webhook delivery failed after retries");
+                        return;
+                    }
                 }
-                Ok(resp) => {
-                    tracing::warn!(
-                        url = %url,
-                        status = %resp.status(),
-                        "webhook returned non-success status"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(url = %url, error = %e, "webhook delivery failed");
-                }
+                // Exponential back-off: 1s, 2s
+                tokio::time::sleep(std::time::Duration::from_secs(1 << (attempt - 1))).await;
             }
         });
     }
@@ -319,6 +382,41 @@ mod tests {
         assert_eq!(store.unread_count().await, 1);
         store.mark_read(&id).await;
         assert_eq!(store.unread_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn delivery_mark_read_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = {
+            let store = DeliveryStore::new(dir.path());
+            let d = Delivery::new("Persist Read".into(), "Body".into());
+            let id = d.id;
+            store.insert(d).await;
+            store.mark_read(&id).await;
+            id
+        };
+        // Reload from disk — read flag should be preserved.
+        let store2 = DeliveryStore::new(dir.path());
+        let d = store2.get(&id).await.unwrap();
+        assert!(d.read, "read flag should survive reload");
+    }
+
+    #[tokio::test]
+    async fn delivery_list_by_schedule() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DeliveryStore::new(dir.path());
+        let sched_id = Uuid::new_v4();
+
+        let mut d1 = Delivery::new("Match".into(), "body".into());
+        d1.schedule_id = Some(sched_id);
+        store.insert(d1).await;
+
+        let d2 = Delivery::new("NoMatch".into(), "body".into());
+        store.insert(d2).await;
+
+        let (items, total) = store.list_by_schedule(&sched_id, 10, 0).await;
+        assert_eq!(total, 1);
+        assert_eq!(items[0].title, "Match");
     }
 
     #[tokio::test]

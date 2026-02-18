@@ -31,6 +31,7 @@ impl ConcurrencyGuard {
     }
 
     /// Try to acquire a slot. Returns `true` if under the limit.
+    /// Uses a CAS loop to avoid TOCTOU races under contention.
     pub async fn try_acquire(&self, schedule_id: &Uuid, max: u32) -> bool {
         let counter = {
             let mut map = self.counts.write().await;
@@ -38,12 +39,15 @@ impl ConcurrencyGuard {
                 .or_insert_with(|| Arc::new(AtomicU32::new(0)))
                 .clone()
         };
-        let current = counter.load(Ordering::SeqCst);
-        if current >= max {
-            return false;
-        }
-        counter.fetch_add(1, Ordering::SeqCst);
-        true
+        counter
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                if current < max {
+                    Some(current + 1)
+                } else {
+                    None
+                }
+            })
+            .is_ok()
     }
 
     /// Release a slot after a run completes.
@@ -184,165 +188,180 @@ impl ScheduleRunner {
 
     /// Spawn a single scheduled run with timeout and result tracking.
     async fn spawn_run(&self, state: AppState, schedule: Schedule) {
-        use crate::runtime::digest;
-
-        let sched_id = schedule.id;
-        tracing::info!(
-            schedule_id = %sched_id,
-            name = %schedule.name,
-            "triggering scheduled run"
-        );
-
-        // If the schedule has sources, use the digest pipeline (fetch + change detection).
-        // Otherwise, use the simple prompt builder.
-        let user_prompt = if schedule.sources.is_empty() {
-            schedule.prompt_template.clone()
-        } else {
-            let results = digest::fetch_all_sources(&schedule).await;
-
-            // Update source states for change detection on next run.
-            let new_states = digest::build_source_states(&results);
-            state
-                .schedule_store
-                .update_source_states(&sched_id, new_states)
-                .await;
-
-            digest::build_digest_prompt(&schedule, &results)
-        };
-
-        let session_key = format!("schedule:{}", schedule.id);
-        let session_id = format!(
-            "sched-{}-{}",
-            schedule.id,
-            Utc::now().format("%Y%m%d%H%M%S")
-        );
-
-        let input = crate::runtime::TurnInput {
-            session_key,
-            session_id,
-            user_message: user_prompt,
-            model: None,
-            agent: None,
-        };
-
-        let (run_id, mut rx) = crate::runtime::run_turn(state.clone(), input);
-
-        // Record the run
-        state.schedule_store.record_run(&sched_id, run_id).await;
-
-        // Spawn collector task
-        let sched_store = state.schedule_store.clone();
-        let deliv_store = state.delivery_store.clone();
-        let timeout_ms = schedule.timeout_ms;
         let concurrency = &self.concurrency;
-        // We need to release the concurrency slot when done, so capture the
-        // guard reference. Since we can't borrow &self into 'static spawn,
-        // we'll read the counts map ref via Arc.
-        let counts = {
+        let concurrency_counter = {
             let map = concurrency.counts.read().await;
-            map.get(&sched_id).cloned()
+            map.get(&schedule.id).cloned()
         };
 
-        tokio::spawn(async move {
-            let mut final_content = String::new();
-            let mut is_error = false;
-            let mut input_tokens: u32 = 0;
-            let mut output_tokens: u32 = 0;
-            let mut total_tokens: u32 = 0;
+        spawn_scheduled_run(state, schedule, concurrency_counter).await;
+    }
+}
 
-            let collect_fut = async {
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        crate::runtime::TurnEvent::Final { content } => {
-                            final_content = content;
-                        }
-                        crate::runtime::TurnEvent::Error { message } => {
-                            final_content = format!("Error: {}", message);
-                            is_error = true;
-                        }
-                        crate::runtime::TurnEvent::UsageEvent {
-                            input_tokens: it,
-                            output_tokens: ot,
-                            total_tokens: tt,
-                        } => {
-                            input_tokens = it;
-                            output_tokens = ot;
-                            total_tokens = tt;
-                        }
-                        _ => {}
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Shared run-spawning logic (used by both ScheduleRunner and API)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Spawn a scheduled run: digest pipeline, LLM turn, timeout, usage tracking,
+/// delivery creation, and webhook dispatch.
+///
+/// If `concurrency_counter` is provided, the counter is decremented when the
+/// run completes (used by the tick-based runner's concurrency guard).
+pub async fn spawn_scheduled_run(
+    state: AppState,
+    schedule: Schedule,
+    concurrency_counter: Option<Arc<AtomicU32>>,
+) {
+    use crate::runtime::digest;
+
+    let sched_id = schedule.id;
+    tracing::info!(
+        schedule_id = %sched_id,
+        name = %schedule.name,
+        "triggering scheduled run"
+    );
+
+    // If the schedule has sources, use the digest pipeline (fetch + change detection).
+    // Otherwise, use the simple prompt builder.
+    let user_prompt = if schedule.sources.is_empty() {
+        schedule.prompt_template.clone()
+    } else {
+        let results = digest::fetch_all_sources(&schedule).await;
+
+        // Update source states for change detection on next run.
+        let new_states = digest::build_source_states(&results);
+        state
+            .schedule_store
+            .update_source_states(&sched_id, new_states)
+            .await;
+
+        digest::build_digest_prompt(&schedule, &results)
+    };
+
+    let session_key = format!("schedule:{}", schedule.id);
+    let session_id = format!(
+        "sched-{}-{}",
+        schedule.id,
+        Utc::now().format("%Y%m%d%H%M%S")
+    );
+
+    let input = crate::runtime::TurnInput {
+        session_key,
+        session_id,
+        user_message: user_prompt,
+        model: None,
+        agent: None,
+    };
+
+    let (run_id, mut rx) = crate::runtime::run_turn(state.clone(), input);
+
+    // Record the run
+    state.schedule_store.record_run(&sched_id, run_id).await;
+
+    // Spawn collector task
+    let sched_store = state.schedule_store.clone();
+    let deliv_store = state.delivery_store.clone();
+    let timeout_ms = schedule.timeout_ms;
+
+    tokio::spawn(async move {
+        let mut final_content = String::new();
+        let mut is_error = false;
+        let mut input_tokens: u32 = 0;
+        let mut output_tokens: u32 = 0;
+        let mut total_tokens: u32 = 0;
+
+        let collect_fut = async {
+            while let Some(event) = rx.recv().await {
+                match event {
+                    crate::runtime::TurnEvent::Final { content } => {
+                        final_content = content;
                     }
-                }
-            };
-
-            // Apply timeout if configured.
-            if let Some(ms) = timeout_ms {
-                match tokio::time::timeout(
-                    std::time::Duration::from_millis(ms),
-                    collect_fut,
-                )
-                .await
-                {
-                    Ok(()) => {}
-                    Err(_) => {
-                        final_content = format!(
-                            "Error: schedule run timed out after {}ms",
-                            ms
-                        );
+                    crate::runtime::TurnEvent::Error { message } => {
+                        final_content = format!("Error: {}", message);
                         is_error = true;
                     }
+                    crate::runtime::TurnEvent::UsageEvent {
+                        input_tokens: it,
+                        output_tokens: ot,
+                        total_tokens: tt,
+                    } => {
+                        input_tokens = it;
+                        output_tokens = ot;
+                        total_tokens = tt;
+                    }
+                    _ => {}
                 }
-            } else {
-                collect_fut.await;
             }
+        };
 
-            // Record success/failure
-            if is_error {
-                sched_store
-                    .record_failure(&sched_id, &final_content)
-                    .await;
-            } else {
-                sched_store.record_success(&sched_id).await;
+        // Apply timeout if configured.
+        if let Some(ms) = timeout_ms {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(ms),
+                collect_fut,
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(_) => {
+                    final_content = format!(
+                        "Error: schedule run timed out after {}ms",
+                        ms
+                    );
+                    is_error = true;
+                }
             }
+        } else {
+            collect_fut.await;
+        }
 
-            // Create delivery
-            let mut delivery = crate::runtime::deliveries::Delivery::new(
-                format!(
-                    "{} \u{2014} {}",
-                    schedule.name,
-                    Utc::now().format("%Y-%m-%d %H:%M")
-                ),
-                final_content,
-            );
-            delivery.schedule_id = Some(schedule.id);
-            delivery.schedule_name = Some(schedule.name.clone());
-            delivery.run_id = Some(run_id);
-            delivery.sources = schedule.sources.clone();
-            delivery.input_tokens = input_tokens;
-            delivery.output_tokens = output_tokens;
-            delivery.total_tokens = total_tokens;
+        // Record success/failure
+        if is_error {
+            sched_store
+                .record_failure(&sched_id, &final_content)
+                .await;
+        } else {
+            sched_store.record_success(&sched_id).await;
+        }
 
-            // Accumulate usage on the schedule.
-            sched_store.add_usage(&sched_id, input_tokens, output_tokens).await;
+        // Create delivery
+        let mut delivery = crate::runtime::deliveries::Delivery::new(
+            format!(
+                "{} \u{2014} {}",
+                schedule.name,
+                Utc::now().format("%Y-%m-%d %H:%M")
+            ),
+            final_content,
+        );
+        delivery.schedule_id = Some(schedule.id);
+        delivery.schedule_name = Some(schedule.name.clone());
+        delivery.run_id = Some(run_id);
+        delivery.sources = schedule.sources.clone();
+        delivery.input_tokens = input_tokens;
+        delivery.output_tokens = output_tokens;
+        delivery.total_tokens = total_tokens;
 
-            // Dispatch webhooks before inserting (fire-and-forget, non-blocking).
-            crate::runtime::deliveries::dispatch_webhooks(
-                &delivery,
-                &schedule.delivery_targets,
-            );
-            deliv_store.insert(delivery).await;
+        // Accumulate usage on the schedule.
+        sched_store.add_usage(&sched_id, input_tokens, output_tokens).await;
 
-            // Release concurrency slot
-            if let Some(counter) = counts {
-                counter.fetch_sub(1, Ordering::SeqCst);
-            }
+        // Dispatch webhooks before inserting (fire-and-forget, non-blocking).
+        crate::runtime::deliveries::dispatch_webhooks(
+            &delivery,
+            &schedule.delivery_targets,
+        );
+        deliv_store.insert(delivery).await;
 
-            tracing::info!(
-                schedule_id = %sched_id,
-                run_id = %run_id,
-                "scheduled run completed, delivery created"
-            );
-        });
-    }
+        // Release concurrency slot if provided.
+        if let Some(counter) = concurrency_counter {
+            counter.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        tracing::info!(
+            schedule_id = %sched_id,
+            run_id = %run_id,
+            "scheduled run completed, delivery created"
+        );
+    });
 }
 
 #[cfg(test)]

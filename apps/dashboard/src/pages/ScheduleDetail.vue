@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed } from "vue";
 import { useRouter } from "vue-router";
 import { api, ApiError } from "@/api/client";
-import type { Schedule, ScheduleDetailResponse } from "@/api/client";
+import type { Schedule, ScheduleDetailResponse, Delivery, ScheduleEvent } from "@/api/client";
 import Card from "@/components/Card.vue";
 import LoadingPanel from "@/components/LoadingPanel.vue";
 
@@ -11,8 +11,13 @@ const router = useRouter();
 
 const schedule = ref<Schedule | null>(null);
 const nextOccurrences = ref<string[]>([]);
+const deliveries = ref<Delivery[]>([]);
+const deliveriesTotal = ref(0);
 const loading = ref(true);
 const error = ref("");
+const cooldownRemaining = ref("");
+let cooldownTimer: ReturnType<typeof setInterval> | null = null;
+let eventSource: EventSource | null = null;
 
 async function load() {
   loading.value = true;
@@ -28,7 +33,69 @@ async function load() {
   }
 }
 
-onMounted(load);
+async function loadDeliveries() {
+  try {
+    const res = await api.getScheduleDeliveries(props.id, 10);
+    deliveries.value = res.deliveries;
+    deliveriesTotal.value = res.total;
+  } catch {
+    // Non-critical — swallow
+  }
+}
+
+function startSSE() {
+  eventSource = new EventSource("/v1/schedules/events");
+  eventSource.addEventListener("schedule.updated", (e: MessageEvent) => {
+    try {
+      const evt: ScheduleEvent = JSON.parse(e.data);
+      if (evt.type === "schedule_updated" && evt.schedule.id === props.id) {
+        schedule.value = evt.schedule;
+      }
+    } catch { /* ignore parse errors */ }
+  });
+  eventSource.addEventListener("schedule.run_completed", (e: MessageEvent) => {
+    try {
+      const evt: ScheduleEvent = JSON.parse(e.data);
+      if (evt.type === "schedule_run_completed" && evt.schedule_id === props.id) {
+        loadDeliveries();
+      }
+    } catch { /* ignore */ }
+  });
+}
+
+function updateCooldown() {
+  if (!schedule.value?.cooldown_until) {
+    cooldownRemaining.value = "";
+    return;
+  }
+  const remaining = Math.floor(
+    (new Date(schedule.value.cooldown_until).getTime() - Date.now()) / 1000
+  );
+  if (remaining <= 0) {
+    cooldownRemaining.value = "Expired";
+    return;
+  }
+  const h = Math.floor(remaining / 3600);
+  const m = Math.floor((remaining % 3600) / 60);
+  const s = remaining % 60;
+  cooldownRemaining.value = h > 0
+    ? `${h}h ${m}m ${s}s`
+    : m > 0
+      ? `${m}m ${s}s`
+      : `${s}s`;
+}
+
+onMounted(async () => {
+  await Promise.all([load(), loadDeliveries()]);
+  startSSE();
+  updateCooldown();
+  cooldownTimer = setInterval(updateCooldown, 1000);
+});
+
+onUnmounted(() => {
+  if (cooldownTimer) clearInterval(cooldownTimer);
+  if (eventSource) eventSource.close();
+});
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -57,11 +124,20 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
+function timeAgo(iso?: string): string {
+  if (!iso) return "-";
+  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
 async function runNow() {
   if (!schedule.value) return;
   try {
-    const res = await api.runScheduleNow(schedule.value.id);
-    router.push(`/runs/${res.run_id}`);
+    await api.runScheduleNow(schedule.value.id);
+    await load();
   } catch (e: unknown) {
     error.value = e instanceof ApiError ? e.friendly : String(e);
   }
@@ -77,8 +153,26 @@ async function toggleEnabled() {
   }
 }
 
+async function resetErrors() {
+  if (!schedule.value) return;
+  try {
+    await api.resetScheduleErrors(schedule.value.id);
+    await load();
+  } catch (e: unknown) {
+    error.value = e instanceof ApiError ? e.friendly : String(e);
+  }
+}
+
 function goBack() {
   router.push("/schedules");
+}
+
+function goToDelivery(id: string) {
+  router.push(`/inbox`);
+}
+
+function goToRun(runId?: string) {
+  if (runId) router.push(`/runs/${runId}`);
 }
 </script>
 
@@ -102,6 +196,11 @@ function goBack() {
           :class="schedule.enabled ? 'toggle-on' : 'toggle-off'"
           @click="toggleEnabled"
         >{{ schedule.enabled ? "Pause" : "Enable" }}</button>
+        <button
+          v-if="schedule.consecutive_failures > 0"
+          class="action-btn reset-btn"
+          @click="resetErrors"
+        >Reset Errors</button>
         <span class="status-badge" :class="statusClass">{{ statusLabel }}</span>
       </div>
 
@@ -186,10 +285,45 @@ function goBack() {
             <span class="label">Cooldown Until</span>
             <span class="value dim">{{ formatDate(schedule.cooldown_until) }}</span>
           </div>
+          <div v-if="cooldownRemaining" class="detail-item">
+            <span class="label">Remaining</span>
+            <span class="value cooldown-countdown">{{ cooldownRemaining }}</span>
+          </div>
         </div>
         <div v-if="schedule.last_error" class="error-box">
           <pre>{{ schedule.last_error }}</pre>
         </div>
+      </Card>
+
+      <!-- Recent Deliveries -->
+      <Card :title="`Recent Deliveries (${deliveriesTotal})`">
+        <table v-if="deliveries.length > 0" class="tbl">
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>Created</th>
+              <th>Tokens</th>
+              <th>Read</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="d in deliveries"
+              :key="d.id"
+              class="clickable"
+              @click="goToDelivery(d.id)"
+            >
+              <td class="name-cell">{{ d.title }}</td>
+              <td class="dim">{{ timeAgo(d.created_at) }}</td>
+              <td class="dim">{{ formatTokens(d.total_tokens) }}</td>
+              <td>
+                <span v-if="d.read" class="read-badge">Read</span>
+                <span v-else class="unread-badge">Unread</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="dim">No deliveries yet</p>
       </Card>
 
       <!-- Source States -->
@@ -294,6 +428,8 @@ function goBack() {
 .toggle-on { color: var(--text-dim); }
 .toggle-off { color: var(--green); border-color: var(--green); }
 .toggle-off:hover { background: rgba(63, 185, 80, 0.1); }
+.reset-btn { color: var(--yellow, #d29922); border-color: var(--yellow, #d29922); }
+.reset-btn:hover { background: rgba(210, 153, 34, 0.1); }
 
 .status-badge {
   display: inline-block;
@@ -327,6 +463,12 @@ function goBack() {
 
 .detail-item .value {
   font-size: 0.88rem;
+}
+
+.cooldown-countdown {
+  color: var(--yellow, #d29922);
+  font-family: var(--mono);
+  font-weight: 500;
 }
 
 .occurrences-list {
@@ -369,11 +511,39 @@ function goBack() {
 }
 .tbl td { padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
 
+.clickable { cursor: pointer; }
+.clickable:hover { background: rgba(88, 166, 255, 0.03); }
+
+.name-cell {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .source-url {
   max-width: 300px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.read-badge {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.72rem;
+  background: rgba(139, 148, 158, 0.15);
+  color: var(--text-dim);
+}
+
+.unread-badge {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.72rem;
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--accent);
 }
 
 .prompt-box {

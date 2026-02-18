@@ -7,7 +7,8 @@ use futures_util::stream::Stream;
 use serde::Deserialize;
 
 use crate::runtime::schedules::{
-    cron_next_n_tz, parse_tz, DeliveryTarget, DigestMode, FetchConfig, MissedPolicy, ScheduleEvent,
+    cron_next_n_tz, parse_tz, validate_cron, DeliveryTarget, DigestMode, FetchConfig, MissedPolicy,
+    ScheduleEvent,
 };
 use crate::state::AppState;
 
@@ -106,11 +107,10 @@ pub async fn create_schedule(
     Json(req): Json<CreateScheduleRequest>,
 ) -> impl IntoResponse {
     // Validate cron expression
-    let fields: Vec<&str> = req.cron.split_whitespace().collect();
-    if fields.len() != 5 {
+    if let Err(msg) = validate_cron(&req.cron) {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "invalid cron expression: expected 5 fields (minute hour dom month dow)" })),
+            Json(serde_json::json!({ "error": format!("invalid cron expression: {}", msg) })),
         )
             .into_response();
     }
@@ -184,11 +184,10 @@ pub async fn update_schedule(
 ) -> impl IntoResponse {
     // Validate cron if provided
     if let Some(ref cron) = req.cron {
-        let fields: Vec<&str> = cron.split_whitespace().collect();
-        if fields.len() != 5 {
+        if let Err(msg) = validate_cron(cron) {
             return (
                 axum::http::StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "invalid cron expression" })),
+                Json(serde_json::json!({ "error": format!("invalid cron expression: {}", msg) })),
             )
                 .into_response();
         }
@@ -285,81 +284,74 @@ pub async fn run_schedule_now(
         }
     };
 
-    // Build prompt
-    let user_prompt = if schedule.sources.is_empty() {
-        schedule.prompt_template.clone()
-    } else {
-        format!(
-            "{}\n\nURLs:\n{}",
-            schedule.prompt_template,
-            schedule
-                .sources
-                .iter()
-                .map(|u| format!("- {}", u))
-                .collect::<Vec<_>>()
-                .join("\n")
-        )
-    };
-
-    let session_key = format!("schedule:{}", schedule.id);
-    let session_id = format!(
-        "sched-{}-{}",
-        schedule.id,
-        chrono::Utc::now().format("%Y%m%d%H%M%S")
-    );
-
-    let input = crate::runtime::TurnInput {
-        session_key,
-        session_id,
-        user_message: user_prompt,
-        model: None,
-        agent: None,
-    };
-
-    let (run_id, mut rx) = crate::runtime::run_turn(state.clone(), input);
-
-    // Record the run
-    state.schedule_store.record_run(&id, run_id).await;
-
-    // Spawn task to create delivery on completion
-    let sched = schedule.clone();
-    let ds = state.delivery_store.clone();
-    tokio::spawn(async move {
-        let mut final_content = String::new();
-        while let Some(event) = rx.recv().await {
-            match event {
-                crate::runtime::TurnEvent::Final { content } => {
-                    final_content = content;
-                }
-                crate::runtime::TurnEvent::Error { message } => {
-                    final_content = format!("Error: {}", message);
-                }
-                _ => {}
-            }
-        }
-        let mut delivery = crate::runtime::deliveries::Delivery::new(
-            format!(
-                "{} — {}",
-                sched.name,
-                chrono::Utc::now().format("%Y-%m-%d %H:%M")
-            ),
-            final_content,
-        );
-        delivery.schedule_id = Some(sched.id);
-        delivery.schedule_name = Some(sched.name.clone());
-        delivery.run_id = Some(run_id);
-        delivery.sources = sched.sources.clone();
-        crate::runtime::deliveries::dispatch_webhooks(
-            &delivery,
-            &sched.delivery_targets,
-        );
-        ds.insert(delivery).await;
-    });
+    // Reuse the shared run-spawning logic (digest pipeline, timeout, usage, webhooks).
+    crate::runtime::schedule_runner::spawn_scheduled_run(state, schedule, None).await;
 
     Json(serde_json::json!({
-        "run_id": run_id,
         "schedule_id": id,
         "message": "run triggered"
+    }))
+    .into_response()
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// POST /v1/schedules/:id/reset-errors
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub async fn reset_schedule_errors(
+    State(state): State<AppState>,
+    Path(id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    if state.schedule_store.reset_errors(&id).await {
+        Json(serde_json::json!({ "reset": true })).into_response()
+    } else {
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "schedule not found" })),
+        )
+            .into_response()
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /v1/schedules/:id/deliveries
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[derive(Debug, Deserialize)]
+pub struct PaginationParams {
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+    #[serde(default)]
+    pub offset: usize,
+}
+
+fn default_limit() -> usize {
+    50
+}
+
+pub async fn list_schedule_deliveries(
+    State(state): State<AppState>,
+    Path(id): Path<uuid::Uuid>,
+    axum::extract::Query(params): axum::extract::Query<PaginationParams>,
+) -> impl IntoResponse {
+    // Verify schedule exists
+    if state.schedule_store.get(&id).await.is_none() {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "schedule not found" })),
+        )
+            .into_response();
+    }
+
+    let (items, total) = state
+        .delivery_store
+        .list_by_schedule(&id, params.limit, params.offset)
+        .await;
+    Json(serde_json::json!({
+        "deliveries": items,
+        "total": total,
+        "limit": params.limit,
+        "offset": params.offset,
     }))
     .into_response()
 }

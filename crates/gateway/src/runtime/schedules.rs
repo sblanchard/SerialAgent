@@ -284,6 +284,72 @@ fn cron_field_matches(field: &str, value: u32) -> bool {
     false
 }
 
+/// Validate a 5-field cron expression. Returns `Ok(())` or an error message.
+pub fn validate_cron(cron: &str) -> Result<(), String> {
+    let fields: Vec<&str> = cron.split_whitespace().collect();
+    if fields.len() != 5 {
+        return Err(format!(
+            "expected 5 fields (minute hour dom month dow), got {}",
+            fields.len()
+        ));
+    }
+    let names = ["minute", "hour", "day-of-month", "month", "day-of-week"];
+    let ranges: [(u32, u32); 5] = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 6)];
+
+    for (i, field) in fields.iter().enumerate() {
+        validate_cron_field(field, names[i], ranges[i].0, ranges[i].1)?;
+    }
+    Ok(())
+}
+
+fn validate_cron_field(field: &str, name: &str, min: u32, max: u32) -> Result<(), String> {
+    if field == "*" {
+        return Ok(());
+    }
+    if let Some(step) = field.strip_prefix("*/") {
+        let n: u32 = step
+            .parse()
+            .map_err(|_| format!("{}: invalid step '*/{}' — expected a number", name, step))?;
+        if n == 0 || n > max {
+            return Err(format!("{}: step {} out of range 1..={}", name, n, max));
+        }
+        return Ok(());
+    }
+    for part in field.split(',') {
+        if let Some((start_s, end_s)) = part.split_once('-') {
+            let start: u32 = start_s.parse().map_err(|_| {
+                format!("{}: invalid range start '{}'", name, start_s)
+            })?;
+            let end: u32 = end_s.parse().map_err(|_| {
+                format!("{}: invalid range end '{}'", name, end_s)
+            })?;
+            if start < min || start > max || end < min || end > max {
+                return Err(format!(
+                    "{}: range {}-{} out of bounds {}..={}",
+                    name, start, end, min, max
+                ));
+            }
+            if start > end {
+                return Err(format!(
+                    "{}: range start {} > end {}",
+                    name, start, end
+                ));
+            }
+        } else {
+            let n: u32 = part.parse().map_err(|_| {
+                format!("{}: invalid value '{}'", name, part)
+            })?;
+            if n < min || n > max {
+                return Err(format!(
+                    "{}: value {} out of range {}..={}",
+                    name, n, min, max
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Check if a **local** naive datetime matches a 5-field cron expression.
 fn cron_matches_naive(cron: &str, dt: &chrono::NaiveDateTime) -> bool {
     let fields: Vec<&str> = cron.split_whitespace().collect();
@@ -410,12 +476,17 @@ impl ScheduleStore {
         let map = self.inner.read().await;
         let schedules: Vec<&Schedule> = map.values().collect();
         if let Ok(json) = serde_json::to_string_pretty(&schedules) {
-            if let Some(parent) = self.persist_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Err(e) = std::fs::write(&self.persist_path, json) {
-                tracing::warn!(error = %e, "failed to persist schedules");
-            }
+            let path = self.persist_path.clone();
+            // Spawn blocking to avoid blocking the Tokio executor.
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::write(&path, json) {
+                    tracing::warn!(error = %e, "failed to persist schedules");
+                }
+            })
+            .await;
         }
     }
 
@@ -544,6 +615,27 @@ impl ScheduleStore {
             let _ = self.event_tx.send(ScheduleEvent::ScheduleUpdated {
                 schedule: view,
             });
+        }
+    }
+
+    /// Reset error state: clear failures, error, and cooldown. Returns true if found.
+    pub async fn reset_errors(&self, id: &Uuid) -> bool {
+        let mut map = self.inner.write().await;
+        if let Some(schedule) = map.get_mut(id) {
+            schedule.consecutive_failures = 0;
+            schedule.last_error = None;
+            schedule.last_error_at = None;
+            schedule.cooldown_until = None;
+            schedule.updated_at = Utc::now();
+            let view = schedule.to_view();
+            drop(map);
+            self.persist().await;
+            let _ = self.event_tx.send(ScheduleEvent::ScheduleUpdated {
+                schedule: view,
+            });
+            true
+        } else {
+            false
         }
     }
 
@@ -759,6 +851,31 @@ mod tests {
         assert!(cron_matches("0 9-17 * * *", &dt));
         let dt2 = Utc.with_ymd_and_hms(2024, 6, 15, 20, 0, 0).unwrap();
         assert!(!cron_matches("0 9-17 * * *", &dt2));
+    }
+
+    #[test]
+    fn validate_cron_accepts_valid() {
+        assert!(validate_cron("0 * * * *").is_ok());
+        assert!(validate_cron("*/5 9-17 * * 1-5").is_ok());
+        assert!(validate_cron("30 9 1,15 * *").is_ok());
+        assert!(validate_cron("0 0 * * 0").is_ok());
+    }
+
+    #[test]
+    fn validate_cron_rejects_invalid() {
+        // Wrong field count
+        assert!(validate_cron("* * *").is_err());
+        assert!(validate_cron("* * * * * *").is_err());
+        // Out of range
+        assert!(validate_cron("60 * * * *").is_err());  // minute 60
+        assert!(validate_cron("* 24 * * *").is_err());  // hour 24
+        assert!(validate_cron("* * 0 * *").is_err());   // dom 0
+        assert!(validate_cron("* * * 13 *").is_err());  // month 13
+        assert!(validate_cron("* * * * 7").is_err());   // dow 7
+        // Invalid step
+        assert!(validate_cron("*/0 * * * *").is_err());
+        // Bad token
+        assert!(validate_cron("abc * * * *").is_err());
     }
 
     #[test]
