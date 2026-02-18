@@ -344,17 +344,13 @@ async fn dispatch_exec(state: &AppState, arguments: &Value) -> (String, bool) {
         tracing::info!(command = %req.command, "exec tool invoked");
     }
 
-    // Denylist check
-    for pattern in &state.config.tools.exec_security.denied_patterns {
-        if let Ok(re) = regex::Regex::new(pattern) {
-            if re.is_match(&req.command) {
-                tracing::warn!(command = %req.command, pattern = %pattern, "exec command denied by denylist");
-                return (
-                    format!("command denied by security policy (matched pattern: {pattern})"),
-                    true,
-                );
-            }
-        }
+    // Denylist check (precompiled RegexSet for performance + fail-closed)
+    if state.denied_command_set.is_match(&req.command) {
+        tracing::warn!(command = %req.command, "exec command denied by denylist");
+        return (
+            "command denied by security policy".to_owned(),
+            true,
+        );
     }
 
     let resp = exec::exec(&state.processes, req).await;

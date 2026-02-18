@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use serde::Deserialize;
 
@@ -23,8 +24,20 @@ pub async fn exec_tool(
     State(state): State<AppState>,
     Json(req): Json<ExecRequest>,
 ) -> impl IntoResponse {
+    // Enforce denied-patterns denylist (precompiled RegexSet) before executing.
+    if state.denied_command_set.is_match(&req.command) {
+        tracing::warn!(command = %req.command, "exec blocked by denied_patterns");
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "command blocked by security policy",
+            })),
+        )
+            .into_response();
+    }
+
     let resp = exec::exec(&state.processes, req).await;
-    Json(serde_json::to_value(resp).unwrap_or_default())
+    Json(serde_json::to_value(resp).unwrap_or_default()).into_response()
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

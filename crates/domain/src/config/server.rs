@@ -12,6 +12,12 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default)]
     pub cors: CorsConfig,
+    /// Environment variable holding the API bearer token for protected endpoints.
+    /// If the env var is set and non-empty, all API endpoints (except health/readiness)
+    /// require `Authorization: Bearer <token>`.
+    /// If unset, the server logs a warning and allows unauthenticated access.
+    #[serde(default = "d_api_token_env")]
+    pub api_token_env: String,
 }
 
 impl Default for ServerConfig {
@@ -20,6 +26,7 @@ impl Default for ServerConfig {
             port: 3210,
             host: "127.0.0.1".into(),
             cors: CorsConfig::default(),
+            api_token_env: d_api_token_env(),
         }
     }
 }
@@ -53,4 +60,7 @@ fn d_cors_origins() -> Vec<String> {
         "http://localhost:*".into(),
         "http://127.0.0.1:*".into(),
     ]
+}
+fn d_api_token_env() -> String {
+    "SA_API_TOKEN".into()
 }

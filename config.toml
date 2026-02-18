@@ -8,9 +8,10 @@ user_facts_max_chars = 4000         # Max chars for USER_FACTS from SerialMemory
 skills_index_max_chars = 2000       # Max chars for compact skills index
 
 [serial_memory]
-base_url = "http://localhost:5000"
-# api_key = "sm_your_api_key"       # Your SerialMemory API key
+base_url = "http://localhost:4545/mcp"
+# api_key = "sm_your_api_key_here"  # Your SerialMemory API key (use env var in production)
 transport = "rest"                   # rest | mcp | hybrid
+
 # mcp_endpoint = "stdio://serialmemory-mcp"
 # workspace_id = "serial-assistant"  # Set to isolate from VS Code tenant
 timeout_ms = 8000
