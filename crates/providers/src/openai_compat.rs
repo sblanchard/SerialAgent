@@ -3,16 +3,18 @@
 //! Works with OpenAI, Azure OpenAI, Ollama, vLLM, LM Studio, Together,
 //! and any other endpoint that follows the OpenAI chat completions contract.
 
+use crate::auth::AuthRotator;
 use crate::traits::{
     ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider,
 };
-use crate::util::{from_reqwest, resolve_api_key};
+use crate::util::from_reqwest;
 use sa_domain::capability::LlmCapabilities;
 use sa_domain::config::ProviderConfig;
 use sa_domain::error::{Error, Result};
 use sa_domain::stream::{BoxStream, StreamEvent, Usage};
 use sa_domain::tool::{ContentPart, Message, MessageContent, Role, ToolCall, ToolDefinition};
 use serde_json::Value;
+use std::sync::Arc;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Adapter struct
@@ -22,7 +24,7 @@ use serde_json::Value;
 pub struct OpenAiCompatProvider {
     id: String,
     base_url: String,
-    api_key: String,
+    auth: Arc<AuthRotator>,
     auth_header: String,
     auth_prefix: String,
     default_model: String,
@@ -33,7 +35,7 @@ pub struct OpenAiCompatProvider {
 impl OpenAiCompatProvider {
     /// Create a new provider from the deserialized provider config.
     pub fn from_config(cfg: &ProviderConfig) -> Result<Self> {
-        let api_key = resolve_api_key(&cfg.auth)?;
+        let auth = Arc::new(AuthRotator::from_auth_config(&cfg.auth)?);
         let auth_header = cfg
             .auth
             .header
@@ -59,7 +61,7 @@ impl OpenAiCompatProvider {
         Ok(Self {
             id: cfg.id.clone(),
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
-            api_key,
+            auth,
             auth_header,
             auth_prefix,
             default_model,
@@ -71,7 +73,8 @@ impl OpenAiCompatProvider {
     // ── Internal: build authenticated request builder ──────────────
 
     fn authed_post(&self, url: &str) -> reqwest::RequestBuilder {
-        let header_value = format!("{}{}", self.auth_prefix, self.api_key);
+        let entry = self.auth.next_key();
+        let header_value = format!("{}{}", self.auth_prefix, entry.key);
         self.client
             .post(url)
             .header(&self.auth_header, &header_value)

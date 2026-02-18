@@ -4,7 +4,8 @@
 //! the Anthropic-specific message structure where system messages go in a
 //! separate top-level `system` field.
 
-use crate::util::{from_reqwest, resolve_api_key};
+use crate::auth::AuthRotator;
+use crate::util::from_reqwest;
 use crate::traits::{
     ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider,
 };
@@ -14,6 +15,7 @@ use sa_domain::error::{Error, Result};
 use sa_domain::stream::{BoxStream, StreamEvent, Usage};
 use sa_domain::tool::{ContentPart, Message, MessageContent, Role, ToolCall, ToolDefinition};
 use serde_json::Value;
+use std::sync::Arc;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Constants
@@ -29,7 +31,7 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 pub struct AnthropicProvider {
     id: String,
     base_url: String,
-    api_key: String,
+    auth: Arc<AuthRotator>,
     default_model: String,
     capabilities: LlmCapabilities,
     client: reqwest::Client,
@@ -38,7 +40,7 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     /// Create a new provider from the deserialized provider config.
     pub fn from_config(cfg: &ProviderConfig) -> Result<Self> {
-        let api_key = resolve_api_key(&cfg.auth)?;
+        let auth = Arc::new(AuthRotator::from_auth_config(&cfg.auth)?);
         let default_model = cfg
             .default_model
             .clone()
@@ -61,7 +63,7 @@ impl AnthropicProvider {
         Ok(Self {
             id: cfg.id.clone(),
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
-            api_key,
+            auth,
             default_model,
             capabilities,
             client,
@@ -71,9 +73,10 @@ impl AnthropicProvider {
     // ── Internal helpers ───────────────────────────────────────────
 
     fn authed_post(&self, url: &str) -> reqwest::RequestBuilder {
+        let entry = self.auth.next_key();
         self.client
             .post(url)
-            .header("x-api-key", &self.api_key)
+            .header("x-api-key", &entry.key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("Content-Type", "application/json")
     }
