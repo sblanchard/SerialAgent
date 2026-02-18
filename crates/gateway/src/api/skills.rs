@@ -26,7 +26,7 @@ pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
         .collect();
 
     Json(serde_json::json!({
-        "skills": entries,
+        "skills": &*entries,
         "count": entries.len(),
         "readiness": summary,
         "tool_requirements": tool_requirements,
