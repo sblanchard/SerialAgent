@@ -75,13 +75,15 @@ pub async fn fetch_source(
             let status = resp.status().as_u16();
             match resp.text().await {
                 Ok(mut body) => {
+                    // Hash the full body BEFORE truncation so tail changes
+                    // are detected even when max_size_bytes is set.
+                    let hash = content_hash(&body);
                     // Enforce max_size_bytes if set.
                     if config.max_size_bytes > 0
                         && body.len() as u64 > config.max_size_bytes
                     {
                         body.truncate(config.max_size_bytes as usize);
                     }
-                    let hash = content_hash(&body);
                     FetchResult {
                         url: url.to_string(),
                         content: body,
@@ -115,18 +117,80 @@ pub async fn fetch_source(
     }
 }
 
-/// Fetch all sources for a schedule, detecting changes against previous state.
+/// Fetch all sources for a schedule concurrently, detecting changes against previous state.
 pub async fn fetch_all_sources(schedule: &Schedule) -> Vec<FetchResult> {
-    let mut results = Vec::with_capacity(schedule.sources.len());
-    for url in &schedule.sources {
-        let mut result = fetch_source(url, &schedule.fetch_config).await;
+    let futs: Vec<_> = schedule
+        .sources
+        .iter()
+        .map(|url| {
+            let url = url.clone();
+            let config = schedule.fetch_config.clone();
+            async move { fetch_source(&url, &config).await }
+        })
+        .collect();
+
+    let mut results = futures_util::future::join_all(futs).await;
+    for result in &mut results {
         if result.error.is_none() {
-            let prev = schedule.source_states.get(url);
+            let prev = schedule.source_states.get(&result.url);
             result.changed = has_changed(&result.content_hash, prev);
         }
-        results.push(result);
     }
     results
+}
+
+/// Strip HTML tags to extract plain text. Preserves block-level whitespace.
+pub fn strip_html_tags(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    let mut last_was_block = false;
+
+    for ch in html.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+            }
+            '>' if in_tag => {
+                in_tag = false;
+                if !last_was_block {
+                    // Block tags → newline
+                    last_was_block = true;
+                }
+            }
+            _ if !in_tag => {
+                if ch == '\n' || ch == '\r' {
+                    if !last_was_block {
+                        out.push('\n');
+                        last_was_block = true;
+                    }
+                } else {
+                    last_was_block = false;
+                    out.push(ch);
+                }
+            }
+            _ => {}
+        }
+    }
+    // Collapse runs of whitespace-only lines.
+    let mut collapsed = String::with_capacity(out.len());
+    let mut prev_empty = false;
+    for line in out.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if !prev_empty {
+                collapsed.push('\n');
+            }
+            prev_empty = true;
+        } else {
+            if prev_empty && !collapsed.is_empty() {
+                collapsed.push('\n');
+            }
+            collapsed.push_str(trimmed);
+            collapsed.push('\n');
+            prev_empty = false;
+        }
+    }
+    collapsed.trim().to_string()
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -139,7 +203,10 @@ pub async fn fetch_all_sources(schedule: &Schedule) -> Vec<FetchResult> {
 /// - `{{sources}}` — all source URLs (bullet list)
 /// - `{{changed_sources}}` — only changed source URLs
 /// - `{{date}}` — current date in YYYY-MM-DD format
+/// - `{{time}}` — current time in HH:MM UTC format
 /// - `{{content}}` — concatenated source content (per digest_mode)
+/// - `{{schedule_name}}` — name of the schedule
+/// - `{{timezone}}` — schedule's configured timezone
 pub fn build_digest_prompt(
     schedule: &Schedule,
     results: &[FetchResult],
@@ -163,7 +230,15 @@ pub fn build_digest_prompt(
     } else {
         included
             .iter()
-            .map(|r| format!("## {}\n\n{}", r.url, r.content))
+            .map(|r| {
+                // Strip HTML tags from content to reduce token waste.
+                let clean = if r.content.contains('<') && r.content.contains('>') {
+                    strip_html_tags(&r.content)
+                } else {
+                    r.content.clone()
+                };
+                format!("## {}\n\n{}", r.url, clean)
+            })
             .collect::<Vec<_>>()
             .join("\n\n---\n\n")
     };
@@ -189,7 +264,10 @@ pub fn build_digest_prompt(
             .replace("{{sources}}", &all_sources)
             .replace("{{changed_sources}}", &changed_sources)
             .replace("{{date}}", &now.format("%Y-%m-%d").to_string())
+            .replace("{{time}}", &now.format("%H:%M UTC").to_string())
             .replace("{{content}}", &content_block)
+            .replace("{{schedule_name}}", &schedule.name)
+            .replace("{{timezone}}", &schedule.timezone)
     } else {
         // Legacy mode: append content after the template.
         if included.is_empty() {

@@ -629,6 +629,13 @@ export type UpdateScheduleRequest = {
   max_catchup_runs?: number;
 };
 
+// ── Schedule event types (SSE) ──────────────────────────────────────
+
+export type ScheduleEvent =
+  | { type: "schedule_updated"; schedule: Schedule }
+  | { type: "schedule_run_started"; schedule_id: string; run_id: string }
+  | { type: "schedule_run_completed"; schedule_id: string; run_id: string };
+
 // ── Delivery types ──────────────────────────────────────────────────
 
 export type Delivery = {
@@ -740,7 +747,11 @@ export const api = {
   deleteSchedule: (id: string) =>
     del<{ deleted: boolean }>(`/v1/schedules/${encodeURIComponent(id)}`),
   runScheduleNow: (id: string) =>
-    post<{ run_id: string; schedule_id: string }>(`/v1/schedules/${encodeURIComponent(id)}/run-now`, {}),
+    post<{ schedule_id: string }>(`/v1/schedules/${encodeURIComponent(id)}/run-now`, {}),
+  resetScheduleErrors: (id: string) =>
+    post<{ reset: boolean }>(`/v1/schedules/${encodeURIComponent(id)}/reset-errors`, {}),
+  getScheduleDeliveries: (id: string, limit = 25, offset = 0) =>
+    get<{ deliveries: Delivery[]; total: number }>(`/v1/schedules/${encodeURIComponent(id)}/deliveries?limit=${limit}&offset=${offset}`),
 
   // Deliveries (inbox)
   getDeliveries: (limit = 25, offset = 0) =>
