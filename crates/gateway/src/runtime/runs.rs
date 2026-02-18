@@ -5,7 +5,7 @@
 //! invocations). Runs are persisted to a JSONL file and kept in a bounded
 //! in-memory ring for fast queries.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -168,12 +168,67 @@ pub enum RunEvent {
 const MAX_RUNS_IN_MEMORY: usize = 2000;
 
 pub struct RunStore {
-    /// Bounded ring of recent runs (newest last).
-    runs: RwLock<VecDeque<Run>>,
+    /// Bounded ring of recent runs (newest last) + O(1) index.
+    inner: RwLock<RunStoreInner>,
     /// JSONL persistence path.
     log_path: PathBuf,
     /// Per-run broadcast channels for SSE.
-    event_channels: RwLock<std::collections::HashMap<Uuid, broadcast::Sender<RunEvent>>>,
+    event_channels: RwLock<HashMap<Uuid, broadcast::Sender<RunEvent>>>,
+}
+
+/// Interior state behind the RwLock — VecDeque plus a HashMap index
+/// that maps run_id → logical sequence number. The logical offset
+/// tracks how many entries have been popped from the front so the
+/// HashMap values never need bulk adjustment.
+struct RunStoreInner {
+    runs: VecDeque<Run>,
+    index: HashMap<Uuid, usize>,
+    /// Logical sequence number of the front element.
+    base_seq: usize,
+}
+
+impl RunStoreInner {
+    fn new(runs: VecDeque<Run>) -> Self {
+        let mut index = HashMap::with_capacity(runs.len());
+        for (i, run) in runs.iter().enumerate() {
+            index.insert(run.run_id, i);
+        }
+        Self {
+            runs,
+            index,
+            base_seq: 0,
+        }
+    }
+
+    /// Convert a logical sequence number to a VecDeque index.
+    fn deque_idx(&self, seq: usize) -> usize {
+        seq - self.base_seq
+    }
+
+    fn get_mut(&mut self, run_id: &Uuid) -> Option<&mut Run> {
+        let seq = *self.index.get(run_id)?;
+        let idx = self.deque_idx(seq);
+        self.runs.get_mut(idx)
+    }
+
+    fn get(&self, run_id: &Uuid) -> Option<&Run> {
+        let seq = *self.index.get(run_id)?;
+        let idx = self.deque_idx(seq);
+        self.runs.get(idx)
+    }
+
+    fn push_back(&mut self, run: Run) {
+        let seq = self.base_seq + self.runs.len();
+        self.index.insert(run.run_id, seq);
+        self.runs.push_back(run);
+    }
+
+    fn pop_front(&mut self) -> Option<Run> {
+        let run = self.runs.pop_front()?;
+        self.index.remove(&run.run_id);
+        self.base_seq += 1;
+        Some(run)
+    }
 }
 
 impl RunStore {
@@ -186,9 +241,9 @@ impl RunStore {
         let runs = Self::load_recent(&log_path);
 
         Self {
-            runs: RwLock::new(runs),
+            inner: RwLock::new(RunStoreInner::new(runs)),
             log_path,
-            event_channels: RwLock::new(std::collections::HashMap::new()),
+            event_channels: RwLock::new(HashMap::new()),
         }
     }
 
@@ -208,21 +263,21 @@ impl RunStore {
     /// Insert a new run. Returns the run_id.
     pub fn insert(&self, run: Run) -> Uuid {
         let run_id = run.run_id;
-        let mut runs = self.runs.write();
-        runs.push_back(run);
-        if runs.len() > MAX_RUNS_IN_MEMORY {
-            runs.pop_front();
+        let mut inner = self.inner.write();
+        inner.push_back(run);
+        if inner.runs.len() > MAX_RUNS_IN_MEMORY {
+            inner.pop_front();
         }
         run_id
     }
 
-    /// Update a run in-place by ID. Returns true if found.
+    /// Update a run in-place by ID (O(1) via index). Returns true if found.
     pub fn update<F>(&self, run_id: &Uuid, f: F) -> bool
     where
         F: FnOnce(&mut Run),
     {
-        let mut runs = self.runs.write();
-        if let Some(run) = runs.iter_mut().rev().find(|r| r.run_id == *run_id) {
+        let mut inner = self.inner.write();
+        if let Some(run) = inner.get_mut(run_id) {
             f(run);
             return true;
         }
@@ -242,13 +297,16 @@ impl RunStore {
         }
     }
 
-    /// Get a run by ID.
+    /// Get a run by ID (O(1) via index).
     pub fn get(&self, run_id: &Uuid) -> Option<Run> {
-        let runs = self.runs.read();
-        runs.iter().rev().find(|r| r.run_id == *run_id).cloned()
+        let inner = self.inner.read();
+        inner.get(run_id).cloned()
     }
 
     /// List runs with optional filters and pagination.
+    ///
+    /// Uses a two-pass approach: first counts total matches, then collects
+    /// only the requested page — avoiding an intermediate Vec allocation.
     pub fn list(
         &self,
         status: Option<RunStatus>,
@@ -257,33 +315,32 @@ impl RunStore {
         limit: usize,
         offset: usize,
     ) -> (Vec<Run>, usize) {
-        let runs = self.runs.read();
-        let filtered: Vec<&Run> = runs
+        let inner = self.inner.read();
+        let filter = |r: &&Run| -> bool {
+            if let Some(s) = status {
+                if r.status != s {
+                    return false;
+                }
+            }
+            if let Some(sk) = session_key {
+                if r.session_key != sk {
+                    return false;
+                }
+            }
+            if let Some(aid) = agent_id {
+                if r.agent_id.as_deref() != Some(aid) {
+                    return false;
+                }
+            }
+            true
+        };
+
+        let total = inner.runs.iter().rev().filter(filter).count();
+        let page: Vec<Run> = inner
+            .runs
             .iter()
             .rev()
-            .filter(|r| {
-                if let Some(s) = status {
-                    if r.status != s {
-                        return false;
-                    }
-                }
-                if let Some(sk) = session_key {
-                    if r.session_key != sk {
-                        return false;
-                    }
-                }
-                if let Some(aid) = agent_id {
-                    if r.agent_id.as_deref() != Some(aid) {
-                        return false;
-                    }
-                }
-                true
-            })
-            .collect();
-
-        let total = filtered.len();
-        let page: Vec<Run> = filtered
-            .into_iter()
+            .filter(filter)
             .skip(offset)
             .take(limit)
             .cloned()
@@ -316,10 +373,10 @@ impl RunStore {
     }
 
     /// Count runs by status (for dashboard stats).
-    pub fn status_counts(&self) -> std::collections::HashMap<String, usize> {
-        let runs = self.runs.read();
-        let mut counts = std::collections::HashMap::new();
-        for run in runs.iter() {
+    pub fn status_counts(&self) -> HashMap<String, usize> {
+        let inner = self.inner.read();
+        let mut counts = HashMap::new();
+        for run in inner.runs.iter() {
             let key = serde_json::to_value(&run.status)
                 .ok()
                 .and_then(|v| v.as_str().map(String::from))

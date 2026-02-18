@@ -22,8 +22,12 @@ pub fn compaction_boundary(lines: &[TranscriptLine]) -> usize {
 
 /// Count active turns (user messages) since the last compaction.
 pub fn active_turn_count(lines: &[TranscriptLine]) -> usize {
-    let start = compaction_boundary(lines);
-    lines[start..]
+    active_turn_count_from(lines, compaction_boundary(lines))
+}
+
+/// Count active turns starting from a pre-computed boundary.
+pub fn active_turn_count_from(lines: &[TranscriptLine], boundary: usize) -> usize {
+    lines[boundary..]
         .iter()
         .filter(|l| l.role == "user")
         .count()
@@ -35,6 +39,19 @@ pub fn should_compact(lines: &[TranscriptLine], config: &CompactionConfig) -> bo
         return false;
     }
     active_turn_count(lines) > config.max_turns
+}
+
+/// Check if auto-compaction should run, using a pre-computed boundary
+/// to avoid a redundant reverse scan.
+pub fn should_compact_with_boundary(
+    lines: &[TranscriptLine],
+    config: &CompactionConfig,
+    boundary: usize,
+) -> bool {
+    if !config.auto {
+        return false;
+    }
+    active_turn_count_from(lines, boundary) > config.max_turns
 }
 
 /// Split active lines into (lines_to_compact, lines_to_keep).

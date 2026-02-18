@@ -140,12 +140,11 @@ impl DeliveryStore {
     pub async fn list(&self, limit: usize, offset: usize) -> (Vec<Delivery>, usize) {
         let inner = self.inner.read().await;
         let total = inner.len();
-        // Return most recent first
+        // Return most recent first — skip/take directly on the reversed
+        // iterator to avoid an intermediate Vec allocation.
         let items: Vec<Delivery> = inner
             .iter()
             .rev()
-            .collect::<Vec<_>>()
-            .into_iter()
             .skip(offset)
             .take(limit)
             .cloned()
@@ -171,6 +170,25 @@ impl DeliveryStore {
         } else {
             false
         }
+    }
+
+    /// List deliveries and compute unread count under a single lock acquisition.
+    pub async fn list_with_unread(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> (Vec<Delivery>, usize, usize) {
+        let inner = self.inner.read().await;
+        let total = inner.len();
+        let unread = inner.iter().filter(|d| !d.read).count();
+        let items: Vec<Delivery> = inner
+            .iter()
+            .rev()
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect();
+        (items, total, unread)
     }
 
     pub async fn unread_count(&self) -> usize {
