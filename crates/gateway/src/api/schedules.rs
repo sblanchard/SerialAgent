@@ -262,8 +262,7 @@ pub async fn run_schedule_now(
         agent: None,
     };
 
-    let state_arc = std::sync::Arc::new(state.clone());
-    let (run_id, mut rx) = crate::runtime::run_turn(state_arc, input);
+    let (run_id, mut rx) = crate::runtime::run_turn(state.clone(), input);
 
     // Record the run
     state.schedule_store.record_run(&id, run_id).await;

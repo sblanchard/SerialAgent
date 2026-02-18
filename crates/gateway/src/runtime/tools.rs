@@ -17,14 +17,40 @@ use super::agent::AgentContext;
 // Tool definitions
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Derive a cache key from an optional tool policy. Uses a deterministic
+/// string so we can look up cached definitions without hashing the struct.
+fn policy_cache_key(tool_policy: Option<&ToolPolicy>) -> String {
+    match tool_policy {
+        None => "__none__".to_owned(),
+        Some(p) => format!("a:{};d:{}", p.allow.join(","), p.deny.join(",")),
+    }
+}
+
 /// Build the set of tool definitions exposed to the LLM.
 ///
 /// When `tool_policy` is `Some`, definitions are filtered through it so that
 /// sub-agents only see tools their config permits.
+///
+/// Results are cached per `(node_generation, tool_policy)` to avoid
+/// rebuilding the definitions on every turn when the node topology and
+/// policy haven't changed.
 pub fn build_tool_definitions(
     state: &AppState,
     tool_policy: Option<&ToolPolicy>,
 ) -> Vec<ToolDefinition> {
+    let current_gen = state.nodes.generation();
+    let key = policy_cache_key(tool_policy);
+
+    // Check cache.
+    {
+        let cache = state.tool_defs_cache.read();
+        if let Some(cached) = cache.get(&key) {
+            if cached.generation == current_gen {
+                return cached.defs.clone();
+            }
+        }
+    }
+
     let mut defs = Vec::new();
 
     // ── Built-in local tools ──────────────────────────────────────
@@ -209,6 +235,20 @@ pub fn build_tool_definitions(
         defs.retain(|d| policy.allows(&d.name));
     }
 
+    // Populate cache (clear stale entries from old generations).
+    {
+        let mut cache = state.tool_defs_cache.write();
+        cache.retain(|_, v| v.generation == current_gen);
+        cache.insert(
+            key,
+            crate::state::CachedToolDefs {
+                defs: defs.clone(),
+                generation: current_gen,
+                policy_key: policy_cache_key(tool_policy),
+            },
+        );
+    }
+
     defs
 }
 
@@ -298,6 +338,25 @@ async fn dispatch_exec(state: &AppState, arguments: &Value) -> (String, bool) {
         Ok(r) => r,
         Err(e) => return (format!("invalid exec arguments: {e}"), true),
     };
+
+    // Audit log
+    if state.config.tools.exec_security.audit_log {
+        tracing::info!(command = %req.command, "exec tool invoked");
+    }
+
+    // Denylist check
+    for pattern in &state.config.tools.exec_security.denied_patterns {
+        if let Ok(re) = regex::Regex::new(pattern) {
+            if re.is_match(&req.command) {
+                tracing::warn!(command = %req.command, pattern = %pattern, "exec command denied by denylist");
+                return (
+                    format!("command denied by security policy (matched pattern: {pattern})"),
+                    true,
+                );
+            }
+        }
+    }
+
     let resp = exec::exec(&state.processes, req).await;
     let json = serde_json::to_string_pretty(&resp).unwrap_or_default();
     (json, false)
