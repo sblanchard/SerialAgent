@@ -327,7 +327,7 @@ fn parse_sse_data(data: &str) -> Option<Result<StreamEvent>> {
         return None;
     }
 
-    let choice = choice.unwrap();
+    let Some(choice) = choice else { return None; };
     let delta = choice.get("delta").unwrap_or(&Value::Null);
 
     // Finish reason.

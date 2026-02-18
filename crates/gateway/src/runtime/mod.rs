@@ -312,3 +312,260 @@ pub(super) fn truncate_str(s: &str, max: usize) -> String {
         format!("{}...", &s[..end])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sa_domain::tool::{ContentPart, MessageContent, Role, ToolCall};
+    use sa_sessions::transcript::TranscriptWriter;
+
+    // ── truncate_str ───────────────────────────────────────────────
+
+    #[test]
+    fn truncate_str_empty() {
+        assert_eq!(truncate_str("", 10), "");
+    }
+
+    #[test]
+    fn truncate_str_within_limit() {
+        assert_eq!(truncate_str("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_str_exact_boundary() {
+        assert_eq!(truncate_str("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_str_ascii_over_limit() {
+        assert_eq!(truncate_str("hello world", 5), "hello...");
+    }
+
+    #[test]
+    fn truncate_str_multibyte_utf8_no_split() {
+        // 'e' with acute accent is 2 bytes in UTF-8: 0xC3 0xA9
+        let s = "h\u{00e9}llo"; // "héllo" — 6 bytes total
+        // Truncating at byte 2 would land inside the 2-byte 'é'.
+        // The function should back up to byte 1, yielding "h...".
+        let result = truncate_str(s, 2);
+        assert_eq!(result, "h...");
+    }
+
+    #[test]
+    fn truncate_str_emoji_boundary() {
+        // A 4-byte emoji followed by ASCII.
+        let s = "\u{1F600}abc"; // "😀abc" — 4 + 3 = 7 bytes
+        // max=3 falls inside the 4-byte emoji; should back up to 0.
+        let result = truncate_str(s, 3);
+        assert_eq!(result, "...");
+    }
+
+    #[test]
+    fn truncate_str_max_zero() {
+        let result = truncate_str("abc", 0);
+        assert_eq!(result, "...");
+    }
+
+    // ── transcript_lines_to_messages ───────────────────────────────
+
+    fn tl(role: &str, content: &str) -> sa_sessions::transcript::TranscriptLine {
+        TranscriptWriter::line(role, content)
+    }
+
+    fn tl_with_meta(
+        role: &str,
+        content: &str,
+        meta: serde_json::Value,
+    ) -> sa_sessions::transcript::TranscriptLine {
+        let mut line = TranscriptWriter::line(role, content);
+        line.metadata = Some(meta);
+        line
+    }
+
+    #[test]
+    fn transcript_empty_input() {
+        let msgs = transcript_lines_to_messages(&[]);
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn transcript_user_message() {
+        let lines = vec![tl("user", "hello")];
+        let msgs = transcript_lines_to_messages(&lines);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].role, Role::User);
+        match &msgs[0].content {
+            MessageContent::Text(t) => assert_eq!(t, "hello"),
+            _ => panic!("expected Text content"),
+        }
+    }
+
+    #[test]
+    fn transcript_assistant_message() {
+        let lines = vec![tl("assistant", "hi there")];
+        let msgs = transcript_lines_to_messages(&lines);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].role, Role::Assistant);
+    }
+
+    #[test]
+    fn transcript_system_message() {
+        let lines = vec![tl("system", "you are helpful")];
+        let msgs = transcript_lines_to_messages(&lines);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].role, Role::System);
+    }
+
+    #[test]
+    fn transcript_tool_with_call_id() {
+        let lines = vec![tl_with_meta(
+            "tool",
+            "result data",
+            serde_json::json!({"call_id": "tc_123"}),
+        )];
+        let msgs = transcript_lines_to_messages(&lines);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].role, Role::Tool);
+        // Should be wrapped as a tool_result with the call_id.
+        match &msgs[0].content {
+            MessageContent::Parts(parts) => {
+                assert_eq!(parts.len(), 1);
+                match &parts[0] {
+                    ContentPart::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } => {
+                        assert_eq!(tool_use_id, "tc_123");
+                        assert_eq!(content, "result data");
+                    }
+                    _ => panic!("expected ToolResult part"),
+                }
+            }
+            _ => panic!("expected Parts content"),
+        }
+    }
+
+    #[test]
+    fn transcript_tool_without_call_id_is_skipped() {
+        let lines = vec![tl("tool", "orphan tool output")];
+        let msgs = transcript_lines_to_messages(&lines);
+        assert!(msgs.is_empty(), "tool lines without call_id should be skipped");
+    }
+
+    #[test]
+    fn transcript_unknown_role_is_skipped() {
+        let lines = vec![tl("narrator", "something happened")];
+        let msgs = transcript_lines_to_messages(&lines);
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn transcript_mixed_roles_preserves_order() {
+        let lines = vec![
+            tl("user", "question"),
+            tl("assistant", "answer"),
+            tl_with_meta("tool", "result", serde_json::json!({"call_id": "tc_1"})),
+            tl("user", "follow up"),
+        ];
+        let msgs = transcript_lines_to_messages(&lines);
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[0].role, Role::User);
+        assert_eq!(msgs[1].role, Role::Assistant);
+        assert_eq!(msgs[2].role, Role::Tool);
+        assert_eq!(msgs[3].role, Role::User);
+    }
+
+    #[test]
+    fn transcript_compaction_marker_becomes_system() {
+        let mut marker = tl("system", "Summary of prior conversation");
+        marker.metadata = Some(serde_json::json!({"compaction": true, "turns_compacted": 5}));
+        let lines = vec![marker, tl("user", "new message")];
+        let msgs = transcript_lines_to_messages(&lines);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, Role::System);
+        assert_eq!(msgs[1].role, Role::User);
+    }
+
+    // ── build_assistant_tool_message ───────────────────────────────
+
+    #[test]
+    fn build_tool_msg_text_only() {
+        let msg = build_assistant_tool_message("hello", &[]);
+        assert_eq!(msg.role, Role::Assistant);
+        match &msg.content {
+            MessageContent::Parts(parts) => {
+                assert_eq!(parts.len(), 1);
+                match &parts[0] {
+                    ContentPart::Text { text } => assert_eq!(text, "hello"),
+                    _ => panic!("expected Text part"),
+                }
+            }
+            _ => panic!("expected Parts content"),
+        }
+    }
+
+    #[test]
+    fn build_tool_msg_tool_calls_only() {
+        let calls = vec![ToolCall {
+            call_id: "tc_1".into(),
+            tool_name: "search".into(),
+            arguments: serde_json::json!({"query": "test"}),
+        }];
+        let msg = build_assistant_tool_message("", &calls);
+        assert_eq!(msg.role, Role::Assistant);
+        match &msg.content {
+            MessageContent::Parts(parts) => {
+                // Empty text is not added, so only the tool use part.
+                assert_eq!(parts.len(), 1);
+                match &parts[0] {
+                    ContentPart::ToolUse { id, name, input } => {
+                        assert_eq!(id, "tc_1");
+                        assert_eq!(name, "search");
+                        assert_eq!(input, &serde_json::json!({"query": "test"}));
+                    }
+                    _ => panic!("expected ToolUse part"),
+                }
+            }
+            _ => panic!("expected Parts content"),
+        }
+    }
+
+    #[test]
+    fn build_tool_msg_text_and_tools() {
+        let calls = vec![
+            ToolCall {
+                call_id: "tc_a".into(),
+                tool_name: "read".into(),
+                arguments: serde_json::json!({}),
+            },
+            ToolCall {
+                call_id: "tc_b".into(),
+                tool_name: "write".into(),
+                arguments: serde_json::json!({"path": "/tmp"}),
+            },
+        ];
+        let msg = build_assistant_tool_message("thinking...", &calls);
+        match &msg.content {
+            MessageContent::Parts(parts) => {
+                // 1 text + 2 tool uses = 3 parts.
+                assert_eq!(parts.len(), 3);
+                assert!(matches!(&parts[0], ContentPart::Text { .. }));
+                assert!(matches!(&parts[1], ContentPart::ToolUse { .. }));
+                assert!(matches!(&parts[2], ContentPart::ToolUse { .. }));
+            }
+            _ => panic!("expected Parts content"),
+        }
+    }
+
+    #[test]
+    fn build_tool_msg_empty_text_not_included() {
+        let msg = build_assistant_tool_message("", &[]);
+        match &msg.content {
+            MessageContent::Parts(parts) => {
+                assert!(parts.is_empty(), "empty text and no tools should produce no parts");
+            }
+            _ => panic!("expected Parts content"),
+        }
+    }
+}

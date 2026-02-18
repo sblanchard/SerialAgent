@@ -190,4 +190,87 @@ mod tests {
         map.cancel("p");
         assert!(!child.is_cancelled());
     }
+
+    #[test]
+    fn cancel_nonexistent_session_returns_false() {
+        let map = CancelMap::new();
+        assert!(!map.cancel("does_not_exist"));
+    }
+
+    #[test]
+    fn is_running_false_for_unregistered() {
+        let map = CancelMap::new();
+        assert!(!map.is_running("ghost"));
+    }
+
+    #[test]
+    fn remove_is_idempotent() {
+        let map = CancelMap::new();
+        map.register("s1");
+        map.remove("s1");
+        // Second remove should not panic.
+        map.remove("s1");
+        assert!(!map.is_running("s1"));
+    }
+
+    #[test]
+    fn register_replaces_previous_token() {
+        let map = CancelMap::new();
+        let old_token = map.register("s1");
+        let new_token = map.register("s1");
+
+        // Old token is not cancelled, new token is fresh.
+        assert!(!old_token.is_cancelled());
+        assert!(!new_token.is_cancelled());
+
+        // Cancelling via the map affects the new token.
+        map.cancel("s1");
+        assert!(new_token.is_cancelled());
+        // Old token is orphaned — it does not get cancelled via the map.
+        // (The old Arc still exists but is no longer in the map.)
+    }
+
+    #[test]
+    fn cancel_token_clone_shares_state() {
+        let token = CancelToken::new();
+        let clone = token.clone();
+        assert!(!clone.is_cancelled());
+        token.cancel();
+        assert!(clone.is_cancelled());
+    }
+
+    #[test]
+    fn cancel_token_default() {
+        let token = CancelToken::default();
+        assert!(!token.is_cancelled());
+    }
+
+    #[test]
+    fn remove_from_group_nonexistent_parent_is_safe() {
+        let map = CancelMap::new();
+        // Should not panic when parent group does not exist.
+        map.remove_from_group("nonexistent", "child");
+    }
+
+    #[test]
+    fn group_cleaned_up_on_parent_remove() {
+        let map = CancelMap::new();
+        let _parent = map.register("parent");
+        let child = map.register("child");
+
+        map.add_to_group("parent", "child");
+        // Removing the parent should also clean up its group.
+        map.remove("parent");
+
+        // Child should still be independently accessible but
+        // the group should be gone (no cascade).
+        assert!(map.is_running("child"));
+        assert!(!child.is_cancelled());
+    }
+
+    #[test]
+    fn cancel_map_default_trait() {
+        let map = CancelMap::default();
+        assert!(!map.is_running("any"));
+    }
 }

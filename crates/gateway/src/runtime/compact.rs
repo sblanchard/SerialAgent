@@ -290,4 +290,193 @@ mod tests {
             .collect();
         assert_eq!(keep_users, vec!["msg 3", "msg 4"]);
     }
+
+    // ── is_compaction_marker ──────────────────────────────────────
+
+    #[test]
+    fn is_compaction_marker_true() {
+        let marker = compaction("summary");
+        assert!(is_compaction_marker(&marker));
+    }
+
+    #[test]
+    fn is_compaction_marker_false_no_metadata() {
+        let plain = line("system", "just a system message");
+        assert!(!is_compaction_marker(&plain));
+    }
+
+    #[test]
+    fn is_compaction_marker_false_wrong_metadata() {
+        let mut l = line("system", "msg");
+        l.metadata = Some(serde_json::json!({"compaction": false}));
+        assert!(!is_compaction_marker(&l));
+    }
+
+    #[test]
+    fn is_compaction_marker_false_missing_key() {
+        let mut l = line("system", "msg");
+        l.metadata = Some(serde_json::json!({"other_key": true}));
+        assert!(!is_compaction_marker(&l));
+    }
+
+    // ── compaction_line ───────────────────────────────────────────
+
+    #[test]
+    fn compaction_line_metadata() {
+        let marker = compaction_line("a summary", 10);
+        assert_eq!(marker.role, "system");
+        assert_eq!(marker.content, "a summary");
+        let meta = marker.metadata.unwrap();
+        assert_eq!(meta["compaction"], true);
+        assert_eq!(meta["turns_compacted"], 10);
+    }
+
+    // ── should_compact_with_boundary ─────────────────────────────
+
+    #[test]
+    fn should_compact_with_boundary_disabled() {
+        let config = CompactionConfig {
+            auto: false,
+            max_turns: 1,
+            keep_last_turns: 1,
+        };
+        let lines = vec![
+            line("user", "a"),
+            line("assistant", "b"),
+            line("user", "c"),
+            line("assistant", "d"),
+        ];
+        assert!(!should_compact_with_boundary(&lines, &config, 0));
+    }
+
+    #[test]
+    fn should_compact_with_boundary_below_threshold() {
+        let config = CompactionConfig {
+            auto: true,
+            max_turns: 10,
+            keep_last_turns: 2,
+        };
+        let lines = vec![line("user", "a"), line("assistant", "b")];
+        assert!(!should_compact_with_boundary(&lines, &config, 0));
+    }
+
+    #[test]
+    fn should_compact_with_boundary_above_threshold() {
+        let config = CompactionConfig {
+            auto: true,
+            max_turns: 2,
+            keep_last_turns: 1,
+        };
+        let lines = vec![
+            line("user", "a"),
+            line("assistant", "b"),
+            line("user", "c"),
+            line("assistant", "d"),
+            line("user", "e"),
+            line("assistant", "f"),
+        ];
+        // 3 user turns > max_turns of 2
+        assert!(should_compact_with_boundary(&lines, &config, 0));
+    }
+
+    // ── build_conversation_text ──────────────────────────────────
+
+    #[test]
+    fn build_conversation_text_basic() {
+        let lines = vec![
+            line("user", "hello"),
+            line("assistant", "hi"),
+        ];
+        let text = build_conversation_text(&lines);
+        assert!(text.contains("User: hello\n"));
+        assert!(text.contains("Assistant: hi\n"));
+    }
+
+    #[test]
+    fn build_conversation_text_truncates_long_content() {
+        let long_content = "x".repeat(3000);
+        let lines = vec![line("tool", &long_content)];
+        let text = build_conversation_text(&lines);
+        // Should contain the truncation marker.
+        assert!(text.contains("[...]"));
+        // Should be shorter than the original content.
+        assert!(text.len() < long_content.len());
+    }
+
+    #[test]
+    fn build_conversation_text_unknown_role() {
+        let lines = vec![line("narrator", "once upon a time")];
+        let text = build_conversation_text(&lines);
+        assert!(text.contains("narrator: once upon a time"));
+    }
+
+    #[test]
+    fn build_conversation_text_empty() {
+        let text = build_conversation_text(&[]);
+        assert!(text.is_empty());
+    }
+
+    // ── active_turn_count_from ───────────────────────────────────
+
+    #[test]
+    fn active_turn_count_from_midpoint() {
+        let lines = vec![
+            line("user", "old1"),
+            line("assistant", "old_reply"),
+            line("user", "new1"),
+            line("assistant", "new_reply"),
+            line("user", "new2"),
+        ];
+        // Starting from index 2, there are 2 user messages.
+        assert_eq!(active_turn_count_from(&lines, 2), 2);
+    }
+
+    // ── compaction_boundary with multiple markers ────────────────
+
+    #[test]
+    fn compaction_boundary_uses_last_marker() {
+        let lines = vec![
+            line("user", "very old"),
+            compaction("first summary"),
+            line("user", "middle"),
+            compaction("second summary"),
+            line("user", "recent"),
+            line("assistant", "response"),
+        ];
+        // Should return the index of the second (last) compaction marker.
+        assert_eq!(compaction_boundary(&lines), 3);
+        // Active turns after the last marker: only "recent".
+        assert_eq!(active_turn_count(&lines), 1);
+    }
+
+    // ── split_for_compaction with existing marker ────────────────
+
+    #[test]
+    fn split_for_compaction_after_prior_compaction() {
+        let lines = vec![
+            line("user", "old"),
+            line("assistant", "old reply"),
+            compaction("summary of old"),
+            line("user", "msg1"),
+            line("assistant", "reply1"),
+            line("user", "msg2"),
+            line("assistant", "reply2"),
+            line("user", "msg3"),
+            line("assistant", "reply3"),
+        ];
+        let (to_compact, to_keep) = split_for_compaction(&lines, 1);
+        // Keep last 1 turn → compact first 2, keep msg3.
+        let keep_users: Vec<_> = to_keep
+            .iter()
+            .filter(|l| l.role == "user")
+            .map(|l| l.content.as_str())
+            .collect();
+        assert_eq!(keep_users, vec!["msg3"]);
+        let compact_users: Vec<_> = to_compact
+            .iter()
+            .filter(|l| l.role == "user")
+            .map(|l| l.content.as_str())
+            .collect();
+        assert_eq!(compact_users, vec!["msg1", "msg2"]);
+    }
 }

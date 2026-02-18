@@ -2,6 +2,39 @@
 
 const BASE = "";
 
+// ── Token management ────────────────────────────────────────────────
+
+let apiToken: string | null =
+  typeof localStorage !== "undefined"
+    ? localStorage.getItem("sa_api_token")
+    : null;
+
+export function setApiToken(token: string): void {
+  apiToken = token;
+  if (typeof localStorage !== "undefined") {
+    localStorage.setItem("sa_api_token", token);
+  }
+}
+
+export function getApiToken(): string | null {
+  return apiToken;
+}
+
+// ── Shared headers builder ──────────────────────────────────────────
+
+export function buildHeaders(
+  contentType?: string,
+): Record<string, string> {
+  const h: Record<string, string> = {};
+  if (contentType) {
+    h["Content-Type"] = contentType;
+  }
+  if (apiToken) {
+    h["Authorization"] = `Bearer ${apiToken}`;
+  }
+  return h;
+}
+
 // ── Structured API error with friendly messages ─────────────────────
 
 export class ApiError extends Error {
@@ -53,7 +86,10 @@ function mapFriendlyMessage(status: number, detail: string): string {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
+  const h = buildHeaders();
+  const res = await fetch(`${BASE}${path}`, {
+    headers: Object.keys(h).length > 0 ? h : undefined,
+  });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new ApiError("GET", path, res.status, body);
@@ -64,7 +100,7 @@ async function get<T>(path: string): Promise<T> {
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: buildHeaders("application/json"),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -77,7 +113,7 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 async function put<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: buildHeaders("application/json"),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -88,7 +124,11 @@ async function put<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function del<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { method: "DELETE" });
+  const h = buildHeaders();
+  const res = await fetch(`${BASE}${path}`, {
+    method: "DELETE",
+    headers: Object.keys(h).length > 0 ? h : undefined,
+  });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new ApiError("DELETE", path, res.status, body);

@@ -37,7 +37,9 @@ pub fn router(state: AppState) -> Router<AppState> {
         // Provider readiness (used by health probes)
         .route("/v1/models/readiness", get(providers::readiness))
         // Health probe (public, no auth)
-        .route("/v1/health", get(admin::health));
+        .route("/v1/health", get(admin::health))
+        // OpenAPI spec (public, no auth)
+        .route("/v1/openapi.json", get(admin::openapi_spec));
 
     let protected = Router::new()
         // Context introspection
@@ -53,8 +55,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/v1/memory/ingest", post(memory::ingest))
         .route("/v1/memory/about", get(memory::about_user))
         .route("/v1/memory/health", get(memory::health))
-        .route("/v1/memory/:id", put(memory::update_entry))
-        .route("/v1/memory/:id", delete(memory::delete_entry))
+        // NOTE: PUT/DELETE /v1/memory/:id planned but not yet implemented.
+        // Will be added when SerialMemory supports PATCH/DELETE endpoints.
         // Legacy session proxy (SerialMemory)
         .route("/v1/session/init", post(memory::init_session))
         .route("/v1/session/end", post(memory::end_session))
@@ -155,5 +157,7 @@ pub fn router(state: AppState) -> Router<AppState> {
             auth::require_api_token,
         ));
 
-    public.merge(protected)
+    public
+        .merge(protected)
+        .layer(tower_http::trace::TraceLayer::new_for_http())
 }

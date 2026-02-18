@@ -428,17 +428,8 @@ impl RunStore {
 // Helpers
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        let mut end = max;
-        while !s.is_char_boundary(end) && end > 0 {
-            end -= 1;
-        }
-        format!("{}...", &s[..end])
-    }
-}
+/// Re-use the shared truncation helper from the parent module.
+use super::truncate_str as truncate;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Tests
@@ -557,5 +548,129 @@ mod tests {
         let (list, total) = store.list(None, None, None, MAX_RUNS_IN_MEMORY + 100, 0);
         assert_eq!(total, MAX_RUNS_IN_MEMORY);
         assert_eq!(list.len(), MAX_RUNS_IN_MEMORY);
+    }
+
+    #[test]
+    fn run_status_is_terminal() {
+        assert!(!RunStatus::Queued.is_terminal());
+        assert!(!RunStatus::Running.is_terminal());
+        assert!(RunStatus::Completed.is_terminal());
+        assert!(RunStatus::Failed.is_terminal());
+        assert!(RunStatus::Stopped.is_terminal());
+    }
+
+    #[test]
+    fn get_nonexistent_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RunStore::new(dir.path());
+        assert!(store.get(&Uuid::new_v4()).is_none());
+    }
+
+    #[test]
+    fn update_nonexistent_returns_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RunStore::new(dir.path());
+        let found = store.update(&Uuid::new_v4(), |r| {
+            r.status = RunStatus::Running;
+        });
+        assert!(!found);
+    }
+
+    #[test]
+    fn list_pagination() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RunStore::new(dir.path());
+
+        for i in 0..5 {
+            let run = Run::new("sk".into(), "sid".into(), &format!("msg{i}"));
+            store.insert(run);
+        }
+
+        // Page 1: limit 2, offset 0 (newest first)
+        let (page1, total) = store.list(None, None, None, 2, 0);
+        assert_eq!(total, 5);
+        assert_eq!(page1.len(), 2);
+
+        // Page 2: limit 2, offset 2
+        let (page2, _) = store.list(None, None, None, 2, 2);
+        assert_eq!(page2.len(), 2);
+
+        // Page 3: limit 2, offset 4 (only 1 remaining)
+        let (page3, _) = store.list(None, None, None, 2, 4);
+        assert_eq!(page3.len(), 1);
+
+        // No overlap between pages.
+        let all_ids: std::collections::HashSet<_> = page1
+            .iter()
+            .chain(page2.iter())
+            .chain(page3.iter())
+            .map(|r| r.run_id)
+            .collect();
+        assert_eq!(all_ids.len(), 5);
+    }
+
+    #[test]
+    fn list_filter_by_session_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RunStore::new(dir.path());
+
+        store.insert(Run::new("alpha".into(), "sid".into(), "msg1"));
+        store.insert(Run::new("beta".into(), "sid".into(), "msg2"));
+        store.insert(Run::new("alpha".into(), "sid".into(), "msg3"));
+
+        let (hits, total) = store.list(None, Some("alpha"), None, 10, 0);
+        assert_eq!(total, 2);
+        assert_eq!(hits.len(), 2);
+        assert!(hits.iter().all(|r| r.session_key == "alpha"));
+    }
+
+    #[test]
+    fn list_filter_by_agent_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RunStore::new(dir.path());
+
+        let mut run1 = Run::new("sk".into(), "sid".into(), "msg1");
+        run1.agent_id = Some("planner".into());
+        store.insert(run1);
+
+        let run2 = Run::new("sk".into(), "sid".into(), "msg2");
+        store.insert(run2);
+
+        let (hits, total) = store.list(None, None, Some("planner"), 10, 0);
+        assert_eq!(total, 1);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].agent_id.as_deref(), Some("planner"));
+    }
+
+    #[test]
+    fn status_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RunStore::new(dir.path());
+
+        let mut r1 = Run::new("sk".into(), "sid".into(), "msg1");
+        r1.status = RunStatus::Completed;
+        store.insert(r1);
+
+        let mut r2 = Run::new("sk".into(), "sid".into(), "msg2");
+        r2.status = RunStatus::Completed;
+        store.insert(r2);
+
+        let mut r3 = Run::new("sk".into(), "sid".into(), "msg3");
+        r3.status = RunStatus::Failed;
+        store.insert(r3);
+
+        let counts = store.status_counts();
+        assert_eq!(counts.get("completed"), Some(&2));
+        assert_eq!(counts.get("failed"), Some(&1));
+    }
+
+    #[test]
+    fn run_input_preview_truncated() {
+        let long_msg = "a".repeat(300);
+        let run = Run::new("sk".into(), "sid".into(), &long_msg);
+        let preview = run.input_preview.as_deref().unwrap();
+        // truncate(msg, 200) should produce at most 200 + 3 ("...") = 203 bytes
+        assert!(preview.len() <= 203);
+        assert!(preview.ends_with("..."));
     }
 }
