@@ -70,10 +70,16 @@ impl SessionLockMap {
         self.locks.lock().len()
     }
 
-    /// Remove locks for sessions that aren't actively held (cleanup).
+    /// Remove orphaned session locks — entries where the only remaining
+    /// `Arc` reference is the map itself (strong_count == 1) AND the
+    /// semaphore is not currently held (available_permits > 0).
     pub fn prune_idle(&self) {
         let mut locks = self.locks.lock();
-        locks.retain(|_, sem| sem.available_permits() == 0);
+        locks.retain(|_, sem| {
+            // Keep if someone outside the map still holds a reference,
+            // or if the permit is currently acquired (turn in progress).
+            Arc::strong_count(sem) > 1 || sem.available_permits() == 0
+        });
     }
 }
 

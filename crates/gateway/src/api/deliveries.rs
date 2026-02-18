@@ -29,11 +29,10 @@ pub async fn list_deliveries(
     State(state): State<AppState>,
     Query(query): Query<ListDeliveriesQuery>,
 ) -> impl IntoResponse {
-    let (deliveries, total) = state
+    let (deliveries, total, unread) = state
         .delivery_store
-        .list(query.limit, query.offset)
+        .list_with_unread(query.limit, query.offset)
         .await;
-    let unread = state.delivery_store.unread_count().await;
 
     Json(serde_json::json!({
         "deliveries": deliveries,

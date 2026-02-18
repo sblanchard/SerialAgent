@@ -207,7 +207,7 @@ async fn main() -> anyhow::Result<()> {
         processes: processes.clone(),
         nodes: nodes.clone(),
         tool_router,
-        session_locks,
+        session_locks: session_locks.clone(),
         cancel_map,
         agents: None,
         dedupe,
@@ -245,9 +245,10 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // ── Periodic process cleanup ──────────────────────────────────
+    // ── Periodic process cleanup + session lock pruning ─────────────
     {
         let processes = processes.clone();
+        let session_locks = session_locks.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(
                 std::time::Duration::from_secs(60),
@@ -255,6 +256,7 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 interval.tick().await;
                 processes.cleanup_stale();
+                session_locks.prune_idle();
             }
         });
     }

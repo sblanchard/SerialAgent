@@ -62,8 +62,13 @@ impl OutputBuffer {
         self.combined.push_str(text);
         if self.combined.len() > self.max_chars {
             let keep = self.max_chars * 3 / 4;
-            let drain = self.combined.len() - keep;
-            self.combined = self.combined[drain..].to_string();
+            let drain_count = self.combined.len() - keep;
+            // Find a char boundary to avoid splitting a multi-byte character.
+            let mut boundary = drain_count;
+            while boundary < self.combined.len() && !self.combined.is_char_boundary(boundary) {
+                boundary += 1;
+            }
+            self.combined.drain(..boundary);
         }
     }
 
