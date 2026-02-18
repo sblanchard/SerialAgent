@@ -3,7 +3,8 @@
 //! Implements the Gemini `generateContent` and `streamGenerateContent` APIs.
 //! Auth is via an API key passed as a query parameter (`key={api_key}`).
 
-use crate::util::{from_reqwest, resolve_api_key};
+use crate::auth::AuthRotator;
+use crate::util::from_reqwest;
 use crate::traits::{
     ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider,
 };
@@ -13,6 +14,7 @@ use sa_domain::error::{Error, Result};
 use sa_domain::stream::{BoxStream, StreamEvent, Usage};
 use sa_domain::tool::{ContentPart, Message, MessageContent, Role, ToolCall, ToolDefinition};
 use serde_json::Value;
+use std::sync::Arc;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Adapter struct
@@ -22,7 +24,7 @@ use serde_json::Value;
 pub struct GoogleProvider {
     id: String,
     base_url: String,
-    api_key: String,
+    auth: Arc<AuthRotator>,
     default_model: String,
     capabilities: LlmCapabilities,
     client: reqwest::Client,
@@ -31,7 +33,7 @@ pub struct GoogleProvider {
 impl GoogleProvider {
     /// Create a new provider from the deserialized provider config.
     pub fn from_config(cfg: &ProviderConfig) -> Result<Self> {
-        let api_key = resolve_api_key(&cfg.auth)?;
+        let auth = Arc::new(AuthRotator::from_auth_config(&cfg.auth)?);
         let default_model = cfg
             .default_model
             .clone()
@@ -54,7 +56,7 @@ impl GoogleProvider {
         Ok(Self {
             id: cfg.id.clone(),
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
-            api_key,
+            auth,
             default_model,
             capabilities,
             client,
@@ -63,17 +65,17 @@ impl GoogleProvider {
 
     // ── Internal helpers ───────────────────────────────────────────
 
-    fn generate_url(&self, model: &str) -> String {
+    fn generate_url(&self, model: &str, api_key: &str) -> String {
         format!(
             "{}/v1beta/models/{}:generateContent?key={}",
-            self.base_url, model, self.api_key
+            self.base_url, model, api_key
         )
     }
 
-    fn stream_url(&self, model: &str) -> String {
+    fn stream_url(&self, model: &str, api_key: &str) -> String {
         format!(
             "{}/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
-            self.base_url, model, self.api_key
+            self.base_url, model, api_key
         )
     }
 
@@ -436,7 +438,8 @@ impl LlmProvider for GoogleProvider {
             .model
             .clone()
             .unwrap_or_else(|| self.default_model.clone());
-        let url = self.generate_url(&model);
+        let entry = self.auth.next_key();
+        let url = self.generate_url(&model, &entry.key);
         let body = self.build_body(req);
 
         tracing::debug!(provider = %self.id, url = %redact_url_key(&url), "google chat request");
@@ -472,7 +475,8 @@ impl LlmProvider for GoogleProvider {
             .model
             .clone()
             .unwrap_or_else(|| self.default_model.clone());
-        let url = self.stream_url(&model);
+        let entry = self.auth.next_key();
+        let url = self.stream_url(&model, &entry.key);
         let body = self.build_body(req);
         let provider_id = self.id.clone();
         let model_owned = model.clone();
@@ -508,10 +512,11 @@ impl LlmProvider for GoogleProvider {
             .clone()
             .unwrap_or_else(|| "text-embedding-004".into());
 
+        let entry = self.auth.next_key();
         // Gemini embeddings use batchEmbedContents for multiple inputs.
         let url = format!(
             "{}/v1beta/models/{}:batchEmbedContents?key={}",
-            self.base_url, model, self.api_key
+            self.base_url, model, entry.key
         );
 
         let requests: Vec<Value> = req

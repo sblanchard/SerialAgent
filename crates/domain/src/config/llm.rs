@@ -154,6 +154,11 @@ pub struct AuthConfig {
     /// Direct key (for config-only setups; prefer env or auth profiles).
     #[serde(default)]
     pub key: Option<String>,
+    /// Multiple env var names for round-robin key rotation.
+    /// Each entry is an environment variable name that is resolved at startup.
+    /// When non-empty, takes precedence over `env`/`key`.
+    #[serde(default)]
+    pub keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
