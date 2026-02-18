@@ -258,6 +258,21 @@ async fn run_server(config: Arc<Config>) -> anyhow::Result<()> {
         "exec denied-patterns compiled"
     );
 
+    // ── Compile exec approval-patterns at startup ────────────────────
+    let approval_command_set = Arc::new(
+        regex::RegexSet::new(&config.tools.exec_security.approval_patterns)
+            .context("invalid regex in tools.exec_security.approval_patterns")?,
+    );
+    tracing::info!(
+        patterns = config.tools.exec_security.approval_patterns.len(),
+        "exec approval-patterns compiled"
+    );
+    let approval_store = Arc::new(
+        sa_gateway::runtime::approval::ApprovalStore::new(std::time::Duration::from_secs(
+            config.tools.exec_security.approval_timeout_sec,
+        )),
+    );
+
     // ── App state (without agents — needed for AgentManager init) ───
     let mut state = AppState {
         config: config.clone(),
@@ -287,6 +302,8 @@ async fn run_server(config: Arc<Config>) -> anyhow::Result<()> {
         api_token_hash,
         admin_token_hash,
         denied_command_set,
+        approval_command_set,
+        approval_store,
     };
 
     // ── Agent manager (sub-agents) ──────────────────────────────────

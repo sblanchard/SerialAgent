@@ -62,6 +62,13 @@ pub struct ExecSecurityConfig {
     /// Regex patterns that are denied. Commands matching any pattern are rejected.
     #[serde(default = "d_denied_patterns")]
     pub denied_patterns: Vec<String>,
+    /// Regex patterns that require human approval before execution.
+    /// Unlike `denied_patterns`, these don't block — they gate behind approval.
+    #[serde(default)]
+    pub approval_patterns: Vec<String>,
+    /// Timeout in seconds for approval requests (default 300 = 5 minutes).
+    #[serde(default = "d_300")]
+    pub approval_timeout_sec: u64,
 }
 
 impl Default for ExecSecurityConfig {
@@ -69,6 +76,8 @@ impl Default for ExecSecurityConfig {
         Self {
             audit_log: true,
             denied_patterns: d_denied_patterns(),
+            approval_patterns: Vec::new(),
+            approval_timeout_sec: 300,
         }
     }
 }
@@ -92,6 +101,9 @@ fn d_500000() -> usize {
 }
 fn d_true() -> bool {
     true
+}
+fn d_300() -> u64 {
+    300
 }
 fn d_denied_patterns() -> Vec<String> {
     vec![

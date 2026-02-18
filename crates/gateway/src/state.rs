@@ -15,6 +15,7 @@ use crate::api::inbound::DedupeStore;
 use crate::nodes::registry::NodeRegistry;
 use crate::nodes::router::ToolRouter;
 use crate::runtime::agent::AgentManager;
+use crate::runtime::approval::ApprovalStore;
 use crate::runtime::cancel::CancelMap;
 use crate::runtime::deliveries::DeliveryStore;
 use crate::runtime::runs::RunStore;
@@ -102,6 +103,10 @@ pub struct AppState {
     pub admin_token_hash: Option<Vec<u8>>,
     /// Precompiled exec denied-pattern regexes (compiled once at startup).
     pub denied_command_set: Arc<regex::RegexSet>,
+    /// Precompiled exec approval-pattern regexes (compiled once at startup).
+    pub approval_command_set: Arc<regex::RegexSet>,
+    /// Pending exec approvals awaiting human decision.
+    pub approval_store: Arc<ApprovalStore>,
 
     // ── Caches ────────────────────────────────────────────────────────
     /// Per-user TTL cache for user facts (avoids network calls every turn).
