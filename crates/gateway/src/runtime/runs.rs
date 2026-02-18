@@ -238,7 +238,17 @@ impl RunStore {
         std::fs::create_dir_all(&dir).ok();
 
         let log_path = dir.join("runs.jsonl");
-        let runs = Self::load_recent(&log_path);
+        let (runs, total_on_disk) = Self::load_recent(&log_path);
+
+        // Prune the JSONL file if it contained more entries than we kept.
+        if total_on_disk > runs.len() {
+            tracing::info!(
+                kept = runs.len(),
+                pruned = total_on_disk - runs.len(),
+                "pruning runs JSONL on disk"
+            );
+            Self::rewrite_jsonl(&log_path, &runs);
+        }
 
         Self {
             inner: RwLock::new(RunStoreInner::new(runs)),
@@ -248,16 +258,43 @@ impl RunStore {
     }
 
     /// Load the most recent MAX_RUNS_IN_MEMORY runs from the JSONL file.
-    fn load_recent(path: &Path) -> VecDeque<Run> {
+    /// Returns (runs, total_line_count) to detect if pruning is needed.
+    fn load_recent(path: &Path) -> (VecDeque<Run>, usize) {
         let mut runs = VecDeque::new();
+        let mut total = 0;
         if let Ok(content) = std::fs::read_to_string(path) {
-            for line in content.lines().rev().take(MAX_RUNS_IN_MEMORY) {
+            let lines: Vec<&str> = content.lines().collect();
+            total = lines.len();
+            for line in lines.iter().rev().take(MAX_RUNS_IN_MEMORY) {
                 if let Ok(run) = serde_json::from_str::<Run>(line) {
                     runs.push_front(run);
                 }
             }
         }
-        runs
+        (runs, total)
+    }
+
+    /// Rewrite the JSONL file with only the given runs (disk pruning).
+    fn rewrite_jsonl(path: &Path, runs: &VecDeque<Run>) {
+        let tmp = path.with_extension("jsonl.tmp");
+        let mut ok = false;
+        if let Ok(mut f) = std::fs::File::create(&tmp) {
+            use std::io::Write;
+            ok = true;
+            for run in runs {
+                if let Ok(json) = serde_json::to_string(run) {
+                    if writeln!(f, "{}", json).is_err() {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if ok {
+            let _ = std::fs::rename(&tmp, path);
+        } else {
+            let _ = std::fs::remove_file(&tmp);
+        }
     }
 
     /// Insert a new run. Returns the run_id.

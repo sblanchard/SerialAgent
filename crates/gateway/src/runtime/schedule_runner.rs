@@ -348,6 +348,7 @@ pub async fn spawn_scheduled_run(
         crate::runtime::deliveries::dispatch_webhooks(
             &delivery,
             &schedule.delivery_targets,
+            Some(&schedule.fetch_config.user_agent),
         );
         deliv_store.insert(delivery).await;
 

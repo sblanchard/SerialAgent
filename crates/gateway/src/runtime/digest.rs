@@ -44,6 +44,37 @@ pub fn has_changed(new_hash: &str, prev_state: Option<&SourceState>) -> bool {
     }
 }
 
+/// Read a response body in chunks, stopping at `max_bytes`.
+/// Returns (body_string, was_truncated).
+async fn read_body_capped(
+    resp: reqwest::Response,
+    max_bytes: u64,
+) -> Result<(String, bool), reqwest::Error> {
+    use futures_util::StreamExt;
+
+    let mut buf = Vec::new();
+    let mut truncated = false;
+    let mut stream = resp.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        let remaining = max_bytes as usize - buf.len();
+        if remaining == 0 {
+            truncated = true;
+            break;
+        }
+        if chunk.len() > remaining {
+            buf.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        buf.extend_from_slice(&chunk);
+    }
+
+    let body = String::from_utf8_lossy(&buf).into_owned();
+    Ok((body, truncated))
+}
+
 /// Fetch a single URL using the schedule's fetch configuration.
 pub async fn fetch_source(
     url: &str,
@@ -70,20 +101,22 @@ pub async fn fetch_source(
         }
     };
 
+    // Default body cap: 5 MiB. Prevents runaway memory usage on large pages.
+    const DEFAULT_MAX_BYTES: u64 = 5 * 1024 * 1024;
+    let cap = if config.max_size_bytes > 0 {
+        config.max_size_bytes
+    } else {
+        DEFAULT_MAX_BYTES
+    };
+
     match client.get(url).send().await {
         Ok(resp) => {
             let status = resp.status().as_u16();
-            match resp.text().await {
-                Ok(mut body) => {
-                    // Hash the full body BEFORE truncation so tail changes
-                    // are detected even when max_size_bytes is set.
+            // Stream the body in chunks with a size cap.
+            match read_body_capped(resp, cap).await {
+                Ok((body, truncated)) => {
+                    // Hash the full body (up to cap) so changes are detected.
                     let hash = content_hash(&body);
-                    // Enforce max_size_bytes if set.
-                    if config.max_size_bytes > 0
-                        && body.len() as u64 > config.max_size_bytes
-                    {
-                        body.truncate(config.max_size_bytes as usize);
-                    }
                     FetchResult {
                         url: url.to_string(),
                         content: body,
@@ -91,7 +124,11 @@ pub async fn fetch_source(
                         http_status: status,
                         fetched_at: now,
                         changed: false, // Caller sets this after comparing.
-                        error: None,
+                        error: if truncated {
+                            Some(format!("body truncated at {} bytes", cap))
+                        } else {
+                            None
+                        },
                     }
                 }
                 Err(e) => FetchResult {

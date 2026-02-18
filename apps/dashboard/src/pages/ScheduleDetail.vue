@@ -16,6 +16,11 @@ const deliveriesTotal = ref(0);
 const loading = ref(true);
 const error = ref("");
 const cooldownRemaining = ref("");
+const dryRunResult = ref<unknown>(null);
+const dryRunLoading = ref(false);
+const dryRunError = ref("");
+const dryRunOpen = ref(false);
+
 let cooldownTimer: ReturnType<typeof setInterval> | null = null;
 let eventSource: EventSource | null = null;
 
@@ -143,6 +148,29 @@ async function runNow() {
   }
 }
 
+async function dryRun() {
+  if (!schedule.value) return;
+  dryRunLoading.value = true;
+  dryRunError.value = "";
+  dryRunResult.value = null;
+  try {
+    const result = await api.dryRunSchedule(schedule.value.id);
+    dryRunResult.value = result;
+    dryRunOpen.value = true;
+  } catch (e: unknown) {
+    dryRunError.value = e instanceof ApiError ? e.friendly : String(e);
+    dryRunOpen.value = true;
+  } finally {
+    dryRunLoading.value = false;
+  }
+}
+
+function closeDryRun() {
+  dryRunOpen.value = false;
+  dryRunResult.value = null;
+  dryRunError.value = "";
+}
+
 async function toggleEnabled() {
   if (!schedule.value) return;
   try {
@@ -192,6 +220,11 @@ function goToRun(runId?: string) {
       <div class="actions-bar">
         <button class="action-btn run-btn" @click="runNow">Run Now</button>
         <button
+          class="action-btn dry-run-btn"
+          @click="dryRun"
+          :disabled="dryRunLoading"
+        >{{ dryRunLoading ? "Running..." : "Dry Run" }}</button>
+        <button
           class="action-btn toggle-btn"
           :class="schedule.enabled ? 'toggle-on' : 'toggle-off'"
           @click="toggleEnabled"
@@ -203,6 +236,15 @@ function goToRun(runId?: string) {
         >Reset Errors</button>
         <span class="status-badge" :class="statusClass">{{ statusLabel }}</span>
       </div>
+
+      <!-- Dry Run Result -->
+      <Card v-if="dryRunOpen" title="Dry Run Result">
+        <p v-if="dryRunError" class="error">{{ dryRunError }}</p>
+        <pre v-if="dryRunResult" class="dry-run-box">{{ JSON.stringify(dryRunResult, null, 2) }}</pre>
+        <div class="dry-run-actions">
+          <button class="action-btn" @click="closeDryRun">Close</button>
+        </div>
+      </Card>
 
       <!-- Overview -->
       <Card title="Overview">
@@ -428,6 +470,9 @@ function goToRun(runId?: string) {
 .toggle-on { color: var(--text-dim); }
 .toggle-off { color: var(--green); border-color: var(--green); }
 .toggle-off:hover { background: rgba(63, 185, 80, 0.1); }
+.dry-run-btn { color: var(--accent); border-color: var(--accent); }
+.dry-run-btn:hover:not(:disabled) { background: rgba(88, 166, 255, 0.1); }
+.dry-run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .reset-btn { color: var(--yellow, #d29922); border-color: var(--yellow, #d29922); }
 .reset-btn:hover { background: rgba(210, 153, 34, 0.1); }
 
@@ -496,6 +541,26 @@ function goToRun(runId?: string) {
   font-family: var(--mono);
   font-size: 0.82rem;
   color: var(--red);
+}
+
+.dry-run-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.8rem;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.dry-run-actions {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.8rem;
 }
 
 .tbl { width: 100%; border-collapse: collapse; font-size: 0.85rem; }

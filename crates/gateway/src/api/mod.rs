@@ -35,7 +35,9 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/dashboard", get(dashboard::index))
         .route("/dashboard/context", get(dashboard::context_pack_page))
         // Provider readiness (used by health probes)
-        .route("/v1/models/readiness", get(providers::readiness));
+        .route("/v1/models/readiness", get(providers::readiness))
+        // Health probe (public, no auth)
+        .route("/v1/health", get(admin::health));
 
     let protected = Router::new()
         // Context introspection
@@ -97,6 +99,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/v1/schedules/:id", put(schedules::update_schedule))
         .route("/v1/schedules/:id", delete(schedules::delete_schedule))
         .route("/v1/schedules/:id/run-now", post(schedules::run_schedule_now))
+        .route("/v1/schedules/:id/dry-run", post(schedules::dry_run_schedule))
         .route("/v1/schedules/:id/reset-errors", post(schedules::reset_schedule_errors))
         .route("/v1/schedules/:id/deliveries", get(schedules::list_schedule_deliveries))
         // Deliveries (inbox)
@@ -111,6 +114,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         // Providers / Models
         .route("/v1/models", get(providers::list_providers))
         .route("/v1/models/roles", get(providers::list_roles))
+        // Metrics
+        .route("/v1/metrics", get(admin::metrics))
         // Admin
         .route("/v1/admin/info", get(admin::system_info))
         .route(

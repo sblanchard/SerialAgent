@@ -498,7 +498,18 @@ async fn run_turn_inner(
         // Assemble any tool calls that came through start/delta but not
         // through ToolCallFinished (some providers only use start+delta).
         for (call_id, (name, args_str)) in tc_bufs.drain() {
-            let arguments = serde_json::from_str(&args_str).unwrap_or(Value::String(args_str));
+            let arguments = match serde_json::from_str(&args_str) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        call_id = %call_id,
+                        tool = %name,
+                        error = %e,
+                        "tool call arguments are not valid JSON; wrapping as string"
+                    );
+                    Value::String(args_str)
+                }
+            };
             pending_tool_calls.push(ToolCall {
                 call_id,
                 tool_name: name,
@@ -522,7 +533,10 @@ async fn run_turn_inner(
         // ── Tool dispatch ──────────────────────────────────────────
         messages.push(build_assistant_tool_message(&text_buf, &pending_tool_calls));
 
-        let tc_json = serde_json::to_string(&pending_tool_calls).unwrap_or_default();
+        let tc_json = serde_json::to_string(&pending_tool_calls).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to serialize tool calls for transcript");
+            String::new()
+        });
         persist_transcript(
             &state.transcripts,
             &input.session_id,

@@ -318,6 +318,13 @@ async fn main() -> anyhow::Result<()> {
     // ── CORS layer (config-aware) ────────────────────────────────────
     let cors_layer = build_cors_layer(&config.server.cors);
 
+    // ── Concurrency limit (backpressure protection) ────────────────
+    let max_concurrent = std::env::var("SA_MAX_CONCURRENT_REQUESTS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(256);
+    tracing::info!(max_concurrent, "concurrency limit set");
+
     // ── Router ───────────────────────────────────────────────────────
     // Serve the Vue SPA from apps/dashboard/dist if it exists.
     // The SPA uses hash-based routing so all paths fall back to index.html.
@@ -329,11 +336,13 @@ async fn main() -> anyhow::Result<()> {
         api::router(state.clone())
             .nest_service("/app", spa)
             .layer(cors_layer)
+            .layer(tower::limit::ConcurrencyLimitLayer::new(max_concurrent))
             .with_state(state)
     } else {
         tracing::info!("apps/dashboard/dist not found — SPA not served (run `npm run build` in apps/dashboard)");
         api::router(state.clone())
             .layer(cors_layer)
+            .layer(tower::limit::ConcurrencyLimitLayer::new(max_concurrent))
             .with_state(state)
     };
 

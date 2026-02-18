@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { api, ApiError } from "@/api/client";
 import type { Schedule, CreateScheduleRequest } from "@/api/client";
@@ -12,6 +12,14 @@ const router = useRouter();
 const schedules = ref<Schedule[]>([]);
 const loading = ref(false);
 const error = ref("");
+
+const searchQuery = ref("");
+
+const filteredSchedules = computed(() => {
+  const q = searchQuery.value.toLowerCase().trim();
+  if (!q) return schedules.value;
+  return schedules.value.filter((s) => s.name.toLowerCase().includes(q));
+});
 
 // Create form state
 const showForm = ref(false);
@@ -249,8 +257,14 @@ function goToSchedule(id: string) {
     <!-- Filter bar -->
     <div class="filter-bar">
       <button class="create-btn" @click="openForm">+ Create Schedule</button>
+      <input
+        v-model="searchQuery"
+        class="search-input"
+        type="text"
+        placeholder="Filter by name..."
+      />
       <button class="refresh-btn" @click="load" :disabled="loading">Refresh</button>
-      <span class="total dim">{{ schedules.length }} total</span>
+      <span class="total dim">{{ filteredSchedules.length }} of {{ schedules.length }} total</span>
     </div>
 
     <p v-if="error" class="error">{{ error }}</p>
@@ -356,7 +370,7 @@ function goToSchedule(id: string) {
         </thead>
         <tbody>
           <tr
-            v-for="s in schedules"
+            v-for="s in filteredSchedules"
             :key="s.id"
             class="clickable"
             @click="goToSchedule(s.id)"
@@ -428,6 +442,17 @@ function goToSchedule(id: string) {
 }
 .refresh-btn:hover:not(:disabled) { color: var(--text); border-color: var(--text-dim); }
 .refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.search-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.35rem 0.6rem;
+  border-radius: 4px;
+  font-size: 0.82rem;
+  width: 180px;
+}
+.search-input::placeholder { color: var(--text-dim); }
 
 .total { margin-left: auto; }
 
