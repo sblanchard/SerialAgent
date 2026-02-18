@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod agents;
+pub mod auth;
 pub mod chat;
 pub mod clawhub;
 pub mod context;
@@ -16,14 +17,27 @@ pub mod sessions;
 pub mod skills;
 pub mod tools;
 
+use axum::middleware;
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 
 use crate::state::AppState;
 
 /// Build the full API router.
-pub fn router() -> Router<AppState> {
-    Router::new()
+///
+/// Routes are split into **public** (no auth required) and **protected**
+/// (gated behind the `SA_API_TOKEN` bearer-token middleware).
+///
+/// `state` is needed to wire up the auth middleware at build time.
+pub fn router(state: AppState) -> Router<AppState> {
+    let public = Router::new()
+        // Dashboard (HTML pages)
+        .route("/dashboard", get(dashboard::index))
+        .route("/dashboard/context", get(dashboard::context_pack_page))
+        // Provider readiness (used by health probes)
+        .route("/v1/models/readiness", get(providers::readiness));
+
+    let protected = Router::new()
         // Context introspection
         .route("/v1/context", get(context::get_context))
         .route("/v1/context/assembled", get(context::get_assembled))
@@ -95,7 +109,6 @@ pub fn router() -> Router<AppState> {
         // Providers / Models
         .route("/v1/models", get(providers::list_providers))
         .route("/v1/models/roles", get(providers::list_roles))
-        .route("/v1/models/readiness", get(providers::readiness))
         // Admin
         .route("/v1/admin/info", get(admin::system_info))
         .route(
@@ -129,7 +142,11 @@ pub fn router() -> Router<AppState> {
             "/v1/import/openclaw/staging/:id",
             delete(admin::import_openclaw_delete_staging),
         )
-        // Dashboard
-        .route("/dashboard", get(dashboard::index))
-        .route("/dashboard/context", get(dashboard::context_pack_page))
+        // Apply API auth middleware to all protected routes.
+        .route_layer(middleware::from_fn_with_state(
+            state,
+            auth::require_api_token,
+        ));
+
+    public.merge(protected)
 }

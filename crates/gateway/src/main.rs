@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use tower_http::cors::CorsLayer;
+use axum::http::{HeaderValue, Method};
+use sha2::{Digest, Sha256};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing_subscriber::EnvFilter;
 
@@ -162,6 +164,34 @@ async fn main() -> anyhow::Result<()> {
     );
     tracing::info!("delivery store ready");
 
+    // ── API token (read once, hash for constant-time comparison) ────
+    let api_token_hash = {
+        let env_var = &config.server.api_token_env;
+        match std::env::var(env_var) {
+            Ok(token) if !token.is_empty() => {
+                tracing::info!(env_var = %env_var, "API bearer-token auth enabled");
+                Some(Sha256::digest(token.as_bytes()).to_vec())
+            }
+            _ => {
+                tracing::warn!(
+                    env_var = %env_var,
+                    "API bearer-token auth DISABLED — set {env_var} to enable"
+                );
+                None
+            }
+        }
+    };
+
+    // ── Compile exec denied-patterns at startup ──────────────────────
+    let denied_command_set = Arc::new(
+        regex::RegexSet::new(&config.tools.exec_security.denied_patterns)
+            .context("invalid regex in tools.exec_security.denied_patterns")?,
+    );
+    tracing::info!(
+        patterns = config.tools.exec_security.denied_patterns.len(),
+        "exec denied-patterns compiled"
+    );
+
     // ── App state (without agents — needed for AgentManager init) ───
     let mut state = AppState {
         config: config.clone(),
@@ -188,6 +218,8 @@ async fn main() -> anyhow::Result<()> {
         import_root,
         user_facts_cache: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
         tool_defs_cache: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
+        api_token_hash,
+        denied_command_set,
     };
 
     // ── Agent manager (sub-agents) ──────────────────────────────────
@@ -281,6 +313,9 @@ async fn main() -> anyhow::Result<()> {
     }
     tracing::info!("schedule runner started (30s tick)");
 
+    // ── CORS layer (config-aware) ────────────────────────────────────
+    let cors_layer = build_cors_layer(&config.server.cors);
+
     // ── Router ───────────────────────────────────────────────────────
     // Serve the Vue SPA from apps/dashboard/dist if it exists.
     // The SPA uses hash-based routing so all paths fall back to index.html.
@@ -289,14 +324,14 @@ async fn main() -> anyhow::Result<()> {
         let index_html = dashboard_dist.join("index.html");
         let spa = ServeDir::new(dashboard_dist)
             .not_found_service(ServeFile::new(index_html));
-        api::router()
+        api::router(state.clone())
             .nest_service("/app", spa)
-            .layer(CorsLayer::permissive())
+            .layer(cors_layer)
             .with_state(state)
     } else {
         tracing::info!("apps/dashboard/dist not found — SPA not served (run `npm run build` in apps/dashboard)");
-        api::router()
-            .layer(CorsLayer::permissive())
+        api::router(state.clone())
+            .layer(cors_layer)
             .with_state(state)
     };
 
@@ -313,4 +348,78 @@ async fn main() -> anyhow::Result<()> {
         .context("axum server error")?;
 
     Ok(())
+}
+
+/// Build a [`CorsLayer`] from the configured allowed origins.
+///
+/// Origins may contain a trailing `*` wildcard for the port segment
+/// (e.g. `http://localhost:*`). These are expanded into a predicate that
+/// matches any port on that host.  A literal `"*"` allows all origins
+/// (not recommended for production).
+fn build_cors_layer(cors: &sa_domain::config::CorsConfig) -> CorsLayer {
+    use axum::http::header;
+
+    // Special case: if the only entry is "*", use fully permissive CORS.
+    // Note: allow_credentials is incompatible with wildcard origins.
+    if cors.allowed_origins.len() == 1 && cors.allowed_origins[0] == "*" {
+        tracing::warn!("CORS configured with wildcard \"*\" — all origins allowed");
+        return CorsLayer::new()
+            .allow_origin(tower_http::cors::Any)
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
+            .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
+    }
+
+    // Partition into exact origins and wildcard-port patterns.
+    let mut exact: Vec<HeaderValue> = Vec::new();
+    let mut wildcard_prefixes: Vec<String> = Vec::new();
+
+    for origin in &cors.allowed_origins {
+        if origin.ends_with(":*") {
+            // e.g. "http://localhost:*" → prefix "http://localhost:"
+            let prefix = origin.trim_end_matches('*').to_owned();
+            wildcard_prefixes.push(prefix);
+        } else if let Ok(hv) = origin.parse::<HeaderValue>() {
+            exact.push(hv);
+        } else {
+            tracing::warn!(origin = %origin, "invalid CORS origin, skipping");
+        }
+    }
+
+    let allow_origin = if wildcard_prefixes.is_empty() {
+        AllowOrigin::list(exact)
+    } else {
+        AllowOrigin::predicate(move |origin, _| {
+            let origin_str = origin.to_str().unwrap_or("");
+            // Check exact matches first.
+            if exact.iter().any(|e| e.as_bytes() == origin.as_bytes()) {
+                return true;
+            }
+            // Check wildcard-port patterns — validate remainder is digits only
+            // to prevent prefix-based bypass (e.g. "http://localhost:3000.evil.com").
+            wildcard_prefixes.iter().any(|prefix| {
+                origin_str
+                    .strip_prefix(prefix.as_str())
+                    .map(|port| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
+                    .unwrap_or(false)
+            })
+        })
+    };
+
+    CorsLayer::new()
+        .allow_origin(allow_origin)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+        .allow_credentials(true)
 }

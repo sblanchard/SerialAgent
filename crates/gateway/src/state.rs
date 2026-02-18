@@ -76,4 +76,9 @@ pub struct AppState {
     /// Cached tool definitions keyed on policy fingerprint; invalidated by
     /// node registry generation counter.
     pub tool_defs_cache: Arc<RwLock<HashMap<String, CachedToolDefs>>>,
+    /// SHA-256 hash of the API bearer token (read once at startup).
+    /// `None` = dev mode (no auth enforced).
+    pub api_token_hash: Option<Vec<u8>>,
+    /// Precompiled exec denied-pattern regexes (compiled once at startup).
+    pub denied_command_set: Arc<regex::RegexSet>,
 }
