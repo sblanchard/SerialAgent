@@ -1,6 +1,10 @@
 //! Tool registry for the runtime — builds tool definitions for the LLM and
 //! dispatches tool calls to local handlers, connected nodes, or stubs.
 
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use serde::Deserialize;
 use serde_json::Value;
 
 use sa_domain::config::ToolPolicy;
@@ -37,16 +41,17 @@ fn policy_cache_key(tool_policy: Option<&ToolPolicy>) -> String {
 pub fn build_tool_definitions(
     state: &AppState,
     tool_policy: Option<&ToolPolicy>,
-) -> Vec<ToolDefinition> {
+) -> Arc<Vec<ToolDefinition>> {
     let current_gen = state.nodes.generation();
     let key = policy_cache_key(tool_policy);
 
-    // Check cache.
+    // Check cache — returns a cheap Arc::clone instead of deep-cloning
+    // the entire Vec<ToolDefinition>.
     {
         let cache = state.tool_defs_cache.read();
         if let Some(cached) = cache.get(&key) {
             if cached.generation == current_gen {
-                return cached.defs.clone();
+                return Arc::clone(&cached.defs);
             }
         }
     }
@@ -212,7 +217,8 @@ pub fn build_tool_definitions(
 
     // ── Node-advertised tools ─────────────────────────────────────
     // Add definitions for capabilities advertised by connected nodes.
-    for node_info in state.nodes.list() {
+    let node_list = state.nodes.list();
+    for node_info in node_list.iter() {
         for cap in &node_info.capabilities {
             // Don't duplicate tools we already defined.
             if defs.iter().any(|d| d.name == *cap) {
@@ -235,14 +241,15 @@ pub fn build_tool_definitions(
         defs.retain(|d| policy.allows(&d.name));
     }
 
-    // Populate cache (clear stale entries from old generations).
+    // Wrap in Arc and populate cache (clear stale entries from old generations).
+    let defs = Arc::new(defs);
     {
         let mut cache = state.tool_defs_cache.write();
         cache.retain(|_, v| v.generation == current_gen);
         cache.insert(
             key,
             crate::state::CachedToolDefs {
-                defs: defs.clone(),
+                defs: Arc::clone(&defs),
                 generation: current_gen,
                 policy_key: policy_cache_key(tool_policy),
             },
@@ -254,7 +261,7 @@ pub fn build_tool_definitions(
 
 /// Collect all base tool names for effective_tool_count calculations.
 pub fn all_base_tool_names(state: &AppState) -> Vec<String> {
-    let mut names = vec![
+    let mut names: HashSet<String> = HashSet::from([
         "exec".into(),
         "process".into(),
         "skill.read_doc".into(),
@@ -265,15 +272,14 @@ pub fn all_base_tool_names(state: &AppState) -> Vec<String> {
         "http.request".into(),
         "agent.run".into(),
         "agent.list".into(),
-    ];
-    for node_info in state.nodes.list() {
+    ]);
+    let node_list = state.nodes.list();
+    for node_info in node_list.iter() {
         for cap in &node_info.capabilities {
-            if !names.contains(cap) {
-                names.push(cap.clone());
-            }
+            names.insert(cap.clone());
         }
     }
-    names
+    names.into_iter().collect()
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -334,7 +340,7 @@ pub async fn dispatch_tool(
 }
 
 async fn dispatch_exec(state: &AppState, arguments: &Value) -> (String, bool) {
-    let req: ExecRequest = match serde_json::from_value(arguments.clone()) {
+    let req: ExecRequest = match ExecRequest::deserialize(arguments) {
         Ok(r) => r,
         Err(e) => return (format!("invalid exec arguments: {e}"), true),
     };
@@ -359,7 +365,7 @@ async fn dispatch_exec(state: &AppState, arguments: &Value) -> (String, bool) {
 }
 
 async fn dispatch_process(state: &AppState, arguments: &Value) -> (String, bool) {
-    let req: ProcessRequest = match serde_json::from_value(arguments.clone()) {
+    let req: ProcessRequest = match ProcessRequest::deserialize(arguments) {
         Ok(r) => r,
         Err(e) => return (format!("invalid process arguments: {e}"), true),
     };

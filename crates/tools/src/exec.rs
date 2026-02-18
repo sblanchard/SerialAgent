@@ -11,7 +11,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 
 use crate::manager::{
     OutputBuffer, ProcessManager, ProcessSession, ProcessStatus, StdinMessage,
@@ -55,6 +55,25 @@ pub struct ExecResponse {
 // Exec logic
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Check if an environment variable name is dangerous to override.
+fn is_dangerous_env_var(name: &str) -> bool {
+    const BLOCKED: &[&str] = &[
+        "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT",
+        "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
+        "PATH", "HOME", "USER", "SHELL",
+        "SSH_AUTH_SOCK", "SSH_AGENT_PID",
+        "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME",
+        "NODE_PATH", "NODE_OPTIONS",
+        "RUBYLIB", "RUBYOPT",
+        "PERL5LIB", "PERL5OPT",
+        "CLASSPATH",
+        "BASH_ENV", "ENV", "CDPATH",
+        "IFS",
+    ];
+    let upper = name.to_ascii_uppercase();
+    BLOCKED.contains(&upper.as_str())
+}
+
 /// Execute a command, returning either the completed output (foreground)
 /// or a session ID (background / auto-backgrounded).
 pub async fn exec(
@@ -82,6 +101,15 @@ pub async fn exec(
     }
     if let Some(ref env) = req.env {
         for (k, v) in env {
+            if is_dangerous_env_var(k) {
+                return ExecResponse {
+                    status: ProcessStatus::Failed,
+                    exit_code: None,
+                    output: Some(format!("environment variable '{k}' is blocked by security policy")),
+                    session_id: None,
+                    tail: None,
+                };
+            }
             cmd.env(k, v);
         }
     }

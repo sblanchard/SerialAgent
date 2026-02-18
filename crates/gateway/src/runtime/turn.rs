@@ -38,7 +38,7 @@ const MAX_TOOL_LOOPS: usize = 25;
 pub(super) struct TurnContext {
     provider: Arc<dyn sa_providers::LlmProvider>,
     messages: Vec<Message>,
-    tool_defs: Vec<ToolDefinition>,
+    tool_defs: Arc<Vec<ToolDefinition>>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -400,7 +400,7 @@ async fn run_turn_inner(
         // Call LLM (streaming).
         let req = sa_providers::ChatRequest {
             messages: messages.clone(),
-            tools: tool_defs.clone(),
+            tools: (*tool_defs).clone(),
             temperature: Some(0.2),
             max_tokens: None,
             json_mode: false,

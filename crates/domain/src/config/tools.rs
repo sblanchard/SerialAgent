@@ -95,8 +95,30 @@ fn d_true() -> bool {
 }
 fn d_denied_patterns() -> Vec<String> {
     vec![
+        // Destructive filesystem operations (multiple flag formats)
+        r"rm\s+(-[a-zA-Z]*[rR][a-zA-Z]*\s+|--recursive\s+).*(/|~)".into(),
         r"rm\s+-rf\s+/".into(),
         r"mkfs\.".into(),
         r"dd\s+if=.+of=/dev/".into(),
+        // System control
+        r"\b(shutdown|reboot|poweroff|halt|init\s+[0-6])\b".into(),
+        // Permission escalation
+        r"chmod\s+(-[a-zA-Z]*\s+)*(0?777|a\+rwx)\s+/".into(),
+        r"chown\s+(-[a-zA-Z]*\s+)*root[:\s]".into(),
+        // Remote code execution pipes
+        r"curl\s+.*\|\s*(ba)?sh".into(),
+        r"wget\s+.*\|\s*(ba)?sh".into(),
+        r"curl\s+.*\|\s*python".into(),
+        r"wget\s+.*\|\s*python".into(),
+        // Fork bomb patterns
+        r":\(\)\s*\{.*\}".into(),
+        // Reverse shells
+        r"/dev/tcp/".into(),
+        r"nc\s+(-[a-zA-Z]*\s+)*-e".into(),
+        r"ncat\s+(-[a-zA-Z]*\s+)*-e".into(),
+        // Disk/partition destruction
+        r"\bfdisk\s+/dev/".into(),
+        r"\bparted\s+/dev/".into(),
+        r"\bshred\s+".into(),
     ]
 }

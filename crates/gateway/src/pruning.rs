@@ -38,13 +38,21 @@ pub fn prune_messages(
 
     for (i, msg) in messages.iter().enumerate() {
         if msg.role != Role::Tool || i >= cutoff {
-            // Not a tool message, or within the protection window.
+            // Not a tool message, or within the protection window — no
+            // modification needed, so clone only when necessary.
             result.push(msg.clone());
             continue;
         }
 
         // Check if this tool message contains an image (skip pruning if so).
         if contains_image(&msg.content) {
+            result.push(msg.clone());
+            continue;
+        }
+
+        // Check if any tool result content exceeds the soft threshold;
+        // if not, skip the clone + rebuild entirely.
+        if !needs_pruning(&msg.content, config.min_prunable_chars, soft_threshold) {
             result.push(msg.clone());
             continue;
         }
@@ -85,6 +93,20 @@ fn find_protection_cutoff(messages: &[Message], keep_last_assistants: usize) -> 
 
     // Not enough assistant messages to protect — don't prune anything.
     messages.len()
+}
+
+/// Check if any text in a tool message exceeds the pruning threshold.
+fn needs_pruning(content: &MessageContent, min_chars: usize, soft_threshold: usize) -> bool {
+    match content {
+        MessageContent::Text(text) => text.len() >= min_chars && text.len() >= soft_threshold,
+        MessageContent::Parts(parts) => parts.iter().any(|p| {
+            if let ContentPart::ToolResult { content, .. } = p {
+                content.len() >= min_chars && content.len() >= soft_threshold
+            } else {
+                false
+            }
+        }),
+    }
 }
 
 /// Check if a message content contains an image part.

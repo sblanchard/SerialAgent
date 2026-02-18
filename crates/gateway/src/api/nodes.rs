@@ -9,7 +9,7 @@ use crate::state::AppState;
 pub async fn list_nodes(State(state): State<AppState>) -> impl IntoResponse {
     let nodes = state.nodes.list();
     Json(serde_json::json!({
-        "nodes": nodes,
+        "nodes": *nodes,
         "count": nodes.len(),
     }))
 }

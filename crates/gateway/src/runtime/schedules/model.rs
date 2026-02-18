@@ -13,36 +13,30 @@ use uuid::Uuid;
 /// What happens when the runner discovers a missed window.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum MissedPolicy {
     /// Drop the missed run silently.
     Skip,
     /// Fire exactly once, no matter how many windows were missed.
+    #[default]
     RunOnce,
     /// Fire once for every missed window (with back-off cap).
     CatchUp,
 }
 
-impl Default for MissedPolicy {
-    fn default() -> Self {
-        Self::RunOnce
-    }
-}
 
 /// How to compile multi-source content into a single digest.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DigestMode {
     /// Include full content from every source every time.
+    #[default]
     Full,
     /// Only include sources whose content changed since last run.
     ChangesOnly,
 }
 
-impl Default for DigestMode {
-    fn default() -> Self {
-        Self::Full
-    }
-}
 
 /// Per-schedule HTTP fetch configuration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -237,7 +231,7 @@ pub enum DeliveryTarget {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ScheduleEvent {
-    ScheduleUpdated { schedule: ScheduleView },
+    ScheduleUpdated { schedule: Box<ScheduleView> },
     ScheduleRunStarted { schedule_id: Uuid, run_id: Uuid },
     ScheduleRunCompleted { schedule_id: Uuid, run_id: Uuid },
 }

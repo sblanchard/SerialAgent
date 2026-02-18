@@ -82,28 +82,26 @@ pub(super) async fn scan_inventory(
         let pattern = extracted_root.join("workspace-*");
         let pattern_str = pattern.to_string_lossy().to_string();
         if let Ok(paths) = glob(&pattern_str) {
-            for m in paths {
-                if let Ok(path) = m {
-                    if path.is_dir() {
-                        let rel = path
-                            .file_name()
-                            .unwrap_or_else(|| OsStr::new("workspace-x"));
-                        let rel = rel.to_string_lossy().to_string();
+            for path in paths.flatten() {
+                if path.is_dir() {
+                    let rel = path
+                        .file_name()
+                        .unwrap_or_else(|| OsStr::new("workspace-x"));
+                    let rel = rel.to_string_lossy().to_string();
 
-                        // Validate workspace name
-                        if sanitize_ident(&rel).is_err() {
-                            tracing::warn!(name = %rel, "skipping workspace with invalid name");
-                            continue;
-                        }
-
-                        let (files, bytes) = dir_stats(&path).await?;
-                        inv.workspaces.push(WorkspaceInventory {
-                            name: rel.clone(),
-                            rel_path: rel,
-                            approx_files: files,
-                            approx_bytes: bytes,
-                        });
+                    // Validate workspace name
+                    if sanitize_ident(&rel).is_err() {
+                        tracing::warn!(name = %rel, "skipping workspace with invalid name");
+                        continue;
                     }
+
+                    let (files, bytes) = dir_stats(&path).await?;
+                    inv.workspaces.push(WorkspaceInventory {
+                        name: rel.clone(),
+                        rel_path: rel,
+                        approx_files: files,
+                        approx_bytes: bytes,
+                    });
                 }
             }
         }

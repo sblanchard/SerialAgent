@@ -3,6 +3,14 @@ use axum::response::{Html, IntoResponse};
 
 use crate::state::AppState;
 
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 pub async fn index(State(state): State<AppState>) -> impl IntoResponse {
     let present_files = state.workspace.list_present_files();
     let skills = state.skills.list();
@@ -10,13 +18,13 @@ pub async fn index(State(state): State<AppState>) -> impl IntoResponse {
 
     let files_html: String = present_files
         .iter()
-        .map(|f| format!("<li>{f}</li>"))
+        .map(|f| format!("<li>{}</li>", html_escape(f)))
         .collect::<Vec<_>>()
         .join("\n");
 
     let skills_html: String = skills
         .iter()
-        .map(|s| format!("<li><strong>{}</strong> — {}</li>", s.name, s.description))
+        .map(|s| format!("<li><strong>{}</strong> — {}</li>", html_escape(&s.name), html_escape(&s.description)))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -24,7 +32,7 @@ pub async fn index(State(state): State<AppState>) -> impl IntoResponse {
         .llm
         .list_providers()
         .iter()
-        .map(|p| format!("<li>{p}</li>"))
+        .map(|p| format!("<li>{}</li>", html_escape(p)))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -33,7 +41,7 @@ pub async fn index(State(state): State<AppState>) -> impl IntoResponse {
     } else {
         bootstrap_done
             .iter()
-            .map(|w| format!("<li>{w}</li>"))
+            .map(|w| format!("<li>{}</li>", html_escape(w)))
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -105,9 +113,9 @@ pub async fn index(State(state): State<AppState>) -> impl IntoResponse {
 </div>
 </body>
 </html>"#,
-        host = state.config.server.host,
+        host = html_escape(&state.config.server.host),
         port = state.config.server.port,
-        sm_url = state.config.serial_memory.base_url,
+        sm_url = html_escape(&state.config.serial_memory.base_url),
         skill_count = skills.len(),
     );
 
@@ -124,7 +132,7 @@ pub async fn context_pack_page(State(state): State<AppState>) -> impl IntoRespon
                 Some(h) => (h.sha256[..12].to_string(), h.size.to_string()),
                 None => ("n/a".into(), "n/a".into()),
             };
-            format!("<tr><td>{f}</td><td><code>{sha}…</code></td><td>{size}</td></tr>")
+            format!("<tr><td>{}</td><td><code>{}…</code></td><td>{}</td></tr>", html_escape(f), html_escape(&sha), html_escape(&size))
         })
         .collect::<Vec<_>>()
         .join("\n");

@@ -115,11 +115,10 @@ fn copy_dir_recursive_skip_existing<'a>(
             let to = dst.join(e.file_name());
             if ft.is_dir() {
                 copy_dir_recursive_skip_existing(&from, &to).await?;
-            } else if ft.is_file() {
-                if !to.exists() {
+            } else if ft.is_file()
+                && !to.exists() {
                     tokio::fs::copy(&from, &to).await?;
                 }
-            }
             // Skip symlinks and other special files during copy
         }
         Ok(())

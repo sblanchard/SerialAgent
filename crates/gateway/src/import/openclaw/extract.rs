@@ -242,14 +242,13 @@ fn validate_tgz_entries(tgz_path: &Path) -> Result<(), OpenClawImportError> {
         let (normalized_key, _) = normalize_tar_path(&path)?;
 
         // Duplicate file detection (dirs may repeat, that's OK)
-        if !matches!(entry_type, tar::EntryType::Directory) {
-            if !seen_file_paths.insert(normalized_key.clone()) {
+        if !matches!(entry_type, tar::EntryType::Directory)
+            && !seen_file_paths.insert(normalized_key.clone()) {
                 return Err(OpenClawImportError::ArchiveInvalid(format!(
                     "duplicate file path in archive (after normalization): {}",
                     path.display()
                 )));
             }
-        }
 
         // ── Size limits ──
         let entry_size = entry.header().size().unwrap_or(0);

@@ -327,7 +327,7 @@ fn parse_sse_data(data: &str) -> Option<Result<StreamEvent>> {
         return None;
     }
 
-    let Some(choice) = choice else { return None; };
+    let choice = choice?;
     let delta = choice.get("delta").unwrap_or(&Value::Null);
 
     // Finish reason.
@@ -409,7 +409,7 @@ fn parse_sse_data_vec(data: &str) -> Vec<Result<StreamEvent>> {
 impl LlmProvider for OpenAiCompatProvider {
     async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse> {
         let url = format!("{}/chat/completions", self.base_url);
-        let body = self.build_chat_body(&req, false);
+        let body = self.build_chat_body(req, false);
 
         tracing::debug!(provider = %self.id, url = %url, "openai_compat chat request");
 
@@ -439,7 +439,7 @@ impl LlmProvider for OpenAiCompatProvider {
         req: &ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamEvent>>> {
         let url = format!("{}/chat/completions", self.base_url);
-        let body = self.build_chat_body(&req, true);
+        let body = self.build_chat_body(req, true);
         let provider_id = self.id.clone();
 
         tracing::debug!(provider = %self.id, url = %url, "openai_compat stream request");

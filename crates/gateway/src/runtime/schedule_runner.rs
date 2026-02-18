@@ -23,6 +23,12 @@ pub struct ConcurrencyGuard {
     counts: RwLock<HashMap<Uuid, Arc<AtomicU32>>>,
 }
 
+impl Default for ConcurrencyGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConcurrencyGuard {
     pub fn new() -> Self {
         Self {
@@ -125,6 +131,12 @@ pub fn runs_to_fire(
 
 pub struct ScheduleRunner {
     concurrency: ConcurrencyGuard,
+}
+
+impl Default for ScheduleRunner {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ScheduleRunner {

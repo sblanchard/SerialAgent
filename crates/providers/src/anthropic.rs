@@ -507,7 +507,7 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Vec<Result<Stream
 impl LlmProvider for AnthropicProvider {
     async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse> {
         let url = format!("{}/v1/messages", self.base_url);
-        let body = self.build_messages_body(&req, false);
+        let body = self.build_messages_body(req, false);
 
         tracing::debug!(provider = %self.id, url = %url, "anthropic chat request");
 
@@ -537,7 +537,7 @@ impl LlmProvider for AnthropicProvider {
         req: &ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamEvent>>> {
         let url = format!("{}/v1/messages", self.base_url);
-        let body = self.build_messages_body(&req, true);
+        let body = self.build_messages_body(req, true);
         let provider_id = self.id.clone();
 
         tracing::debug!(provider = %self.id, url = %url, "anthropic stream request");

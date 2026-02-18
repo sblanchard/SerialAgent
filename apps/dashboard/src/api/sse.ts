@@ -1,4 +1,6 @@
-/** Lightweight SSE helper for streaming run events. */
+/** Lightweight SSE helper for streaming run events with auth support. */
+
+import { buildHeaders } from "./client";
 
 export interface SseOptions<T> {
   onEvent: (eventType: string, data: T) => void;
@@ -7,72 +9,68 @@ export interface SseOptions<T> {
 }
 
 /**
- * Subscribe to an SSE endpoint. Returns a cleanup function.
- *
- * Usage:
- *   const unsub = subscribeSSE<RunEvent>("/v1/runs/abc/events", {
- *     onEvent(type, data) { ... },
- *     onError(e) { ... },
- *     onClose() { ... },
- *   });
- *   // Later:
- *   unsub();
+ * Subscribe to an SSE endpoint using fetch (supports Authorization headers).
+ * Returns a cleanup function.
  */
 export function subscribeSSE<T = unknown>(
   path: string,
   opts: SseOptions<T>,
 ): () => void {
-  const es = new EventSource(path);
+  const controller = new AbortController();
 
-  // Generic message handler (events without a named type)
-  es.onmessage = (ev) => {
+  (async () => {
     try {
-      const data = JSON.parse(ev.data) as T;
-      opts.onEvent("message", data);
-    } catch {
-      opts.onEvent("message", ev.data as unknown as T);
-    }
-  };
+      const res = await fetch(path, {
+        headers: buildHeaders(),
+        signal: controller.signal,
+      });
 
-  // Named event types we care about
-  const eventTypes = [
-    "run.status",
-    "run.snapshot",
-    "node.started",
-    "node.completed",
-    "node.failed",
-    "log",
-    "usage",
-    "warning",
-    "error",
-    // Chat/turn events
-    "assistant_delta",
-    "tool_call",
-    "tool_result",
-    "final",
-    "stopped",
-  ];
-
-  for (const type of eventTypes) {
-    es.addEventListener(type, (ev: MessageEvent) => {
-      try {
-        const data = JSON.parse(ev.data) as T;
-        opts.onEvent(type, data);
-      } catch {
-        opts.onEvent(type, ev.data as unknown as T);
+      if (!res.ok || !res.body) {
+        opts.onError?.(`SSE connection failed: ${res.status}`);
+        opts.onClose?.();
+        return;
       }
-    });
-  }
 
-  es.onerror = (ev) => {
-    if (es.readyState === EventSource.CLOSED) {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let currentEventType = "message";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (line.startsWith("event:")) {
+            currentEventType = line.slice(6).trim();
+          } else if (line.startsWith("data:")) {
+            const raw = line.slice(5).trim();
+            try {
+              const data = JSON.parse(raw) as T;
+              opts.onEvent(currentEventType, data);
+            } catch {
+              opts.onEvent(currentEventType, raw as unknown as T);
+            }
+            currentEventType = "message";
+          } else if (line === "") {
+            currentEventType = "message";
+          }
+        }
+      }
+
       opts.onClose?.();
-    } else {
-      opts.onError?.(ev);
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      opts.onError?.(String(err));
+      opts.onClose?.();
     }
-  };
+  })();
 
   return () => {
-    es.close();
+    controller.abort();
   };
 }
