@@ -287,11 +287,19 @@ async fn finalize_run_success(
     );
 
     // ── Finalize run (success) ───────────────────────────
+    let pricing_map = &state.config.llm.pricing;
     state.run_store.update(&run_id, |r| {
         r.input_tokens = total_usage.prompt_tokens;
         r.output_tokens = total_usage.completion_tokens;
         r.total_tokens = total_usage.total_tokens;
         r.output_preview = Some(truncate_str(text_buf, 200));
+        // Compute estimated cost from per-model pricing config.
+        if let Some(model_name) = r.model.as_deref() {
+            if let Some(pricing) = pricing_map.get(model_name) {
+                r.estimated_cost_usd =
+                    pricing.estimate_cost(total_usage.prompt_tokens, total_usage.completion_tokens);
+            }
+        }
         r.finish(runs::RunStatus::Completed);
     });
     if let Some(run) = state.run_store.get(&run_id) {
