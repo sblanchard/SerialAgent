@@ -55,8 +55,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/v1/memory/ingest", post(memory::ingest))
         .route("/v1/memory/about", get(memory::about_user))
         .route("/v1/memory/health", get(memory::health))
-        // NOTE: PUT/DELETE /v1/memory/:id planned but not yet implemented.
-        // Will be added when SerialMemory supports PATCH/DELETE endpoints.
+        .route("/v1/memory/:id", put(memory::update_entry))
+        .route("/v1/memory/:id", delete(memory::delete_entry))
         // Legacy session proxy (SerialMemory)
         .route("/v1/session/init", post(memory::init_session))
         .route("/v1/session/end", post(memory::end_session))
