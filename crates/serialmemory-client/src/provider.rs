@@ -44,4 +44,10 @@ pub trait SerialMemoryProvider: Send + Sync {
 
     /// Health check (GET /admin/health + GET /admin/status).
     async fn health(&self) -> Result<serde_json::Value>;
+
+    /// Update an existing memory (PATCH /api/memories/{id}).
+    async fn update_memory(&self, id: &str, content: &str) -> Result<serde_json::Value>;
+
+    /// Delete a memory (DELETE /api/memories/{id}).
+    async fn delete_memory(&self, id: &str) -> Result<()>;
 }

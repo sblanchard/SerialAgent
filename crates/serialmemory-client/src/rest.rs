@@ -282,6 +282,28 @@ impl SerialMemoryProvider for RestSerialMemoryClient {
         })
     }
 
+    async fn update_memory(&self, id: &str, content: &str) -> Result<serde_json::Value> {
+        let url = self.url(&format!("/api/memories/{id}"));
+        let endpoint = format!("PATCH /api/memories/{id}");
+        let body = serde_json::json!({ "content": content });
+        let resp = self
+            .execute_with_retry(&endpoint, || self.http.patch(&url).json(&body))
+            .await?;
+
+        let text = resp.text().await.map_err(from_reqwest)?;
+        serde_json::from_str(&text).map_err(|e| {
+            Error::SerialMemory(format!("failed to parse update_memory response: {e}: {text}"))
+        })
+    }
+
+    async fn delete_memory(&self, id: &str) -> Result<()> {
+        let url = self.url(&format!("/api/memories/{id}"));
+        let endpoint = format!("DELETE /api/memories/{id}");
+        self.execute_with_retry(&endpoint, || self.http.delete(&url))
+            .await?;
+        Ok(())
+    }
+
     async fn health(&self) -> Result<serde_json::Value> {
         let status_url = self.url("/admin/status");
         let health_url = self.url("/admin/health");
