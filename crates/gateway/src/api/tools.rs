@@ -1,12 +1,15 @@
-//! Tools API endpoints (exec / process / invoke).
+//! Tools API endpoints (exec / process / invoke / approval).
 //!
-//! - `POST /v1/tools/exec`    — spawn a command (foreground or background)
-//! - `POST /v1/tools/process` — manage background process sessions
-//! - `POST /v1/tools/invoke`  — generic tool dispatch (dashboard "Tool Ping")
+//! - `POST /v1/tools/exec`             — spawn a command (foreground or background)
+//! - `POST /v1/tools/process`          — manage background process sessions
+//! - `POST /v1/tools/invoke`           — generic tool dispatch (dashboard "Tool Ping")
+//! - `POST /v1/tools/exec/approve/:id` — approve a pending exec command
+//! - `POST /v1/tools/exec/deny/:id`    — deny a pending exec command
+//! - `GET  /v1/tools/exec/pending`     — list pending exec approvals
 
 use std::time::Duration;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use serde::Deserialize;
@@ -168,5 +171,87 @@ pub async fn invoke_tool(
             "duration_ms": duration_ms,
         }))
         .into_response()
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /v1/tools/exec/pending
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// List all pending exec approval requests.
+pub async fn list_pending_approvals(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let pending = state.approval_store.list_pending();
+    Json(serde_json::json!({
+        "pending": pending,
+        "count": pending.len(),
+    }))
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// POST /v1/tools/exec/approve/:id
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Approve a pending exec command, unblocking its execution.
+pub async fn approve_exec(
+    State(state): State<AppState>,
+    Path(id): Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    if state.approval_store.approve(&id) {
+        tracing::info!(approval_id = %id, "exec approval granted via API");
+        Json(serde_json::json!({
+            "ok": true,
+            "approval_id": id,
+            "decision": "approved",
+        }))
+        .into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": format!("no pending approval with id {id}"),
+            })),
+        )
+            .into_response()
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// POST /v1/tools/exec/deny/:id
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Optional JSON body for deny requests.
+#[derive(Debug, Deserialize, Default)]
+pub struct DenyBody {
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Deny a pending exec command, preventing its execution.
+pub async fn deny_exec(
+    State(state): State<AppState>,
+    Path(id): Path<uuid::Uuid>,
+    body: Option<Json<DenyBody>>,
+) -> impl IntoResponse {
+    let reason = body.and_then(|b| b.reason.clone());
+    if state.approval_store.deny(&id, reason) {
+        tracing::info!(approval_id = %id, "exec approval denied via API");
+        Json(serde_json::json!({
+            "ok": true,
+            "approval_id": id,
+            "decision": "denied",
+        }))
+        .into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": format!("no pending approval with id {id}"),
+            })),
+        )
+            .into_response()
     }
 }

@@ -163,6 +163,13 @@ pub enum RunEvent {
     Log { run_id: Uuid, level: String, message: String },
     #[serde(rename = "usage")]
     Usage { run_id: Uuid, input_tokens: u32, output_tokens: u32, total_tokens: u32 },
+    /// Emitted when a command requires human approval before execution.
+    #[serde(rename = "exec.approval_required")]
+    ExecApprovalRequired {
+        approval_id: Uuid,
+        command: String,
+        session_key: String,
+    },
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

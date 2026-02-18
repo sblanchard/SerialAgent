@@ -5,6 +5,7 @@
 //! stream of [`TurnEvent`]s suitable for SSE or non-streaming aggregation.
 
 pub mod agent;
+pub mod approval;
 pub mod cancel;
 pub mod compact;
 pub mod deliveries;

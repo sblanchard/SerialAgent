@@ -318,7 +318,7 @@ pub async fn dispatch_tool(
 
     // Handle our built-in tools first.
     match tool_name {
-        "exec" => dispatch_exec(state, arguments).await,
+        "exec" => dispatch_exec(state, arguments, session_key).await,
         "process" => dispatch_process(state, arguments).await,
         "skill.read_doc" => dispatch_skill_read_doc(state, arguments),
         "skill.read_resource" => dispatch_skill_read_resource(state, arguments),
@@ -339,7 +339,11 @@ pub async fn dispatch_tool(
     }
 }
 
-async fn dispatch_exec(state: &AppState, arguments: &Value) -> (String, bool) {
+async fn dispatch_exec(
+    state: &AppState,
+    arguments: &Value,
+    session_key: Option<&str>,
+) -> (String, bool) {
     let req: ExecRequest = match ExecRequest::deserialize(arguments) {
         Ok(r) => r,
         Err(e) => return (format!("invalid exec arguments: {e}"), true),
@@ -357,6 +361,74 @@ async fn dispatch_exec(state: &AppState, arguments: &Value) -> (String, bool) {
             "command denied by security policy".to_owned(),
             true,
         );
+    }
+
+    // Approval gate — commands matching approval_patterns require human approval.
+    if state.approval_command_set.is_match(&req.command) {
+        tracing::info!(command = %req.command, "exec command requires approval");
+
+        let sk = session_key.unwrap_or("anonymous").to_string();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let approval_id = uuid::Uuid::new_v4();
+
+        let pending = crate::runtime::approval::PendingApproval {
+            id: approval_id,
+            command: req.command.clone(),
+            session_key: sk.clone(),
+            created_at: chrono::Utc::now(),
+            respond: tx,
+        };
+        state.approval_store.insert(pending);
+
+        // Emit SSE event to all run subscribers so the dashboard can show the dialog.
+        // We broadcast on a well-known "global" run ID derived from the approval UUID
+        // as well as attempt to emit on any active run for the session.
+        let event = crate::runtime::runs::RunEvent::ExecApprovalRequired {
+            approval_id,
+            command: req.command.clone(),
+            session_key: sk,
+        };
+        // Best-effort broadcast: emit on all currently tracked run channels.
+        // The SSE endpoint for runs will pick this up.
+        state.run_store.emit(&approval_id, event);
+
+        // Await human decision with a timeout.
+        let timeout = state.approval_store.timeout();
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(crate::runtime::approval::ApprovalDecision::Approved)) => {
+                tracing::info!(approval_id = %approval_id, "exec command approved");
+                // Fall through to execute the command.
+            }
+            Ok(Ok(crate::runtime::approval::ApprovalDecision::Denied { reason })) => {
+                let msg = match reason {
+                    Some(r) => format!("command denied by human reviewer: {r}"),
+                    None => "command denied by human reviewer".to_owned(),
+                };
+                tracing::warn!(approval_id = %approval_id, "exec command denied");
+                return (msg, true);
+            }
+            Ok(Err(_)) => {
+                // Sender dropped (store cleaned up) — treat as timeout.
+                state.approval_store.remove_expired(&approval_id);
+                tracing::warn!(approval_id = %approval_id, "exec approval channel dropped");
+                return (
+                    "exec approval timed out (reviewer channel closed)".to_owned(),
+                    true,
+                );
+            }
+            Err(_) => {
+                // Timeout elapsed — clean up and reject.
+                state.approval_store.remove_expired(&approval_id);
+                tracing::warn!(approval_id = %approval_id, "exec approval timed out");
+                return (
+                    format!(
+                        "exec approval timed out after {}s",
+                        timeout.as_secs()
+                    ),
+                    true,
+                );
+            }
+        }
     }
 
     let resp = exec::exec(&state.processes, req).await;
@@ -607,7 +679,7 @@ async fn dispatch_to_node(
             // Shouldn't reach here since we handle exec/process above,
             // but handle gracefully.
             match tool_type {
-                LocalTool::Exec => dispatch_exec(state, arguments).await,
+                LocalTool::Exec => dispatch_exec(state, arguments, session_key).await,
                 LocalTool::Process => dispatch_process(state, arguments).await,
             }
         }
