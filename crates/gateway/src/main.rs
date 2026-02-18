@@ -8,7 +8,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing_subscriber::EnvFilter;
 
-use sa_domain::config::Config;
+use sa_domain::config::{Config, ConfigSeverity};
 use sa_gateway::api;
 use sa_gateway::cli::{Cli, Command, ConfigCommand};
 use sa_gateway::state::AppState;
@@ -79,6 +79,24 @@ fn init_tracing() {
 /// Start the gateway server with the given configuration.
 async fn run_server(config: Arc<Config>) -> anyhow::Result<()> {
     tracing::info!("SerialAgent starting");
+
+    // ── Config validation ────────────────────────────────────────────
+    let issues = config.validate();
+    for issue in &issues {
+        match issue.severity {
+            ConfigSeverity::Warning => tracing::warn!("config: {issue}"),
+            ConfigSeverity::Error => tracing::error!("config: {issue}"),
+        }
+    }
+    if issues.iter().any(|i| i.severity == ConfigSeverity::Error) {
+        anyhow::bail!(
+            "config validation failed with {} error(s)",
+            issues
+                .iter()
+                .filter(|i| i.severity == ConfigSeverity::Error)
+                .count()
+        );
+    }
 
     // ── Workspace reader ─────────────────────────────────────────────
     let workspace = Arc::new(WorkspaceReader::new(config.workspace.path.clone()));
