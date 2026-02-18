@@ -11,6 +11,7 @@
 
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Json};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use sa_domain::config::InboundMetadata;
@@ -123,12 +124,84 @@ pub async fn resolve_session(
 // GET /v1/sessions
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// List all active sessions.
-pub async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
-    let sessions = state.sessions.list();
+/// Query parameters for filtering the session list.
+#[derive(Debug, Deserialize)]
+pub struct SessionListQuery {
+    /// Filter by connector channel (e.g. `"discord"`, `"telegram"`).
+    #[serde(default)]
+    pub channel: Option<String>,
+    /// Filter by peer identity.
+    #[serde(default)]
+    pub peer: Option<String>,
+    /// Filter by agent ID (matches the `agent:<id>:` prefix of session keys).
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    /// Only include sessions updated at or after this timestamp (RFC 3339).
+    #[serde(default)]
+    pub since: Option<DateTime<Utc>>,
+    /// Only include sessions updated at or before this timestamp (RFC 3339).
+    #[serde(default)]
+    pub until: Option<DateTime<Utc>>,
+    /// Maximum number of sessions to return (default 100, max 500).
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Number of sessions to skip for pagination (default 0).
+    #[serde(default)]
+    pub offset: Option<usize>,
+}
+
+/// List active sessions with optional filtering and pagination.
+pub async fn list_sessions(
+    State(state): State<AppState>,
+    Query(query): Query<SessionListQuery>,
+) -> impl IntoResponse {
+    let all_sessions = state.sessions.list();
+
+    // Apply filters.
+    let filtered: Vec<_> = all_sessions
+        .into_iter()
+        .filter(|s| {
+            if let Some(ref ch) = query.channel {
+                if s.origin.channel.as_deref() != Some(ch.as_str()) {
+                    return false;
+                }
+            }
+            if let Some(ref peer) = query.peer {
+                if s.origin.peer.as_deref() != Some(peer.as_str()) {
+                    return false;
+                }
+            }
+            if let Some(ref agent_id) = query.agent_id {
+                let prefix = format!("agent:{agent_id}:");
+                if !s.session_key.starts_with(&prefix) {
+                    return false;
+                }
+            }
+            if let Some(since) = query.since {
+                if s.updated_at < since {
+                    return false;
+                }
+            }
+            if let Some(until) = query.until {
+                if s.updated_at > until {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    let total = filtered.len();
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(100).min(500);
+
+    let page: Vec<_> = filtered.into_iter().skip(offset).take(limit).collect();
+
     Json(serde_json::json!({
-        "sessions": sessions,
-        "count": sessions.len(),
+        "sessions": page,
+        "total": total,
+        "offset": offset,
+        "count": page.len(),
     }))
 }
 
