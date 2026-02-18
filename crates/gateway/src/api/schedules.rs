@@ -80,6 +80,12 @@ pub struct CreateScheduleRequest {
     pub digest_mode: DigestMode,
     #[serde(default)]
     pub fetch_config: FetchConfig,
+    #[serde(default = "default_max_catchup_runs")]
+    pub max_catchup_runs: usize,
+}
+
+fn default_max_catchup_runs() -> usize {
+    5
 }
 
 fn default_timezone() -> String {
@@ -130,10 +136,15 @@ pub async fn create_schedule(
         timeout_ms: req.timeout_ms,
         digest_mode: req.digest_mode,
         fetch_config: req.fetch_config,
+        max_catchup_runs: req.max_catchup_runs,
         source_states: std::collections::HashMap::new(),
         last_error: None,
         last_error_at: None,
         consecutive_failures: 0,
+        cooldown_until: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_runs: 0,
     };
 
     let created = state.schedule_store.insert(schedule).await;
@@ -163,6 +174,7 @@ pub struct UpdateScheduleRequest {
     pub timeout_ms: Option<Option<u64>>,
     pub digest_mode: Option<DigestMode>,
     pub fetch_config: Option<FetchConfig>,
+    pub max_catchup_runs: Option<usize>,
 }
 
 pub async fn update_schedule(
@@ -223,6 +235,9 @@ pub async fn update_schedule(
             }
             if let Some(fc) = req.fetch_config {
                 s.fetch_config = fc;
+            }
+            if let Some(mcr) = req.max_catchup_runs {
+                s.max_catchup_runs = mcr;
             }
         })
         .await
@@ -334,6 +349,10 @@ pub async fn run_schedule_now(
         delivery.schedule_name = Some(sched.name.clone());
         delivery.run_id = Some(run_id);
         delivery.sources = sched.sources.clone();
+        crate::runtime::deliveries::dispatch_webhooks(
+            &delivery,
+            &sched.delivery_targets,
+        );
         ds.insert(delivery).await;
     });
 

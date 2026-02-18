@@ -67,21 +67,18 @@ impl ConcurrencyGuard {
 // Missed-run calculation
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Maximum catch-up runs in a single tick to prevent runaway.
-const MAX_CATCHUP_RUNS: usize = 5;
-
 /// Count how many cron windows were missed between `last_run_at` and `now`.
 pub fn missed_window_count(
     cron: &str,
     tz: chrono_tz::Tz,
     last_run_at: Option<DateTime<Utc>>,
     now: &DateTime<Utc>,
+    max_catchup: usize,
 ) -> usize {
     let anchor = match last_run_at {
         Some(t) => t,
         None => return 1, // Never run — treat as one missed window.
     };
-    // Walk forward from last_run_at counting cron windows before now.
     let mut count = 0usize;
     let mut cursor = anchor;
     loop {
@@ -89,7 +86,7 @@ pub fn missed_window_count(
             Some(next) if next <= *now => {
                 count += 1;
                 cursor = next;
-                if count > MAX_CATCHUP_RUNS {
+                if count > max_catchup {
                     break;
                 }
             }
@@ -106,14 +103,15 @@ pub fn runs_to_fire(
     tz: chrono_tz::Tz,
     last_run_at: Option<DateTime<Utc>>,
     now: &DateTime<Utc>,
+    max_catchup: usize,
 ) -> usize {
-    let missed = missed_window_count(cron, tz, last_run_at, now);
+    let missed = missed_window_count(cron, tz, last_run_at, now, max_catchup);
     match policy {
         MissedPolicy::Skip => {
             if missed > 1 { 0 } else { missed }
         }
         MissedPolicy::RunOnce => missed.min(1),
-        MissedPolicy::CatchUp => missed.min(MAX_CATCHUP_RUNS),
+        MissedPolicy::CatchUp => missed.min(max_catchup),
     }
 }
 
@@ -147,6 +145,7 @@ impl ScheduleRunner {
                 tz,
                 schedule.last_run_at,
                 &now,
+                schedule.max_catchup_runs,
             );
             if n == 0 {
                 tracing::debug!(
@@ -247,6 +246,9 @@ impl ScheduleRunner {
         tokio::spawn(async move {
             let mut final_content = String::new();
             let mut is_error = false;
+            let mut input_tokens: u32 = 0;
+            let mut output_tokens: u32 = 0;
+            let mut total_tokens: u32 = 0;
 
             let collect_fut = async {
                 while let Some(event) = rx.recv().await {
@@ -257,6 +259,15 @@ impl ScheduleRunner {
                         crate::runtime::TurnEvent::Error { message } => {
                             final_content = format!("Error: {}", message);
                             is_error = true;
+                        }
+                        crate::runtime::TurnEvent::UsageEvent {
+                            input_tokens: it,
+                            output_tokens: ot,
+                            total_tokens: tt,
+                        } => {
+                            input_tokens = it;
+                            output_tokens = ot;
+                            total_tokens = tt;
                         }
                         _ => {}
                     }
@@ -306,6 +317,18 @@ impl ScheduleRunner {
             delivery.schedule_name = Some(schedule.name.clone());
             delivery.run_id = Some(run_id);
             delivery.sources = schedule.sources.clone();
+            delivery.input_tokens = input_tokens;
+            delivery.output_tokens = output_tokens;
+            delivery.total_tokens = total_tokens;
+
+            // Accumulate usage on the schedule.
+            sched_store.add_usage(&sched_id, input_tokens, output_tokens).await;
+
+            // Dispatch webhooks before inserting (fire-and-forget, non-blocking).
+            crate::runtime::deliveries::dispatch_webhooks(
+                &delivery,
+                &schedule.delivery_targets,
+            );
             deliv_store.insert(delivery).await;
 
             // Release concurrency slot
@@ -333,7 +356,7 @@ mod tests {
         // Hourly cron, last run 3 hours ago → 3 missed windows.
         let now = Utc.with_ymd_and_hms(2024, 6, 15, 13, 0, 0).unwrap();
         let last = Some(Utc.with_ymd_and_hms(2024, 6, 15, 10, 0, 0).unwrap());
-        let n = runs_to_fire(MissedPolicy::Skip, "0 * * * *", tz, last, &now);
+        let n = runs_to_fire(MissedPolicy::Skip, "0 * * * *", tz, last, &now, 5);
         assert_eq!(n, 0, "Skip policy drops all when >1 missed");
     }
 
@@ -343,7 +366,7 @@ mod tests {
         let tz = chrono_tz::UTC;
         let now = Utc.with_ymd_and_hms(2024, 6, 15, 13, 0, 0).unwrap();
         let last = Some(Utc.with_ymd_and_hms(2024, 6, 15, 10, 0, 0).unwrap());
-        let n = runs_to_fire(MissedPolicy::RunOnce, "0 * * * *", tz, last, &now);
+        let n = runs_to_fire(MissedPolicy::RunOnce, "0 * * * *", tz, last, &now, 5);
         assert_eq!(n, 1, "RunOnce fires exactly once regardless of missed count");
     }
 
@@ -353,7 +376,7 @@ mod tests {
         let tz = chrono_tz::UTC;
         let now = Utc.with_ymd_and_hms(2024, 6, 15, 13, 0, 0).unwrap();
         let last = Some(Utc.with_ymd_and_hms(2024, 6, 15, 10, 0, 0).unwrap());
-        let n = runs_to_fire(MissedPolicy::CatchUp, "0 * * * *", tz, last, &now);
+        let n = runs_to_fire(MissedPolicy::CatchUp, "0 * * * *", tz, last, &now, 5);
         assert_eq!(n, 3, "CatchUp fires once per missed window");
     }
 
@@ -364,8 +387,19 @@ mod tests {
         // 10 hours missed but cap is 5.
         let now = Utc.with_ymd_and_hms(2024, 6, 15, 20, 0, 0).unwrap();
         let last = Some(Utc.with_ymd_and_hms(2024, 6, 15, 10, 0, 0).unwrap());
-        let n = runs_to_fire(MissedPolicy::CatchUp, "0 * * * *", tz, last, &now);
-        assert_eq!(n, MAX_CATCHUP_RUNS, "CatchUp capped at MAX_CATCHUP_RUNS");
+        let n = runs_to_fire(MissedPolicy::CatchUp, "0 * * * *", tz, last, &now, 5);
+        assert_eq!(n, 5, "CatchUp capped at max_catchup_runs");
+    }
+
+    #[test]
+    fn missed_window_catch_up_custom_cap() {
+        use chrono::TimeZone;
+        let tz = chrono_tz::UTC;
+        // 10 hours missed but custom cap is 3.
+        let now = Utc.with_ymd_and_hms(2024, 6, 15, 20, 0, 0).unwrap();
+        let last = Some(Utc.with_ymd_and_hms(2024, 6, 15, 10, 0, 0).unwrap());
+        let n = runs_to_fire(MissedPolicy::CatchUp, "0 * * * *", tz, last, &now, 3);
+        assert_eq!(n, 3, "CatchUp capped at custom max_catchup_runs");
     }
 
     #[test]
@@ -373,7 +407,7 @@ mod tests {
         use chrono::TimeZone;
         let tz = chrono_tz::UTC;
         let now = Utc.with_ymd_and_hms(2024, 6, 15, 13, 0, 0).unwrap();
-        let n = runs_to_fire(MissedPolicy::RunOnce, "0 * * * *", tz, None, &now);
+        let n = runs_to_fire(MissedPolicy::RunOnce, "0 * * * *", tz, None, &now, 5);
         assert_eq!(n, 1, "Never-run schedule should fire once");
     }
 
@@ -384,7 +418,7 @@ mod tests {
         // Last run 50 minutes ago, hourly cron → 1 window at the top of hour.
         let now = Utc.with_ymd_and_hms(2024, 6, 15, 10, 10, 0).unwrap();
         let last = Some(Utc.with_ymd_and_hms(2024, 6, 15, 9, 20, 0).unwrap());
-        let n = runs_to_fire(MissedPolicy::Skip, "0 * * * *", tz, last, &now);
+        let n = runs_to_fire(MissedPolicy::Skip, "0 * * * *", tz, last, &now, 5);
         assert_eq!(n, 1, "Single missed window should fire even with Skip");
     }
 

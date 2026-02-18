@@ -575,9 +575,14 @@ export type Schedule = {
   digest_mode: DigestMode;
   fetch_config: FetchConfig;
   source_states: Record<string, SourceState>;
+  max_catchup_runs: number;
   last_error?: string;
   last_error_at?: string;
   consecutive_failures: number;
+  cooldown_until?: string;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_runs: number;
 };
 
 export type ScheduleListResponse = {
@@ -604,6 +609,7 @@ export type CreateScheduleRequest = {
   timeout_ms?: number;
   digest_mode?: DigestMode;
   fetch_config?: Partial<FetchConfig>;
+  max_catchup_runs?: number;
 };
 
 export type UpdateScheduleRequest = {
@@ -620,6 +626,7 @@ export type UpdateScheduleRequest = {
   timeout_ms?: number | null;
   digest_mode?: DigestMode;
   fetch_config?: Partial<FetchConfig>;
+  max_catchup_runs?: number;
 };
 
 // ── Delivery types ──────────────────────────────────────────────────
@@ -634,6 +641,9 @@ export type Delivery = {
   body: string;
   sources: string[];
   read: boolean;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
   metadata: unknown;
 };
 
