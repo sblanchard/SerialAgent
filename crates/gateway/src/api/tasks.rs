@@ -55,6 +55,9 @@ fn default_limit() -> usize {
     50
 }
 
+/// Maximum message length in bytes (32 KB).
+const MAX_MESSAGE_BYTES: usize = 32_768;
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // POST /v1/tasks
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -63,6 +66,22 @@ pub async fn create_task(
     State(state): State<AppState>,
     Json(body): Json<CreateTaskRequest>,
 ) -> impl IntoResponse {
+    // Input validation.
+    if body.message.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "message is required" })),
+        )
+            .into_response();
+    }
+    if body.message.len() > MAX_MESSAGE_BYTES {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "message too large (max 32 KB)" })),
+        )
+            .into_response();
+    }
+
     // Pre-flight: reject early with 503 if no LLM providers are available.
     if let Err(resp) = require_llm_provider(&state) {
         return resp.into_response();
@@ -121,7 +140,22 @@ pub async fn list_tasks(
     State(state): State<AppState>,
     Query(q): Query<ListTasksQuery>,
 ) -> impl IntoResponse {
-    let status = q.status.as_deref().and_then(parse_task_status);
+    let status = match q.status.as_deref() {
+        None => None,
+        Some(s) => match parse_task_status(s) {
+            Some(st) => Some(st),
+            None => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": format!("unknown status: '{s}'"),
+                        "valid": ["queued", "running", "completed", "failed", "cancelled"],
+                    })),
+                )
+                    .into_response();
+            }
+        },
+    };
     let limit = q.limit.min(200);
 
     let (tasks, total) = state.task_store.list(
@@ -155,6 +189,7 @@ pub async fn list_tasks(
         "limit": limit,
         "offset": q.offset,
     }))
+    .into_response()
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -208,16 +243,10 @@ pub async fn cancel_task(
     }
 
     // Signal the cancel token to abort a running turn.
+    // Note: we do NOT emit a StatusChanged event here. The runtime's
+    // enqueue loop is the sole authority on status events — it will
+    // detect the Cancelled status and clean up.
     state.task_runner.cancel_task(&state, &task_id);
-
-    // Emit cancellation event.
-    state.task_store.emit(
-        &task_id,
-        TaskEvent::StatusChanged {
-            task_id,
-            status: TaskStatus::Cancelled,
-        },
-    );
 
     Json(serde_json::json!({
         "task_id": task_id,
@@ -266,6 +295,23 @@ pub async fn task_events_sse(
 
     // Subscribe to live events.
     let rx = state.task_store.subscribe(&task_id);
+
+    // Re-check after subscribing to close the TOCTOU window:
+    // the task may have completed between our initial check and subscribe.
+    if let Some(t) = state.task_store.get(&task_id) {
+        if t.status.is_terminal() {
+            let data = serde_json::to_string(&t).unwrap_or_default();
+            let stream = futures_util::stream::once(async move {
+                Ok::<_, std::convert::Infallible>(
+                    Event::default().event("task.snapshot").data(data),
+                )
+            });
+            return Sse::new(stream)
+                .keep_alive(KeepAlive::default())
+                .into_response();
+        }
+    }
+
     let stream = make_task_event_stream(rx);
 
     Sse::new(stream)

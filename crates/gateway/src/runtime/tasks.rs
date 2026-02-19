@@ -217,6 +217,17 @@ impl TaskStore {
         let mut channels = self.event_channels.write();
         channels.remove(task_id);
     }
+
+    /// Remove terminal tasks older than the given duration.
+    /// Called periodically to prevent unbounded memory growth.
+    pub fn evict_terminal(&self, older_than: chrono::Duration) {
+        let cutoff = Utc::now() - older_than;
+        let mut tasks = self.tasks.write();
+        tasks.retain(|_, t| {
+            !t.status.is_terminal()
+                || t.completed_at.map_or(true, |ts| ts > cutoff)
+        });
+    }
 }
 
 impl Default for TaskStore {
@@ -375,13 +386,18 @@ impl TaskRunner {
                 state.cancel_map.remove(&cancel_key);
 
                 // 5. Update task status on completion/failure.
+                // Guard: if the task was already cancelled externally
+                // (via the cancel API), do not overwrite its terminal status.
                 let final_status = if had_error {
                     TaskStatus::Failed
                 } else {
                     TaskStatus::Completed
                 };
 
-                task_store.update(&task_id, |t| {
+                let did_update = task_store.update(&task_id, |t| {
+                    if t.status.is_terminal() {
+                        return; // Already cancelled — do not overwrite.
+                    }
                     t.status = final_status;
                     t.completed_at = Some(Utc::now());
                     if !final_content.is_empty() {
@@ -392,13 +408,20 @@ impl TaskRunner {
                     }
                 });
 
-                task_store.emit(
-                    &task_id,
-                    TaskEvent::StatusChanged {
-                        task_id,
-                        status: final_status,
-                    },
-                );
+                // Emit terminal status event for SSE subscribers.
+                // If the task was already cancelled externally, emit the
+                // Cancelled status; otherwise emit Completed/Failed.
+                if did_update {
+                    if let Some(task) = task_store.get(&task_id) {
+                        task_store.emit(
+                            &task_id,
+                            TaskEvent::StatusChanged {
+                                task_id,
+                                status: task.status,
+                            },
+                        );
+                    }
+                }
 
                 // 6. Clean up event channel.
                 task_store.cleanup_channel(&task_id);

@@ -327,7 +327,7 @@ async fn run_server(config: Arc<Config>) -> anyhow::Result<()> {
         agents: None,
         dedupe,
         run_store,
-        task_store,
+        task_store: task_store.clone(),
         task_runner: task_runner.clone(),
         skill_engine,
         schedule_store: schedule_store.clone(),
@@ -384,6 +384,7 @@ async fn run_server(config: Arc<Config>) -> anyhow::Result<()> {
         let processes = processes.clone();
         let session_locks = session_locks.clone();
         let task_runner_for_prune = task_runner.clone();
+        let task_store_for_prune = task_store.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(
                 std::time::Duration::from_secs(60),
@@ -393,6 +394,8 @@ async fn run_server(config: Arc<Config>) -> anyhow::Result<()> {
                 processes.cleanup_stale();
                 session_locks.prune_idle();
                 task_runner_for_prune.prune_idle();
+                // Evict terminal tasks older than 1 hour.
+                task_store_for_prune.evict_terminal(chrono::Duration::hours(1));
             }
         });
     }
