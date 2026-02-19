@@ -65,3 +65,4 @@ sa-protocol = { path = "crates/node-protocol" }
 sa-sessions = { path = "crates/sessions" }
 sa-tools = { path = "crates/tools" }
 sa-node-sdk = { path = "crates/node-sdk" }
+sa-mcp-client = { path = "crates/mcp-client" }

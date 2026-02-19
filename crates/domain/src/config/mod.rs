@@ -2,6 +2,7 @@ mod agents;
 mod compaction;
 mod context;
 mod llm;
+mod mcp;
 mod pruning;
 mod serial_memory;
 mod server;
@@ -13,6 +14,7 @@ pub use agents::*;
 pub use compaction::*;
 pub use context::*;
 pub use llm::*;
+pub use mcp::*;
 pub use pruning::*;
 pub use serial_memory::*;
 pub use server::*;
@@ -54,6 +56,9 @@ pub struct Config {
     pub memory_lifecycle: MemoryLifecycleConfig,
     #[serde(default)]
     pub admin: AdminConfig,
+    /// MCP (Model Context Protocol) server connections.
+    #[serde(default)]
+    pub mcp: McpConfig,
     /// Sub-agent definitions (key = agent_id).
     #[serde(default)]
     pub agents: HashMap<String, AgentConfig>,

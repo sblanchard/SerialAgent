@@ -9,6 +9,7 @@ use sa_memory::provider::SerialMemoryProvider;
 use sa_providers::registry::ProviderRegistry;
 use sa_sessions::{IdentityResolver, LifecycleManager, SessionStore, TranscriptWriter};
 use sa_skills::registry::SkillsRegistry;
+use sa_mcp_client::McpManager;
 use sa_tools::ProcessManager;
 
 use crate::api::inbound::DedupeStore;
@@ -81,6 +82,10 @@ pub struct AppState {
     pub agents: Option<Arc<AgentManager>>,
     pub processes: Arc<ProcessManager>,
     pub cancel_map: Arc<CancelMap>,
+
+    // ── MCP (Model Context Protocol) servers ────────────────────────────
+    /// MCP server connections and tool registry.
+    pub mcp: Arc<McpManager>,
 
     // ── Nodes & tools ─────────────────────────────────────────────────
     pub nodes: Arc<NodeRegistry>,

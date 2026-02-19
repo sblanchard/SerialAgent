@@ -16,6 +16,7 @@ sa-providers = { workspace = true }
 sa-protocol = { workspace = true }
 sa-sessions = { workspace = true }
 sa-tools = { workspace = true }
+sa-mcp-client = { workspace = true }
 
 clap = { workspace = true }
 serde = { workspace = true }

@@ -18,6 +18,7 @@ use sa_memory::create_provider as create_memory_provider;
 use sa_providers::registry::ProviderRegistry;
 use sa_sessions::{IdentityResolver, LifecycleManager, SessionStore, TranscriptWriter};
 use sa_skills::registry::SkillsRegistry;
+use sa_mcp_client::McpManager;
 use sa_tools::ProcessManager;
 
 use sa_gateway::nodes::registry::NodeRegistry;
@@ -273,6 +274,25 @@ async fn run_server(config: Arc<Config>) -> anyhow::Result<()> {
         )),
     );
 
+    // ── MCP servers ──────────────────────────────────────────────────
+    let mcp = if config.mcp.servers.is_empty() {
+        tracing::info!("no MCP servers configured");
+        Arc::new(McpManager::empty())
+    } else {
+        tracing::info!(
+            count = config.mcp.servers.len(),
+            "initializing MCP servers"
+        );
+        Arc::new(McpManager::from_config(&config.mcp).await)
+    };
+    if mcp.tool_count() > 0 {
+        tracing::info!(
+            servers = mcp.server_count(),
+            tools = mcp.tool_count(),
+            "MCP tools discovered"
+        );
+    }
+
     // ── App state (without agents — needed for AgentManager init) ───
     let mut state = AppState {
         config: config.clone(),
@@ -286,6 +306,7 @@ async fn run_server(config: Arc<Config>) -> anyhow::Result<()> {
         lifecycle,
         transcripts,
         processes: processes.clone(),
+        mcp,
         nodes: nodes.clone(),
         tool_router,
         session_locks: session_locks.clone(),

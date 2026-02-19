@@ -294,6 +294,17 @@ pub fn build_tool_definitions(
         }
     }
 
+    // ── MCP tools ──────────────────────────────────────────────────
+    // Add definitions for tools discovered from MCP servers.
+    for (server_id, tool) in state.mcp.list_tools() {
+        let prefixed_name = format!("mcp:{server_id}:{}", tool.name);
+        defs.push(ToolDefinition {
+            name: prefixed_name,
+            description: tool.description.clone(),
+            parameters: tool.input_schema.clone(),
+        });
+    }
+
     // ── Node-advertised tools ─────────────────────────────────────
     // Add definitions for capabilities advertised by connected nodes.
     let node_list = state.nodes.list();
@@ -364,6 +375,10 @@ pub fn all_base_tool_names(state: &AppState) -> Vec<String> {
             names.insert(cap.clone());
         }
     }
+    // Include MCP tools.
+    for (server_id, tool) in state.mcp.list_tools() {
+        names.insert(format!("mcp:{server_id}:{}", tool.name));
+    }
     names.into_iter().collect()
 }
 
@@ -399,6 +414,11 @@ pub async fn dispatch_tool(
                 true,
             );
         }
+    }
+
+    // Handle MCP tools (mcp:{server_id}:{tool_name}).
+    if let Some(rest) = tool_name.strip_prefix("mcp:") {
+        return dispatch_mcp_tool(state, rest, arguments).await;
     }
 
     // Handle our built-in tools first.
@@ -813,6 +833,53 @@ fn dispatch_agent_list(state: &AppState) -> (String, bool) {
         .to_string(),
         false,
     )
+}
+
+/// Dispatch a tool call to an MCP server.
+///
+/// `rest` is the part after `mcp:` — expected format: `{server_id}:{tool_name}`.
+async fn dispatch_mcp_tool(
+    state: &AppState,
+    rest: &str,
+    arguments: &Value,
+) -> (String, bool) {
+    let (server_id, tool_name) = match rest.split_once(':') {
+        Some(pair) => pair,
+        None => {
+            return (
+                format!("invalid MCP tool name format: 'mcp:{rest}' — expected 'mcp:{{server_id}}:{{tool_name}}'"),
+                true,
+            );
+        }
+    };
+
+    match state.mcp.call_tool(server_id, tool_name, arguments.clone()).await {
+        Ok(result) => {
+            // Concatenate all text content items into a single response string.
+            let text: String = result
+                .content
+                .iter()
+                .filter(|c| c.content_type == "text")
+                .map(|c| c.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            if text.is_empty() {
+                (
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "content": result.content.iter().map(|c| {
+                            serde_json::json!({ "type": c.content_type, "text": c.text })
+                        }).collect::<Vec<_>>()
+                    }))
+                    .unwrap_or_default(),
+                    result.is_error,
+                )
+            } else {
+                (text, result.is_error)
+            }
+        }
+        Err(e) => (format!("MCP tool error: {e}"), true),
+    }
 }
 
 fn stub_tool(name: &str, message: &str) -> (String, bool) {
