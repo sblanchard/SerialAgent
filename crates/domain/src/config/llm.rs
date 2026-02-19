@@ -136,6 +136,8 @@ pub enum ProviderKind {
     Anthropic,
     Google,
     OpenaiCodexOauth,
+    AzureOpenai,
+    AwsBedrock,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
