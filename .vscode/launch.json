@@ -1,0 +1,254 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug executable 'serialagent'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=serialagent",
+                    "--package=sa-gateway"
+                ]
+            },
+            "args": []
+        },
+        
+        {
+            "name": "Debug unit tests in library 'sa_contextpack'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=sa-contextpack"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'sa_domain'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=sa-domain"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'config_defaults'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=config_defaults",
+                    "--package=sa-domain"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'sa_gateway'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=sa-gateway"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in executable 'serialagent'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=serialagent",
+                    "--package=sa-gateway"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'sa_memory'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=sa-memory"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'sa_protocol'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=sa-protocol"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'sa_providers'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=sa-providers"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'sa_sessions'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=sa-sessions"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'sa_skills'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=sa-skills"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'sa_tools'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=sa-tools"
+                ]
+            }
+        },
+        {
+            "name": "Debug executable 'sa-hello-node'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=sa-hello-node",
+                    "--package=sa-hello-node"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'sa-hello-node'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=sa-hello-node",
+                    "--package=sa-hello-node"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'sa_node_sdk'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=sa-node-sdk"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'protocol_loop'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=protocol_loop",
+                    "--package=sa-node-sdk"
+                ]
+            }
+        },
+        {
+            "name": "Debug executable 'sa-node-macos'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=sa-node-macos",
+                    "--package=sa-node-macos"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'sa-node-macos'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=sa-node-macos",
+                    "--package=sa-node-macos"
+                ]
+            }
+        },
+        {
+            "name": "Debug unit tests in library 'sa_dashboard_app_lib'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--package=sa-dashboard-app"
+                ]
+            }
+        },
+        {
+            "name": "Debug executable 'sa-dashboard-app'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=sa-dashboard-app",
+                    "--package=sa-dashboard-app"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'sa-dashboard-app'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=sa-dashboard-app",
+                    "--package=sa-dashboard-app"
+                ]
+            }
+        }
+    ]
+}
