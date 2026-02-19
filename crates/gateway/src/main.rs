@@ -198,6 +198,19 @@ async fn run_server(config: Arc<Config>) -> anyhow::Result<()> {
     ));
     tracing::info!("run store ready");
 
+    // ── Task store + runner ─────────────────────────────────────────
+    let task_config = config.tasks.clamped();
+    let task_store = Arc::new(
+        sa_gateway::runtime::tasks::TaskStore::new(),
+    );
+    let task_runner = Arc::new(
+        sa_gateway::runtime::tasks::TaskRunner::new(task_config.max_concurrent),
+    );
+    tracing::info!(
+        max_concurrent = task_config.max_concurrent,
+        "task store + runner ready"
+    );
+
     // ── Skill engine (callable skills: web.fetch, etc.) ─────────────
     let skill_engine = Arc::new(
         sa_gateway::skills::build_default_engine()
@@ -314,6 +327,8 @@ async fn run_server(config: Arc<Config>) -> anyhow::Result<()> {
         agents: None,
         dedupe,
         run_store,
+        task_store,
+        task_runner: task_runner.clone(),
         skill_engine,
         schedule_store: schedule_store.clone(),
         delivery_store: delivery_store.clone(),
@@ -364,10 +379,11 @@ async fn run_server(config: Arc<Config>) -> anyhow::Result<()> {
         });
     }
 
-    // ── Periodic process cleanup + session lock pruning ─────────────
+    // ── Periodic process cleanup + session lock pruning + task runner pruning ──
     {
         let processes = processes.clone();
         let session_locks = session_locks.clone();
+        let task_runner_for_prune = task_runner.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(
                 std::time::Duration::from_secs(60),
@@ -376,6 +392,7 @@ async fn run_server(config: Arc<Config>) -> anyhow::Result<()> {
                 interval.tick().await;
                 processes.cleanup_stale();
                 session_locks.prune_idle();
+                task_runner_for_prune.prune_idle();
             }
         });
     }

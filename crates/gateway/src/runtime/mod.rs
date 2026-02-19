@@ -14,6 +14,7 @@ pub mod runs;
 pub mod schedule_runner;
 pub mod schedules;
 pub mod session_lock;
+pub mod tasks;
 pub mod tools;
 pub mod turn;
 

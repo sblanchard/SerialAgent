@@ -16,6 +16,7 @@ pub mod runs;
 pub mod schedules;
 pub mod sessions;
 pub mod skills;
+pub mod tasks;
 pub mod tools;
 
 use axum::middleware;
@@ -97,6 +98,12 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/v1/clawhub/install", post(clawhub::install_pack))
         .route("/v1/clawhub/update", post(clawhub::update_pack))
         .route("/v1/clawhub/uninstall", post(clawhub::uninstall_pack))
+        // Tasks (concurrent task queue)
+        .route("/v1/tasks", post(tasks::create_task))
+        .route("/v1/tasks", get(tasks::list_tasks))
+        .route("/v1/tasks/:id", get(tasks::get_task))
+        .route("/v1/tasks/:id", delete(tasks::cancel_task))
+        .route("/v1/tasks/:id/events", get(tasks::task_events_sse))
         // Runs (execution tracking)
         .route("/v1/runs", get(runs::list_runs))
         .route("/v1/runs/:id", get(runs::get_run))

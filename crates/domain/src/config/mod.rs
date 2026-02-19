@@ -7,6 +7,7 @@ mod pruning;
 mod serial_memory;
 mod server;
 mod sessions;
+mod tasks;
 mod tools;
 mod workspace;
 
@@ -19,6 +20,7 @@ pub use pruning::*;
 pub use serial_memory::*;
 pub use server::*;
 pub use sessions::*;
+pub use tasks::*;
 pub use tools::*;
 pub use workspace::*;
 
@@ -59,6 +61,9 @@ pub struct Config {
     /// MCP (Model Context Protocol) server connections.
     #[serde(default)]
     pub mcp: McpConfig,
+    /// Task queue concurrency settings.
+    #[serde(default)]
+    pub tasks: TaskConfig,
     /// Sub-agent definitions (key = agent_id).
     #[serde(default)]
     pub agents: HashMap<String, AgentConfig>,

@@ -22,6 +22,7 @@ use crate::runtime::deliveries::DeliveryStore;
 use crate::runtime::runs::RunStore;
 use crate::runtime::schedules::ScheduleStore;
 use crate::runtime::session_lock::SessionLockMap;
+use crate::runtime::tasks::{TaskRunner, TaskStore};
 use crate::skills::SkillEngine;
 use crate::workspace::bootstrap::BootstrapTracker;
 use crate::workspace::files::WorkspaceReader;
@@ -74,6 +75,10 @@ pub struct AppState {
     // ── Runtime ───────────────────────────────────────────────────────
     /// Run execution tracker.
     pub run_store: Arc<RunStore>,
+    /// In-memory task queue store.
+    pub task_store: Arc<TaskStore>,
+    /// Per-session semaphore-controlled task runner.
+    pub task_runner: Arc<TaskRunner>,
     /// Schedule store (cron jobs).
     pub schedule_store: Arc<ScheduleStore>,
     /// Delivery store (inbox notifications from scheduled runs).
