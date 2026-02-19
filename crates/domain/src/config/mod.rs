@@ -248,6 +248,25 @@ impl Config {
                     });
                 }
             }
+
+            // Keychain mode: must have at least an account (service defaults to "serialagent").
+            if provider.auth.mode == AuthMode::Keychain {
+                let has_account = provider
+                    .auth
+                    .account
+                    .as_ref()
+                    .is_some_and(|v| !v.is_empty());
+                if !has_account {
+                    errors.push(ConfigError {
+                        severity: ConfigSeverity::Error,
+                        field: format!("llm.providers[{i}].auth"),
+                        message: format!(
+                            "provider \"{}\" uses keychain auth mode but has no auth.account configured",
+                            provider.id
+                        ),
+                    });
+                }
+            }
         }
 
         // CORS: warn if wildcard is used.

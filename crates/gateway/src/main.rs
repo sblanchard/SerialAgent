@@ -56,6 +56,16 @@ async fn main() -> anyhow::Result<()> {
             sa_gateway::cli::config::show(&config);
             Ok(())
         }
+        Some(Command::Config(ConfigCommand::SetSecret { provider_id })) => {
+            let (config, _config_path) = sa_gateway::cli::load_config()?;
+            sa_gateway::cli::config::set_secret(&config, &provider_id)?;
+            Ok(())
+        }
+        Some(Command::Config(ConfigCommand::GetSecret { provider_id })) => {
+            let (config, _config_path) = sa_gateway::cli::load_config()?;
+            sa_gateway::cli::config::get_secret(&config, &provider_id)?;
+            Ok(())
+        }
         Some(Command::Version) => {
             println!(
                 "serialagent {}",

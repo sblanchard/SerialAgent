@@ -30,6 +30,16 @@ pub enum ConfigCommand {
     Validate,
     /// Dump the resolved configuration (with defaults) as TOML.
     Show,
+    /// Store an API key in the OS keychain for a provider.
+    SetSecret {
+        /// Provider ID from config.toml.
+        provider_id: String,
+    },
+    /// Read and display (masked) an API key from the OS keychain.
+    GetSecret {
+        /// Provider ID from config.toml.
+        provider_id: String,
+    },
 }
 
 // ── Config loading helper ─────────────────────────────────────────────

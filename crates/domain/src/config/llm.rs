@@ -161,6 +161,12 @@ pub struct AuthConfig {
     /// When non-empty, takes precedence over `env`/`key`.
     #[serde(default)]
     pub keys: Vec<String>,
+    /// Keychain service name (e.g., "serialagent").
+    #[serde(default)]
+    pub service: Option<String>,
+    /// Keychain account name (e.g., "venice-api-key").
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -171,6 +177,7 @@ pub enum AuthMode {
     QueryParam,
     AwsSigv4,
     OauthDevice,
+    Keychain,
     None,
 }
 

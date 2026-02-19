@@ -66,3 +66,7 @@ sa-sessions = { path = "crates/sessions" }
 sa-tools = { path = "crates/tools" }
 sa-node-sdk = { path = "crates/node-sdk" }
 sa-mcp-client = { path = "crates/mcp-client" }
+
+# Credential storage
+keyring = { version = "3", features = ["sync-secret-service", "apple-native", "windows-native"] }
+rpassword = "5"
