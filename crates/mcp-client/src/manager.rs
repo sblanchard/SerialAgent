@@ -174,8 +174,9 @@ impl McpManager {
     /// Servers that fail to initialize are logged and skipped (not fatal).
     pub async fn from_config(config: &McpConfig) -> Self {
         let mut servers = HashMap::new();
+        let effective = config.effective_servers();
 
-        for server_config in &config.servers {
+        for server_config in &effective {
             tracing::info!(
                 server_id = %server_config.id,
                 command = %server_config.command,

@@ -3477,6 +3477,7 @@ name = "sa-mcp-client"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures-util",
  "sa-domain",
  "serde",
  "serde_json",
