@@ -16,6 +16,9 @@ use sa_domain::tool::{ContentPart, Message, MessageContent, Role, ToolCall, Tool
 use serde_json::Value;
 use std::sync::Arc;
 
+/// Default Azure OpenAI API version used in deployment URLs.
+const AZURE_API_VERSION: &str = "2024-10-21";
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Adapter struct
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -115,12 +118,25 @@ impl OpenAiCompatProvider {
     }
 
     /// Build the Azure-style chat completions URL:
-    /// `{base_url}/openai/deployments/{model}/chat/completions?api-version=2024-10-21`
-    fn azure_chat_url(&self, model: &str) -> String {
-        format!(
-            "{}/openai/deployments/{}/chat/completions?api-version=2024-10-21",
-            self.base_url, model
-        )
+    /// `{base_url}/openai/deployments/{model}/chat/completions?api-version=…`
+    ///
+    /// Returns an error if the model name contains path-control characters
+    /// (`/`, `?`, `#`, `..`) that could alter the URL's intended path.
+    fn azure_chat_url(&self, model: &str) -> Result<String> {
+        validate_azure_deployment(model)?;
+        Ok(format!(
+            "{}/openai/deployments/{}/chat/completions?api-version={}",
+            self.base_url, model, AZURE_API_VERSION
+        ))
+    }
+
+    /// Build the Azure-style embeddings URL.
+    fn azure_embeddings_url(&self, model: &str) -> Result<String> {
+        validate_azure_deployment(model)?;
+        Ok(format!(
+            "{}/openai/deployments/{}/embeddings?api-version={}",
+            self.base_url, model, AZURE_API_VERSION
+        ))
     }
 
     fn build_chat_body(&self, req: &ChatRequest, stream: bool) -> Value {
@@ -156,6 +172,21 @@ impl OpenAiCompatProvider {
         }
         body
     }
+}
+
+/// Reject Azure deployment names that contain path-control characters.
+fn validate_azure_deployment(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('?')
+        || name.contains('#')
+        || name.contains("..")
+    {
+        return Err(Error::Config(format!(
+            "invalid Azure deployment name: '{name}'"
+        )));
+    }
+    Ok(())
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -462,7 +493,7 @@ fn parse_sse_data_vec(data: &str) -> Vec<Result<StreamEvent>> {
 impl LlmProvider for OpenAiCompatProvider {
     async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse> {
         let url = if self.is_azure {
-            self.azure_chat_url(&self.effective_model(req))
+            self.azure_chat_url(&self.effective_model(req))?
         } else {
             format!("{}/chat/completions", self.base_url)
         };
@@ -496,7 +527,7 @@ impl LlmProvider for OpenAiCompatProvider {
         req: &ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamEvent>>> {
         let url = if self.is_azure {
-            self.azure_chat_url(&self.effective_model(req))
+            self.azure_chat_url(&self.effective_model(req))?
         } else {
             format!("{}/chat/completions", self.base_url)
         };
@@ -528,10 +559,7 @@ impl LlmProvider for OpenAiCompatProvider {
         let model = req.model.unwrap_or_else(|| "text-embedding-3-small".into());
 
         let url = if self.is_azure {
-            format!(
-                "{}/openai/deployments/{}/embeddings?api-version=2024-10-21",
-                self.base_url, model
-            )
+            self.azure_embeddings_url(&model)?
         } else {
             format!("{}/embeddings", self.base_url)
         };
