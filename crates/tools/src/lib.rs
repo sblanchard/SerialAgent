@@ -5,6 +5,7 @@
 //! - `process`: manage background sessions (list/poll/log/write/kill/clear/remove)
 
 pub mod exec;
+pub mod file_ops;
 pub mod manager;
 pub mod process;
 
