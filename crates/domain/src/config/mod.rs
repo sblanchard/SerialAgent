@@ -285,6 +285,55 @@ impl Config {
             }
         }
 
+        // ── MCP server validation ─────────────────────────────────────
+        let mut seen_mcp_ids: HashSet<&str> = HashSet::new();
+        for (i, server) in self.mcp.servers.iter().enumerate() {
+            if server.id.is_empty() {
+                errors.push(ConfigError {
+                    severity: ConfigSeverity::Error,
+                    field: format!("mcp.servers[{i}].id"),
+                    message: "server id must not be empty".into(),
+                });
+            }
+            if server.id.contains(':') {
+                errors.push(ConfigError {
+                    severity: ConfigSeverity::Error,
+                    field: format!("mcp.servers[{i}].id"),
+                    message: "server id must not contain ':' (used as tool name delimiter)".into(),
+                });
+            }
+            if server.transport == McpTransportKind::Stdio && server.command.is_empty() {
+                errors.push(ConfigError {
+                    severity: ConfigSeverity::Error,
+                    field: format!("mcp.servers[{i}].command"),
+                    message: "stdio transport requires a non-empty command".into(),
+                });
+            }
+            if !server.id.is_empty() && !seen_mcp_ids.insert(&server.id) {
+                errors.push(ConfigError {
+                    severity: ConfigSeverity::Error,
+                    field: format!("mcp.servers[{i}].id"),
+                    message: format!(
+                        "duplicate MCP server id \"{}\"",
+                        server.id
+                    ),
+                });
+            }
+            // Reject security-sensitive environment variable overrides.
+            for key in server.env.keys() {
+                if matches!(
+                    key.as_str(),
+                    "LD_PRELOAD" | "LD_LIBRARY_PATH" | "DYLD_INSERT_LIBRARIES"
+                ) {
+                    errors.push(ConfigError {
+                        severity: ConfigSeverity::Error,
+                        field: format!("mcp.servers[{i}].env.{key}"),
+                        message: format!("overriding {key} is not permitted for security"),
+                    });
+                }
+            }
+        }
+
         errors
     }
 }

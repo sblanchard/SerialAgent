@@ -54,14 +54,20 @@ pub enum TransportError {
 // Stdio transport
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Maximum number of non-JSON lines to skip before declaring the server broken.
+const MAX_SKIP_LINES: usize = 1000;
+
 /// Stdio transport: communicates with a child process over stdin/stdout.
 ///
 /// Each JSON-RPC message is a single newline-delimited line.
-/// A `Mutex` serializes access to stdin/stdout to prevent interleaving.
+/// The `request_lock` serializes entire request/response cycles to prevent
+/// response mismatching when multiple callers use the same server.
 pub struct StdioTransport {
     stdin: Mutex<ChildStdin>,
     stdout: Mutex<BufReader<ChildStdout>>,
     child: Mutex<Child>,
+    /// Serializes full request/response cycles to prevent response mismatching.
+    request_lock: Mutex<()>,
     next_id: AtomicU64,
     alive: AtomicBool,
 }
@@ -102,6 +108,7 @@ impl StdioTransport {
             stdin: Mutex::new(stdin),
             stdout: Mutex::new(BufReader::new(stdout)),
             child: Mutex::new(child),
+            request_lock: Mutex::new(()),
             next_id: AtomicU64::new(1),
             alive: AtomicBool::new(true),
         })
@@ -114,7 +121,7 @@ impl StdioTransport {
 
     /// Write a line of JSON to stdin.
     async fn write_line(&self, json: &str) -> Result<(), TransportError> {
-        if !self.alive.load(Ordering::Relaxed) {
+        if !self.alive.load(Ordering::SeqCst) {
             return Err(TransportError::ProcessExited);
         }
 
@@ -126,17 +133,21 @@ impl StdioTransport {
     }
 
     /// Read a line of JSON from stdout, skipping any empty or non-JSON lines.
+    ///
+    /// Gives up after [`MAX_SKIP_LINES`] non-JSON lines to prevent spinning
+    /// on a misconfigured server that writes logging to stdout.
     async fn read_line(&self) -> Result<String, TransportError> {
-        if !self.alive.load(Ordering::Relaxed) {
+        if !self.alive.load(Ordering::SeqCst) {
             return Err(TransportError::ProcessExited);
         }
 
         let mut stdout = self.stdout.lock().await;
+        let mut skipped = 0usize;
         loop {
             let mut line = String::new();
             let bytes_read = stdout.read_line(&mut line).await?;
             if bytes_read == 0 {
-                self.alive.store(false, Ordering::Relaxed);
+                self.alive.store(false, Ordering::SeqCst);
                 return Err(TransportError::ProcessExited);
             }
             let trimmed = line.trim();
@@ -147,6 +158,14 @@ impl StdioTransport {
             if trimmed.starts_with('{') {
                 return Ok(trimmed.to_string());
             }
+            skipped += 1;
+            if skipped >= MAX_SKIP_LINES {
+                self.alive.store(false, Ordering::SeqCst);
+                return Err(TransportError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "MCP server produced too many non-JSON lines on stdout",
+                )));
+            }
             tracing::debug!(line = %trimmed, "skipping non-JSON line from MCP server stdout");
         }
     }
@@ -155,6 +174,10 @@ impl StdioTransport {
 #[async_trait]
 impl McpTransport for StdioTransport {
     async fn send_request(&self, method: &str, params: Option<Value>) -> Result<JsonRpcResponse, TransportError> {
+        // Serialize the entire request/response cycle so concurrent callers
+        // cannot read each other's responses.
+        let _guard = self.request_lock.lock().await;
+
         let id = self.next_request_id();
         let req = JsonRpcRequest::new(id, method, params);
         let json = serde_json::to_string(&req)?;
@@ -200,14 +223,19 @@ impl McpTransport for StdioTransport {
     }
 
     fn is_alive(&self) -> bool {
-        self.alive.load(Ordering::Relaxed)
+        self.alive.load(Ordering::SeqCst)
     }
 
     async fn shutdown(&self) {
-        self.alive.store(false, Ordering::Relaxed);
+        self.alive.store(false, Ordering::SeqCst);
         let mut child = self.child.lock().await;
         // Close stdin to signal the process to exit.
-        drop(self.stdin.lock().await);
+        {
+            let mut stdin = self.stdin.lock().await;
+            if let Err(e) = stdin.shutdown().await {
+                tracing::debug!(error = %e, "error closing MCP server stdin");
+            }
+        }
         // Give the process a moment to exit gracefully.
         let timeout = tokio::time::timeout(
             tokio::time::Duration::from_secs(5),

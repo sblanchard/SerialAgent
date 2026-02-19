@@ -240,9 +240,9 @@ impl McpManager {
         self.servers.len()
     }
 
-    /// Return the total number of discovered tools across all servers.
+    /// Return the total number of discovered tools across all alive servers.
     pub fn tool_count(&self) -> usize {
-        self.servers.values().map(|s| s.tools.len()).sum()
+        self.servers.values().filter(|s| s.is_alive()).map(|s| s.tools.len()).sum()
     }
 
     /// Check if there are any configured servers.
@@ -250,11 +250,10 @@ impl McpManager {
         self.servers.is_empty()
     }
 
-    /// Gracefully shut down all servers.
+    /// Gracefully shut down all servers concurrently.
     pub async fn shutdown(&self) {
-        for server in self.servers.values() {
-            server.shutdown().await;
-        }
+        let futs: Vec<_> = self.servers.values().map(|s| s.shutdown()).collect();
+        futures_util::future::join_all(futs).await;
     }
 }
 
