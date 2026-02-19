@@ -49,6 +49,10 @@ pub(super) struct TurnContext {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum TurnEvent {
+    /// Reasoning/thinking content from the model.
+    #[serde(rename = "thought")]
+    Thought { content: String },
+
     /// Incremental text from the assistant.
     #[serde(rename = "assistant_delta")]
     AssistantDelta { text: String },
@@ -436,6 +440,11 @@ async fn run_turn_inner(
 
             let event = event_result?;
             match event {
+                StreamEvent::Thinking { text } => {
+                    let _ = tx
+                        .send(TurnEvent::Thought { content: text })
+                        .await;
+                }
                 StreamEvent::Token { text } => {
                     let _ = tx
                         .send(TurnEvent::AssistantDelta { text: text.clone() })

@@ -376,6 +376,15 @@ fn parse_sse_data(data: &str) -> Option<Result<StreamEvent>> {
         }
     }
 
+    // Reasoning content (DeepSeek, etc.)
+    if let Some(text) = delta.get("reasoning_content").and_then(|v| v.as_str()) {
+        if !text.is_empty() {
+            return Some(Ok(StreamEvent::Thinking {
+                text: text.to_string(),
+            }));
+        }
+    }
+
     // Text content delta.
     if let Some(text) = delta.get("content").and_then(|v| v.as_str()) {
         if !text.is_empty() {

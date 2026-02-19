@@ -133,7 +133,8 @@ pub async fn chat(
                 final_content = content;
             }
             TurnEvent::Error { message } => errors.push(message),
-            TurnEvent::AssistantDelta { .. } => { /* ignored in non-streaming */ }
+            TurnEvent::AssistantDelta { .. }
+            | TurnEvent::Thought { .. } => { /* ignored in non-streaming */ }
         }
     }
 
@@ -220,6 +221,7 @@ fn make_sse_stream(
     async_stream::stream! {
         while let Some(event) = rx.recv().await {
             let event_type = match &event {
+                TurnEvent::Thought { .. } => "thought",
                 TurnEvent::AssistantDelta { .. } => "assistant_delta",
                 TurnEvent::ToolCallEvent { .. } => "tool_call",
                 TurnEvent::ToolResult { .. } => "tool_result",

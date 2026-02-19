@@ -192,7 +192,8 @@ async fn chat_completions_blocking(
             TurnEvent::Error { message } => errors.push(message),
             TurnEvent::AssistantDelta { .. }
             | TurnEvent::ToolCallEvent { .. }
-            | TurnEvent::ToolResult { .. } => { /* ignored in non-streaming */ }
+            | TurnEvent::ToolResult { .. }
+            | TurnEvent::Thought { .. } => { /* ignored in non-streaming */ }
         }
     }
 
@@ -369,11 +370,13 @@ fn make_openai_sse_stream(
                     });
                     yield Ok(Event::default().data(err.to_string()));
                 }
-                // Tool events and usage are not surfaced in OpenAI compat
-                // streaming — only text deltas and the final stop marker.
+                // Tool events, usage, and thought events are not surfaced
+                // in OpenAI compat streaming — only text deltas and the
+                // final stop marker.
                 TurnEvent::ToolCallEvent { .. }
                 | TurnEvent::ToolResult { .. }
-                | TurnEvent::UsageEvent { .. } => {}
+                | TurnEvent::UsageEvent { .. }
+                | TurnEvent::Thought { .. } => {}
             }
         }
 

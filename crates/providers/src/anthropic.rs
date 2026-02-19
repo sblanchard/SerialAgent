@@ -338,6 +338,8 @@ fn parse_anthropic_usage(v: &Value) -> Option<Usage> {
 struct StreamState {
     /// Active tool call being assembled (block index -> (call_id, name, args_buffer)).
     active_tool_calls: std::collections::HashMap<u64, (String, String, String)>,
+    /// Block indices that are thinking/reasoning blocks.
+    thinking_blocks: std::collections::HashSet<u64>,
     /// Accumulated usage from message_start.
     usage: Option<Usage>,
     /// Whether a Done event has been emitted.
@@ -348,6 +350,7 @@ impl StreamState {
     fn new() -> Self {
         Self {
             active_tool_calls: std::collections::HashMap::new(),
+            thinking_blocks: std::collections::HashSet::new(),
             usage: None,
             done_emitted: false,
         }
@@ -380,24 +383,30 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Vec<Result<Stream
             let idx = v.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
             if let Some(block) = v.get("content_block") {
                 let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                if block_type == "tool_use" {
-                    let call_id = block
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let name = block
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    events.push(Ok(StreamEvent::ToolCallStarted {
-                        call_id: call_id.clone(),
-                        tool_name: name.clone(),
-                    }));
-                    state
-                        .active_tool_calls
-                        .insert(idx, (call_id, name, String::new()));
+                match block_type {
+                    "tool_use" => {
+                        let call_id = block
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let name = block
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        events.push(Ok(StreamEvent::ToolCallStarted {
+                            call_id: call_id.clone(),
+                            tool_name: name.clone(),
+                        }));
+                        state
+                            .active_tool_calls
+                            .insert(idx, (call_id, name, String::new()));
+                    }
+                    "thinking" => {
+                        state.thinking_blocks.insert(idx);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -407,6 +416,17 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Vec<Result<Stream
             if let Some(delta) = v.get("delta") {
                 let delta_type = delta.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 match delta_type {
+                    "thinking_delta" => {
+                        if state.thinking_blocks.contains(&idx) {
+                            if let Some(text) = delta.get("thinking").and_then(|v| v.as_str()) {
+                                if !text.is_empty() {
+                                    events.push(Ok(StreamEvent::Thinking {
+                                        text: text.to_string(),
+                                    }));
+                                }
+                            }
+                        }
+                    }
                     "text_delta" => {
                         if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
                             if !text.is_empty() {
@@ -434,6 +454,7 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Vec<Result<Stream
 
         "content_block_stop" => {
             let idx = v.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+            state.thinking_blocks.remove(&idx);
             if let Some((call_id, tool_name, args_str)) = state.active_tool_calls.remove(&idx) {
                 let arguments: Value =
                     serde_json::from_str(&args_str).unwrap_or(Value::Object(Default::default()));
