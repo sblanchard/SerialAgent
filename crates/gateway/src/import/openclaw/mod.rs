@@ -45,6 +45,7 @@
 //! - Filesystem identifiers (agent IDs, workspace names) validated via [`sanitize_ident()`]
 
 pub(crate) mod sanitize;
+pub mod config_gen;
 pub mod staging;
 mod copy;
 mod extract;
@@ -172,7 +173,7 @@ pub async fn apply_openclaw_import(
     }
 
     let inv = scan_inventory(&extracted_dir, &req.options).await?;
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
     let mut imported = ImportedSummary {
         dest_workspace_root: workspace_dest_root.to_string_lossy().to_string(),
         dest_sessions_root: sessions_dest_root.to_string_lossy().to_string(),
@@ -237,11 +238,6 @@ pub async fn apply_openclaw_import(
 
     // ── Models + auth profiles ──────────────────────────────────
     if req.options.include_models || req.options.include_auth_profiles {
-        warnings.push(
-            "Imported model/auth files are staged under workspace/imported/openclaw/...; \
-             not applied to live LLM config automatically."
-                .to_string(),
-        );
 
         for a in &inv.agents {
             sanitize_ident(&a.agent_id)?;

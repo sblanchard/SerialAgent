@@ -15,6 +15,7 @@ const {
   sshRemotePath,
   sshAuthMethod,
   sshKeyPath,
+  sshPassword,
   sshTesting,
   sshTestResult,
   preset,
@@ -170,11 +171,16 @@ const strategyLabel: Record<MergeStrategy, string> = {
               <select v-model="sshAuthMethod">
                 <option value="agent">SSH Agent (recommended)</option>
                 <option value="keyfile">Key File</option>
+                <option value="password">Password</option>
               </select>
             </div>
             <div v-if="sshAuthMethod === 'keyfile'" class="field flex-2">
               <label>Key path</label>
               <input v-model="sshKeyPath" placeholder="~/.ssh/id_ed25519" />
+            </div>
+            <div v-if="sshAuthMethod === 'password'" class="field flex-2">
+              <label>Password</label>
+              <input v-model="sshPassword" type="password" placeholder="SSH password" />
             </div>
           </div>
           <div class="ssh-test-row">

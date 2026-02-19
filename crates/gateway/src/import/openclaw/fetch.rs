@@ -41,21 +41,6 @@ pub(super) async fn fetch_export_tarball(
                 );
             }
 
-            // Password auth disabled by default (requires SA_IMPORT_ALLOW_SSH_PASSWORD=1)
-            if matches!(auth, SshAuth::Password { .. }) {
-                let allowed = std::env::var("SA_IMPORT_ALLOW_SSH_PASSWORD")
-                    .map(|v| v == "1" || v == "true")
-                    .unwrap_or(false);
-                if !allowed {
-                    return Err(OpenClawImportError::SshFailed(
-                        "SSH password auth is disabled by default for security. \
-                         Use ssh-agent or keyfile. To override, set \
-                         SA_IMPORT_ALLOW_SSH_PASSWORD=1"
-                            .into(),
-                    ));
-                }
-            }
-
             fetch_ssh_tar(
                 host,
                 user.as_deref(),
@@ -124,10 +109,11 @@ async fn fetch_ssh_tar(
 
     // Remote command: tar -C ~/.openclaw -czf - agents workspace workspace-* ...
     // Run via "sh -lc" to expand workspace-* safely.
+    // Use bash + nullglob so workspace-* expands to nothing when no matches exist.
     let remote_cmd = format!(
-        "sh -lc {}",
+        "bash -lc {}",
         shell_escape(&format!(
-            "tar -C {} -czf - {}",
+            "shopt -s nullglob; tar -C {} -czf - {}",
             remote_openclaw,
             includes.join(" ")
         ))
@@ -138,36 +124,46 @@ async fn fetch_ssh_tar(
         None => host.to_string(),
     };
 
-    let mut cmd = Command::new("ssh");
-    cmd.arg("-o").arg("BatchMode=yes");
+    let is_password = matches!(auth, SshAuth::Password { .. });
+
+    let mut cmd = if is_password {
+        let mut c = Command::new("sshpass");
+        c.arg("-e"); // read password from SSHPASS env var
+        c.arg("ssh");
+        c
+    } else {
+        Command::new("ssh")
+    };
+
+    if is_password {
+        if let SshAuth::Password { password } = auth {
+            cmd.env("SSHPASS", password);
+        }
+        cmd.arg("-o").arg("PreferredAuthentications=password,keyboard-interactive");
+    } else {
+        cmd.arg("-o").arg("BatchMode=yes");
+        cmd.arg("-o").arg("PreferredAuthentications=publickey");
+        cmd.arg("-o").arg("KbdInteractiveAuthentication=no");
+    }
+
     if strict_host_key_checking {
         cmd.arg("-o").arg("StrictHostKeyChecking=yes");
     } else {
         cmd.arg("-o").arg("StrictHostKeyChecking=accept-new");
     }
-    // Connection timeout to prevent hanging
     cmd.arg("-o").arg("ConnectTimeout=30");
-    // Restrict to publickey auth only — prevents interactive prompts,
-    // password prompts, and keyboard-interactive challenges.
-    cmd.arg("-o").arg("PreferredAuthentications=publickey");
-    cmd.arg("-o").arg("KbdInteractiveAuthentication=no");
 
     if let Some(p) = port {
         cmd.arg("-p").arg(p.to_string());
     }
 
     match auth {
-        SshAuth::Agent => {
-            // default
-        }
+        SshAuth::Agent => {}
         SshAuth::KeyFile { key_path } => {
             cmd.arg("-i").arg(key_path);
         }
         SshAuth::Password { .. } => {
-            // Password auth gate is checked in fetch_export_tarball()
-            return Err(OpenClawImportError::SshFailed(
-                "password auth not implemented; use ssh-agent or keyfile".into(),
-            ));
+            // handled above via sshpass
         }
     }
 

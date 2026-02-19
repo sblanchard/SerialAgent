@@ -53,8 +53,9 @@ export function useOpenClawImport() {
   const sshUser = ref("");
   const sshPort = ref("");
   const sshRemotePath = ref("~/.openclaw");
-  const sshAuthMethod = ref<"agent" | "keyfile">("agent");
+  const sshAuthMethod = ref<"agent" | "keyfile" | "password">("agent");
   const sshKeyPath = ref("~/.ssh/id_ed25519");
+  const sshPassword = ref("");
   const sshTesting = ref(false);
   const sshTestResult = ref<{ ok: boolean; message: string } | null>(null);
 
@@ -123,7 +124,9 @@ export function useOpenClawImport() {
     const auth: SshAuth =
       sshAuthMethod.value === "keyfile"
         ? { key_file: { key_path: sshKeyPath.value } }
-        : "agent";
+        : sshAuthMethod.value === "password"
+          ? { password: { password: sshPassword.value } }
+          : "agent";
     return {
       ssh: {
         host: sshHost.value,
@@ -141,10 +144,17 @@ export function useOpenClawImport() {
     sshTesting.value = true;
     sshTestResult.value = null;
     try {
+      const auth: SshAuth =
+        sshAuthMethod.value === "keyfile"
+          ? { key_file: { key_path: sshKeyPath.value } }
+          : sshAuthMethod.value === "password"
+            ? { password: { password: sshPassword.value } }
+            : "agent";
       const res = await api.testSsh(
         sshHost.value,
         sshUser.value || undefined,
-        sshPort.value ? parseInt(sshPort.value) : undefined
+        sshPort.value ? parseInt(sshPort.value) : undefined,
+        auth
       );
       sshTestResult.value = {
         ok: res.ok,
@@ -259,6 +269,7 @@ export function useOpenClawImport() {
     sshRemotePath,
     sshAuthMethod,
     sshKeyPath,
+    sshPassword,
     sshTesting: readonly(sshTesting),
     sshTestResult: readonly(sshTestResult),
     preset,

@@ -753,8 +753,8 @@ export const api = {
     post<ImportPreviewResponse>("/v1/import/openclaw/preview", req),
   importApply: (req: ImportApplyRequestV2) =>
     post<ImportApplyResponseV2>("/v1/import/openclaw/apply", req),
-  testSsh: (host: string, user?: string, port?: number) =>
-    post<TestSshResponse>("/v1/import/openclaw/test-ssh", { host, user, port }),
+  testSsh: (host: string, user?: string, port?: number, auth?: SshAuth) =>
+    post<TestSshResponse>("/v1/import/openclaw/test-ssh", { host, user, port, auth }),
   listStaging: () =>
     get<StagingListResponse>("/v1/import/openclaw/staging"),
   deleteStaging: (id: string) =>
