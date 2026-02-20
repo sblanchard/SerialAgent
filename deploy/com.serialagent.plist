@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.serialagent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/serialagent/serialagent</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/opt/serialagent</string>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- ── Environment variables ─────────────────────────────────── -->
+    <!-- Uncomment and set values for each variable you need.        -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Path to the configuration file -->
+        <key>SA_CONFIG</key>
+        <string>/opt/serialagent/config.toml</string>
+
+        <!-- API authentication token (set your value) -->
+        <!-- <key>SA_API_TOKEN</key>  -->
+        <!-- <string>your-api-token-here</string> -->
+
+        <!-- Admin authentication token (set your value) -->
+        <!-- <key>SA_ADMIN_TOKEN</key> -->
+        <!-- <string>your-admin-token-here</string> -->
+
+        <!-- Log level -->
+        <key>RUST_LOG</key>
+        <string>info,sa_gateway=debug</string>
+    </dict>
+
+    <!-- ── Logging ───────────────────────────────────────────────── -->
+    <key>StandardOutPath</key>
+    <string>/opt/serialagent/logs/serialagent.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/opt/serialagent/logs/serialagent.stderr.log</string>
+
+    <!-- ── Process limits ────────────────────────────────────────── -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>4096</integer>
+    </dict>
+
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>8192</integer>
+    </dict>
+
+    <!-- Restart throttling: wait 5 seconds between restarts -->
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>

@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import NavBar from "./components/NavBar.vue";
+import { useTheme } from "./composables/useTheme";
+
+useTheme(); // Apply data-theme attribute on mount
 </script>
 
 <template>
@@ -13,9 +16,11 @@ import NavBar from "./components/NavBar.vue";
 
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
 :root {
   --bg: #0d1117;
   --bg-card: #161b22;
+  --bg-code: #21262d;
   --border: #30363d;
   --text: #c9d1d9;
   --text-dim: #8b949e;
@@ -27,6 +32,21 @@ import NavBar from "./components/NavBar.vue";
   --font: system-ui, -apple-system, sans-serif;
   --mono: "SF Mono", "Cascadia Code", "Fira Code", monospace;
 }
+
+[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-card: #f6f8fa;
+  --bg-code: #e6edf3;
+  --border: #d0d7de;
+  --text: #1f2328;
+  --text-dim: #656d76;
+  --accent: #0969da;
+  --accent-dim: #0550ae;
+  --green: #1a7f37;
+  --red: #cf222e;
+  --yellow: #9a6700;
+}
+
 body {
   font-family: var(--font);
   background: var(--bg);
@@ -39,7 +59,7 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 code {
   font-family: var(--mono);
-  background: #21262d;
+  background: var(--bg-code);
   padding: 0.15em 0.4em;
   border-radius: 3px;
   font-size: 0.88em;

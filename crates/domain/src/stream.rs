@@ -11,6 +11,10 @@ pub type BoxStream<'a, T> = Pin<Box<dyn futures_core::Stream<Item = T> + Send + 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum StreamEvent {
+    /// Reasoning/thinking content from the model (e.g. Claude extended thinking, DeepSeek reasoning).
+    #[serde(rename = "thinking")]
+    Thinking { text: String },
+
     /// A text token chunk.
     #[serde(rename = "token")]
     Token { text: String },

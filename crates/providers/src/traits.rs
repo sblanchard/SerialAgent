@@ -3,6 +3,32 @@ use sa_domain::error::Result;
 use sa_domain::stream::Usage;
 use sa_domain::stream::{BoxStream, StreamEvent};
 use sa_domain::tool::{Message, ToolCall, ToolDefinition};
+use serde::{Deserialize, Serialize};
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Response format
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Controls the format of the model's response.
+///
+/// - `Text` (default): the model responds with free-form text.
+/// - `JsonObject`: the model is instructed to respond with valid JSON.
+/// - `JsonSchema`: the model is instructed to respond with JSON conforming to a
+///   specific schema (supported by OpenAI-compat; best-effort on other providers).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseFormat {
+    #[default]
+    Text,
+    JsonObject,
+    JsonSchema {
+        name: String,
+        schema: serde_json::Value,
+        #[serde(default)]
+        strict: bool,
+    },
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Request / Response types
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -18,8 +44,8 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     /// Maximum tokens in the response. `None` lets the provider choose.
     pub max_tokens: Option<u32>,
-    /// When `true`, request the model to respond with valid JSON only.
-    pub json_mode: bool,
+    /// Controls the response format: plain text, JSON object, or JSON with a schema.
+    pub response_format: ResponseFormat,
     /// Model identifier override. When `None`, the provider uses its default.
     pub model: Option<String>,
 }

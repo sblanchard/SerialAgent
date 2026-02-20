@@ -1,5 +1,8 @@
 pub mod anthropic;
+pub mod auth;
+pub mod bedrock;
 pub mod google;
+pub mod oauth;
 pub mod openai_compat;
 pub mod registry;
 pub mod router;
@@ -10,4 +13,6 @@ pub(crate) mod util;
 // Re-exports for convenience.
 pub use registry::ProviderRegistry;
 pub use router::LlmRouter;
-pub use traits::{ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider};
+pub use traits::{
+    ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider, ResponseFormat,
+};

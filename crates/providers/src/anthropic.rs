@@ -4,9 +4,10 @@
 //! the Anthropic-specific message structure where system messages go in a
 //! separate top-level `system` field.
 
-use crate::util::{from_reqwest, resolve_api_key};
+use crate::auth::AuthRotator;
+use crate::util::from_reqwest;
 use crate::traits::{
-    ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider,
+    ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider, ResponseFormat,
 };
 use sa_domain::capability::LlmCapabilities;
 use sa_domain::config::ProviderConfig;
@@ -14,6 +15,7 @@ use sa_domain::error::{Error, Result};
 use sa_domain::stream::{BoxStream, StreamEvent, Usage};
 use sa_domain::tool::{ContentPart, Message, MessageContent, Role, ToolCall, ToolDefinition};
 use serde_json::Value;
+use std::sync::Arc;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Constants
@@ -29,7 +31,7 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 pub struct AnthropicProvider {
     id: String,
     base_url: String,
-    api_key: String,
+    auth: Arc<AuthRotator>,
     default_model: String,
     capabilities: LlmCapabilities,
     client: reqwest::Client,
@@ -38,7 +40,7 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     /// Create a new provider from the deserialized provider config.
     pub fn from_config(cfg: &ProviderConfig) -> Result<Self> {
-        let api_key = resolve_api_key(&cfg.auth)?;
+        let auth = Arc::new(AuthRotator::from_auth_config(&cfg.auth)?);
         let default_model = cfg
             .default_model
             .clone()
@@ -61,7 +63,7 @@ impl AnthropicProvider {
         Ok(Self {
             id: cfg.id.clone(),
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
-            api_key,
+            auth,
             default_model,
             capabilities,
             client,
@@ -71,9 +73,10 @@ impl AnthropicProvider {
     // ── Internal helpers ───────────────────────────────────────────
 
     fn authed_post(&self, url: &str) -> reqwest::RequestBuilder {
+        let entry = self.auth.next_key();
         self.client
             .post(url)
-            .header("x-api-key", &self.api_key)
+            .header("x-api-key", &entry.key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("Content-Type", "application/json")
     }
@@ -103,6 +106,32 @@ impl AnthropicProvider {
                     // Anthropic expects tool results as user messages with
                     // tool_result content blocks.
                     api_messages.push(tool_result_to_anthropic(msg));
+                }
+            }
+        }
+
+        // JSON output: use prefill approach to guide the model.
+        // Anthropic does not have native JSON mode; we add an assistant prefill
+        // with `{` so the model continues producing valid JSON.
+        match &req.response_format {
+            ResponseFormat::Text => {}
+            ResponseFormat::JsonObject | ResponseFormat::JsonSchema { .. } => {
+                tracing::debug!(
+                    "Anthropic: structured output requested — using assistant prefill; \
+                     schema enforcement is best-effort for this provider"
+                );
+                // Only add prefill if the last message is from the user (to keep
+                // valid Anthropic message alternation).
+                let last_is_user = api_messages
+                    .last()
+                    .and_then(|m| m.get("role"))
+                    .and_then(|r| r.as_str())
+                    == Some("user");
+                if last_is_user {
+                    api_messages.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": "{",
+                    }));
                 }
             }
         }
@@ -335,6 +364,8 @@ fn parse_anthropic_usage(v: &Value) -> Option<Usage> {
 struct StreamState {
     /// Active tool call being assembled (block index -> (call_id, name, args_buffer)).
     active_tool_calls: std::collections::HashMap<u64, (String, String, String)>,
+    /// Block indices that are thinking/reasoning blocks.
+    thinking_blocks: std::collections::HashSet<u64>,
     /// Accumulated usage from message_start.
     usage: Option<Usage>,
     /// Whether a Done event has been emitted.
@@ -345,6 +376,7 @@ impl StreamState {
     fn new() -> Self {
         Self {
             active_tool_calls: std::collections::HashMap::new(),
+            thinking_blocks: std::collections::HashSet::new(),
             usage: None,
             done_emitted: false,
         }
@@ -377,24 +409,30 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Vec<Result<Stream
             let idx = v.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
             if let Some(block) = v.get("content_block") {
                 let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                if block_type == "tool_use" {
-                    let call_id = block
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let name = block
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    events.push(Ok(StreamEvent::ToolCallStarted {
-                        call_id: call_id.clone(),
-                        tool_name: name.clone(),
-                    }));
-                    state
-                        .active_tool_calls
-                        .insert(idx, (call_id, name, String::new()));
+                match block_type {
+                    "tool_use" => {
+                        let call_id = block
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let name = block
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        events.push(Ok(StreamEvent::ToolCallStarted {
+                            call_id: call_id.clone(),
+                            tool_name: name.clone(),
+                        }));
+                        state
+                            .active_tool_calls
+                            .insert(idx, (call_id, name, String::new()));
+                    }
+                    "thinking" => {
+                        state.thinking_blocks.insert(idx);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -404,6 +442,17 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Vec<Result<Stream
             if let Some(delta) = v.get("delta") {
                 let delta_type = delta.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 match delta_type {
+                    "thinking_delta" => {
+                        if state.thinking_blocks.contains(&idx) {
+                            if let Some(text) = delta.get("thinking").and_then(|v| v.as_str()) {
+                                if !text.is_empty() {
+                                    events.push(Ok(StreamEvent::Thinking {
+                                        text: text.to_string(),
+                                    }));
+                                }
+                            }
+                        }
+                    }
                     "text_delta" => {
                         if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
                             if !text.is_empty() {
@@ -431,6 +480,7 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Vec<Result<Stream
 
         "content_block_stop" => {
             let idx = v.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+            state.thinking_blocks.remove(&idx);
             if let Some((call_id, tool_name, args_str)) = state.active_tool_calls.remove(&idx) {
                 let arguments: Value =
                     serde_json::from_str(&args_str).unwrap_or(Value::Object(Default::default()));

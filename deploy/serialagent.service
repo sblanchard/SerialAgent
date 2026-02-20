@@ -1,0 +1,50 @@
+# SerialAgent — systemd unit file
+# Install: sudo cp serialagent.service /etc/systemd/system/
+# Enable:  sudo systemctl enable serialagent
+# Start:   sudo systemctl start serialagent
+
+[Unit]
+Description=SerialAgent Gateway
+Documentation=https://github.com/serialcoder/SerialAgent
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=serialagent
+Group=serialagent
+WorkingDirectory=/opt/serialagent
+ExecStart=/opt/serialagent/serialagent
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=10
+TimeoutStopSec=10
+
+# ── Environment ──────────────────────────────────────────────────────
+# Option A: Inline variables (uncomment and set values)
+# Environment=SA_CONFIG=/opt/serialagent/config.toml
+# Environment=SA_API_TOKEN=<your-api-token-here>
+# Environment=SA_ADMIN_TOKEN=<your-admin-token-here>
+# Environment=RUST_LOG=info,sa_gateway=debug
+
+# Option B: Environment file (recommended for secrets)
+# Create /opt/serialagent/.env with KEY=VALUE pairs, one per line.
+# EnvironmentFile=/opt/serialagent/.env
+
+# ── Hardening ────────────────────────────────────────────────────────
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/serialagent/data /opt/serialagent/workspace
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# ── Logging ──────────────────────────────────────────────────────────
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=serialagent
+
+[Install]
+WantedBy=multi-user.target

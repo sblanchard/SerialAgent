@@ -2,9 +2,10 @@
 import { ref, onMounted, onUnmounted, computed } from "vue";
 import { useRouter } from "vue-router";
 import { api, ApiError } from "@/api/client";
-import type { Schedule, ScheduleDetailResponse, Delivery, ScheduleEvent } from "@/api/client";
+import type { Schedule, ScheduleDetailResponse, Delivery, ScheduleEvent, UpdateScheduleRequest, MissedPolicy, DigestMode } from "@/api/client";
 import Card from "@/components/Card.vue";
 import LoadingPanel from "@/components/LoadingPanel.vue";
+import TimezonePicker from "@/components/TimezonePicker.vue";
 
 const props = defineProps<{ id: string }>();
 const router = useRouter();
@@ -20,6 +21,82 @@ const dryRunResult = ref<unknown>(null);
 const dryRunLoading = ref(false);
 const dryRunError = ref("");
 const dryRunOpen = ref(false);
+
+// ── Edit mode ────────────────────────────────────────────────────
+const editing = ref(false);
+const editName = ref("");
+const editCron = ref("");
+const editTimezone = ref("UTC");
+const editPrompt = ref("");
+const editSources = ref("");
+const editMissedPolicy = ref<MissedPolicy>("run_once");
+const editDigestMode = ref<DigestMode>("full");
+const editMaxConcurrency = ref(1);
+const editMaxCatchupRuns = ref(5);
+const editTimeoutMs = ref<number | null>(null);
+const editSubmitting = ref(false);
+const editError = ref("");
+
+function startEdit() {
+  if (!schedule.value) return;
+  const s = schedule.value;
+  editName.value = s.name;
+  editCron.value = s.cron;
+  editTimezone.value = s.timezone;
+  editPrompt.value = s.prompt_template;
+  editSources.value = s.sources.join("\n");
+  editMissedPolicy.value = s.missed_policy;
+  editDigestMode.value = s.digest_mode;
+  editMaxConcurrency.value = s.max_concurrency;
+  editMaxCatchupRuns.value = s.max_catchup_runs;
+  editTimeoutMs.value = s.timeout_ms ?? null;
+  editError.value = "";
+  editing.value = true;
+}
+
+function cancelEdit() {
+  editing.value = false;
+  editError.value = "";
+}
+
+async function submitEdit() {
+  if (!schedule.value) return;
+  editError.value = "";
+
+  if (!editName.value.trim() || !editCron.value.trim() || !editPrompt.value.trim()) {
+    editError.value = "Name, cron expression, and prompt template are required.";
+    return;
+  }
+
+  const sources = editSources.value
+    .split("\n")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  const req: UpdateScheduleRequest = {
+    name: editName.value.trim(),
+    cron: editCron.value.trim(),
+    timezone: editTimezone.value,
+    prompt_template: editPrompt.value.trim(),
+    sources,
+    missed_policy: editMissedPolicy.value,
+    digest_mode: editDigestMode.value,
+    max_concurrency: editMaxConcurrency.value,
+    max_catchup_runs: editMaxCatchupRuns.value,
+    timeout_ms: editTimeoutMs.value,
+  };
+
+  editSubmitting.value = true;
+  try {
+    await api.updateSchedule(schedule.value.id, req);
+    editing.value = false;
+    await load();
+  } catch (e: unknown) {
+    editError.value = e instanceof ApiError ? e.friendly : String(e);
+  } finally {
+    editSubmitting.value = false;
+  }
+}
 
 let cooldownTimer: ReturnType<typeof setInterval> | null = null;
 let eventSource: EventSource | null = null;
@@ -218,6 +295,7 @@ function goToRun(runId?: string) {
     <template v-if="schedule">
       <!-- Actions -->
       <div class="actions-bar">
+        <button class="action-btn edit-btn" @click="startEdit" :disabled="editing">Edit</button>
         <button class="action-btn run-btn" @click="runNow">Run Now</button>
         <button
           class="action-btn dry-run-btn"
@@ -236,6 +314,74 @@ function goToRun(runId?: string) {
         >Reset Errors</button>
         <span class="status-badge" :class="statusClass">{{ statusLabel }}</span>
       </div>
+
+      <!-- Edit Form -->
+      <Card v-if="editing" title="Edit Schedule">
+        <p v-if="editError" class="error">{{ editError }}</p>
+
+        <div class="edit-field">
+          <label>Name</label>
+          <input v-model="editName" />
+        </div>
+
+        <div class="edit-field">
+          <label>Cron Expression</label>
+          <input v-model="editCron" placeholder="*/30 * * * *" />
+        </div>
+
+        <div class="edit-field">
+          <label>Timezone</label>
+          <TimezonePicker v-model="editTimezone" />
+        </div>
+
+        <div class="edit-field">
+          <label>Prompt Template</label>
+          <textarea v-model="editPrompt" rows="4"></textarea>
+        </div>
+
+        <div class="edit-field">
+          <label>URLs / Sources (one per line)</label>
+          <textarea v-model="editSources" rows="3"></textarea>
+        </div>
+
+        <div class="edit-field-row">
+          <div class="edit-field">
+            <label>Missed Policy</label>
+            <select v-model="editMissedPolicy">
+              <option value="run_once">Run Once</option>
+              <option value="catch_up">Catch Up</option>
+              <option value="skip">Skip</option>
+            </select>
+          </div>
+          <div class="edit-field">
+            <label>Digest Mode</label>
+            <select v-model="editDigestMode">
+              <option value="full">Full</option>
+              <option value="changes_only">Changes Only</option>
+            </select>
+          </div>
+          <div class="edit-field">
+            <label>Max Concurrency</label>
+            <input type="number" v-model.number="editMaxConcurrency" min="1" max="10" />
+          </div>
+          <div class="edit-field">
+            <label>Max Catch-up Runs</label>
+            <input type="number" v-model.number="editMaxCatchupRuns" min="1" max="100" />
+          </div>
+        </div>
+
+        <div class="edit-field">
+          <label>Timeout (ms, blank = none)</label>
+          <input type="number" v-model.number="editTimeoutMs" placeholder="No timeout" />
+        </div>
+
+        <div class="edit-actions">
+          <button @click="submitEdit" :disabled="editSubmitting">
+            {{ editSubmitting ? "Saving..." : "Save Changes" }}
+          </button>
+          <button class="secondary" @click="cancelEdit" :disabled="editSubmitting">Cancel</button>
+        </div>
+      </Card>
 
       <!-- Dry Run Result -->
       <Card v-if="dryRunOpen" title="Dry Run Result">
@@ -473,6 +619,9 @@ function goToRun(runId?: string) {
 .dry-run-btn { color: var(--accent); border-color: var(--accent); }
 .dry-run-btn:hover:not(:disabled) { background: rgba(88, 166, 255, 0.1); }
 .dry-run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.edit-btn { color: var(--accent); border-color: var(--accent); }
+.edit-btn:hover:not(:disabled) { background: rgba(88, 166, 255, 0.1); }
+.edit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .reset-btn { color: var(--yellow, #d29922); border-color: var(--yellow, #d29922); }
 .reset-btn:hover { background: rgba(210, 153, 34, 0.1); }
 
@@ -633,4 +782,72 @@ function goToRun(runId?: string) {
   border-bottom: 1px solid var(--border);
 }
 .sources-list li:last-child { border-bottom: none; }
+
+/* ── Edit form ─────────────────────────────────────────────── */
+.edit-field-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.8rem;
+  margin-bottom: 0.8rem;
+}
+.edit-field-row .edit-field { margin-bottom: 0; }
+
+.edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-bottom: 0.8rem;
+}
+
+.edit-field label {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+.edit-field input,
+.edit-field textarea,
+.edit-field select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.5rem 0.8rem;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 0.88rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.edit-field textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.edit-actions {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+}
+
+.edit-actions button {
+  padding: 0.5rem 1.2rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.edit-actions button:first-child {
+  background: var(--accent-dim);
+  color: white;
+  border: none;
+}
+.edit-actions button:first-child:hover:not(:disabled) { background: var(--accent); }
+.edit-actions button:first-child:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.edit-actions button.secondary {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.edit-actions button.secondary:hover:not(:disabled) { color: var(--text); border-color: var(--text-dim); }
 </style>

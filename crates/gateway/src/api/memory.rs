@@ -97,27 +97,38 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateMemoryBody {
+    pub content: String,
+}
+
 pub async fn update_entry(
-    State(_state): State<AppState>,
-    Path(_id): Path<String>,
-    Json(_body): Json<serde_json::Value>,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateMemoryBody>,
 ) -> impl IntoResponse {
-    // TODO: Wire to SerialMemory PATCH /api/memories/{id}
-    (
-        axum::http::StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({ "error": "not yet implemented" })),
-    )
+    match state.memory.update_memory(&id, &body.content).await {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 pub async fn delete_entry(
-    State(_state): State<AppState>,
-    Path(_id): Path<String>,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
 ) -> impl IntoResponse {
-    // TODO: Wire to SerialMemory DELETE /api/memories/{id}
-    (
-        axum::http::StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({ "error": "not yet implemented" })),
-    )
+    match state.memory.delete_memory(&id).await {
+        Ok(()) => Json(serde_json::json!({ "deleted": true })).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]

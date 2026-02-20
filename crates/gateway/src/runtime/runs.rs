@@ -104,6 +104,9 @@ pub struct Run {
     pub nodes: Vec<RunNode>,
     /// Number of tool-call loop iterations.
     pub loop_count: u32,
+    /// Estimated cost in USD based on configured model pricing.
+    #[serde(default)]
+    pub estimated_cost_usd: f64,
 }
 
 impl Run {
@@ -126,6 +129,7 @@ impl Run {
             error: None,
             nodes: Vec::new(),
             loop_count: 0,
+            estimated_cost_usd: 0.0,
         }
     }
 
@@ -159,6 +163,13 @@ pub enum RunEvent {
     Log { run_id: Uuid, level: String, message: String },
     #[serde(rename = "usage")]
     Usage { run_id: Uuid, input_tokens: u32, output_tokens: u32, total_tokens: u32 },
+    /// Emitted when a command requires human approval before execution.
+    #[serde(rename = "exec.approval_required")]
+    ExecApprovalRequired {
+        approval_id: Uuid,
+        command: String,
+        session_key: String,
+    },
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -672,5 +683,32 @@ mod tests {
         // truncate(msg, 200) should produce at most 200 + 3 ("...") = 203 bytes
         assert!(preview.len() <= 203);
         assert!(preview.ends_with("..."));
+    }
+
+    #[test]
+    fn run_estimated_cost_defaults_to_zero() {
+        let run = Run::new("sk".into(), "sid".into(), "hello");
+        assert!((run.estimated_cost_usd - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn run_estimated_cost_serialization_roundtrip() {
+        let mut run = Run::new("sk".into(), "sid".into(), "hello");
+        run.estimated_cost_usd = 0.0075;
+        let json = serde_json::to_string(&run).unwrap();
+        let deserialized: Run = serde_json::from_str(&json).unwrap();
+        assert!((deserialized.estimated_cost_usd - 0.0075).abs() < 1e-10);
+    }
+
+    #[test]
+    fn run_deserializes_without_cost_field() {
+        // Simulate a persisted run from before the cost field was added.
+        let mut run = Run::new("sk".into(), "sid".into(), "hello");
+        run.estimated_cost_usd = 0.0;
+        let json = serde_json::to_string(&run).unwrap();
+        // Remove the estimated_cost_usd field to simulate old data.
+        let json = json.replace(r#","estimated_cost_usd":0.0"#, "");
+        let deserialized: Run = serde_json::from_str(&json).unwrap();
+        assert!((deserialized.estimated_cost_usd - 0.0).abs() < f64::EPSILON);
     }
 }

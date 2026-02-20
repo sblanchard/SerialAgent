@@ -29,14 +29,23 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], defau
 axum = { version = "0.7", features = ["json", "ws"] }
 tower = { version = "0.4", features = ["limit"] }
 tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }
+tower_governor = "0.4"
 tokio-tungstenite = "0.24"
 
 # Observability
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
+opentelemetry = { version = "0.31", features = ["trace"] }
+opentelemetry_sdk = { version = "0.31", features = ["trace", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.31", features = ["trace", "grpc-tonic"] }
+tracing-opentelemetry = "0.32"
 
 # Regex
 regex = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+rustyline = "15"
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -46,6 +55,8 @@ anyhow = "1"
 thiserror = "1"
 parking_lot = "0.12"
 sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
 subtle = "2"
 flate2 = "1"
 tar = "0.4"
@@ -61,3 +72,8 @@ sa-protocol = { path = "crates/node-protocol" }
 sa-sessions = { path = "crates/sessions" }
 sa-tools = { path = "crates/tools" }
 sa-node-sdk = { path = "crates/node-sdk" }
+sa-mcp-client = { path = "crates/mcp-client" }
+
+# Credential storage
+keyring = { version = "3", features = ["sync-secret-service", "apple-native", "windows-native"] }
+rpassword = "5"

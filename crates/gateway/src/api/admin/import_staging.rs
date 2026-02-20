@@ -5,6 +5,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use serde::Deserialize;
 
+use crate::api::import_openclaw::SshAuth;
 use crate::state::AppState;
 
 use super::guard::AdminGuard;
@@ -49,6 +50,10 @@ pub async fn import_openclaw_apply_v2(
     let ws_dest = state.config.workspace.path.clone();
     let sess_dest = state.config.workspace.state_path.join("sessions");
 
+    // Capture before req is moved into apply.
+    let should_gen_config = req.options.include_models || req.options.include_auth_profiles;
+    let staging_id = req.staging_id;
+
     match crate::import::openclaw::apply_openclaw_import(
         req,
         &staging_root,
@@ -57,8 +62,53 @@ pub async fn import_openclaw_apply_v2(
     )
     .await
     {
-        Ok(resp) => {
-            // Refresh workspace reader after import
+        Ok(mut resp) => {
+            // Auto-generate config.toml entries from imported provider data.
+            if should_gen_config && !resp.imported.agents.is_empty() {
+                let extracted_dir = staging_root
+                    .join(staging_id.to_string())
+                    .join("extracted");
+                let config_path = std::path::PathBuf::from(
+                    std::env::var("SA_CONFIG").unwrap_or_else(|_| "config.toml".into()),
+                );
+
+                match crate::import::openclaw::config_gen::generate_config_from_import(
+                    &extracted_dir,
+                    &resp.imported.agents,
+                    &state.config,
+                )
+                .await
+                {
+                    Ok((merged, config_changes)) => {
+                        if !config_changes.is_empty() {
+                            match crate::import::openclaw::config_gen::write_config_with_backup(
+                                &merged,
+                                &config_path,
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    resp.warnings.extend(config_changes);
+                                    resp.warnings.push(
+                                        "config.toml updated — restart gateway to apply LLM changes"
+                                            .into(),
+                                    );
+                                }
+                                Err(e) => {
+                                    resp.warnings
+                                        .push(format!("config.toml auto-update failed: {e}"));
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        resp.warnings
+                            .push(format!("config.toml auto-generation failed: {e}"));
+                    }
+                }
+            }
+
+            // Refresh workspace reader after import.
             state.workspace.refresh();
             Json(resp).into_response()
         }
@@ -77,6 +127,8 @@ pub struct TestSshRequest {
     pub user: Option<String>,
     #[serde(default)]
     pub port: Option<u16>,
+    #[serde(default)]
+    pub auth: SshAuth,
 }
 
 pub async fn import_openclaw_test_ssh(
@@ -123,16 +175,40 @@ pub async fn import_openclaw_test_ssh(
         None => req.host.clone(),
     };
 
-    let mut cmd = tokio::process::Command::new("ssh");
+    let is_password = matches!(req.auth, SshAuth::Password { .. });
+
+    let mut cmd = if is_password {
+        let mut c = tokio::process::Command::new("sshpass");
+        c.arg("-e").arg("ssh");
+        c
+    } else {
+        tokio::process::Command::new("ssh")
+    };
+
+    if is_password {
+        if let SshAuth::Password { ref password } = req.auth {
+            cmd.env("SSHPASS", password);
+        }
+        cmd.arg("-o").arg("PreferredAuthentications=password,keyboard-interactive");
+    } else {
+        cmd.arg("-o").arg("BatchMode=yes");
+        cmd.arg("-o").arg("PreferredAuthentications=publickey");
+        cmd.arg("-o").arg("KbdInteractiveAuthentication=no");
+    }
+
     cmd.arg("-o")
-        .arg("BatchMode=yes")
-        .arg("-o")
         .arg("StrictHostKeyChecking=accept-new")
         .arg("-o")
         .arg("ConnectTimeout=10");
+
     if let Some(p) = req.port {
         cmd.arg("-p").arg(p.to_string());
     }
+
+    if let SshAuth::KeyFile { key_path } = &req.auth {
+        cmd.arg("-i").arg(key_path);
+    }
+
     cmd.arg(&target).arg("echo ok");
 
     match cmd.output().await {

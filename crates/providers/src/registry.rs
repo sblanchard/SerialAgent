@@ -5,6 +5,7 @@
 //! keys), and instantiates the appropriate adapter for each configured provider.
 
 use crate::anthropic::AnthropicProvider;
+use crate::bedrock::BedrockProvider;
 use crate::google::GoogleProvider;
 use crate::openai_compat::OpenAiCompatProvider;
 use crate::traits::LlmProvider;
@@ -77,7 +78,9 @@ impl ProviderRegistry {
 
         for pc in &config.providers {
             let result: Result<Arc<dyn LlmProvider>> = match pc.kind {
-                ProviderKind::OpenaiCompat | ProviderKind::OpenaiCodexOauth => {
+                ProviderKind::OpenaiCompat
+                | ProviderKind::OpenaiCodexOauth
+                | ProviderKind::AzureOpenai => {
                     OpenAiCompatProvider::from_config(pc)
                         .map(|p| Arc::new(p) as Arc<dyn LlmProvider>)
                 }
@@ -86,6 +89,10 @@ impl ProviderRegistry {
                 }
                 ProviderKind::Google => {
                     GoogleProvider::from_config(pc).map(|p| Arc::new(p) as Arc<dyn LlmProvider>)
+                }
+                ProviderKind::AwsBedrock => {
+                    BedrockProvider::from_config(pc)
+                        .map(|p| Arc::new(p) as Arc<dyn LlmProvider>)
                 }
             };
 

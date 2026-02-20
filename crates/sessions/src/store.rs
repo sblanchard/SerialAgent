@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
@@ -13,6 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use sa_domain::error::{Error, Result};
 use sa_domain::trace::TraceEvent;
+
+use crate::search::{SearchHit, TranscriptIndex};
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Session entry
@@ -71,6 +74,7 @@ impl From<&sa_domain::config::InboundMetadata> for SessionOrigin {
 pub struct SessionStore {
     sessions_path: PathBuf,
     sessions: RwLock<HashMap<String, SessionEntry>>,
+    search_index: Arc<TranscriptIndex>,
 }
 
 impl SessionStore {
@@ -89,6 +93,9 @@ impl SessionStore {
             HashMap::new()
         };
 
+        // Build the full-text search index from existing transcript files.
+        let search_index = Arc::new(TranscriptIndex::build_from_dir(&dir));
+
         tracing::info!(
             sessions = sessions.len(),
             path = %sessions_path.display(),
@@ -98,6 +105,7 @@ impl SessionStore {
         Ok(Self {
             sessions_path,
             sessions: RwLock::new(sessions),
+            search_index,
         })
     }
 
@@ -243,6 +251,19 @@ impl SessionStore {
         })
         .await
         .map_err(|e| Error::Other(format!("flush join error: {e}")))?
+    }
+
+    /// Full-text search across transcripts.
+    ///
+    /// Delegates to the in-memory reverse index. Returns sessions whose
+    /// transcripts match all query words (AND semantics).
+    pub fn search(&self, query: &str) -> Vec<SearchHit> {
+        self.search_index.search(query)
+    }
+
+    /// Return a reference to the search index for live updates.
+    pub fn search_index(&self) -> &Arc<TranscriptIndex> {
+        &self.search_index
     }
 
     /// Return the transcript directory for a given session ID.

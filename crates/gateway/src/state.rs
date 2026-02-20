@@ -9,17 +9,21 @@ use sa_memory::provider::SerialMemoryProvider;
 use sa_providers::registry::ProviderRegistry;
 use sa_sessions::{IdentityResolver, LifecycleManager, SessionStore, TranscriptWriter};
 use sa_skills::registry::SkillsRegistry;
+use sa_mcp_client::McpManager;
 use sa_tools::ProcessManager;
 
 use crate::api::inbound::DedupeStore;
 use crate::nodes::registry::NodeRegistry;
 use crate::nodes::router::ToolRouter;
 use crate::runtime::agent::AgentManager;
+use crate::runtime::approval::ApprovalStore;
 use crate::runtime::cancel::CancelMap;
+use crate::runtime::quota::QuotaTracker;
 use crate::runtime::deliveries::DeliveryStore;
 use crate::runtime::runs::RunStore;
 use crate::runtime::schedules::ScheduleStore;
 use crate::runtime::session_lock::SessionLockMap;
+use crate::runtime::tasks::{TaskRunner, TaskStore};
 use crate::skills::SkillEngine;
 use crate::workspace::bootstrap::BootstrapTracker;
 use crate::workspace::files::WorkspaceReader;
@@ -72,6 +76,10 @@ pub struct AppState {
     // ── Runtime ───────────────────────────────────────────────────────
     /// Run execution tracker.
     pub run_store: Arc<RunStore>,
+    /// In-memory task queue store.
+    pub task_store: Arc<TaskStore>,
+    /// Per-session semaphore-controlled task runner.
+    pub task_runner: Arc<TaskRunner>,
     /// Schedule store (cron jobs).
     pub schedule_store: Arc<ScheduleStore>,
     /// Delivery store (inbox notifications from scheduled runs).
@@ -80,6 +88,12 @@ pub struct AppState {
     pub agents: Option<Arc<AgentManager>>,
     pub processes: Arc<ProcessManager>,
     pub cancel_map: Arc<CancelMap>,
+    /// Per-agent daily token and cost quota tracker.
+    pub quota_tracker: Arc<QuotaTracker>,
+
+    // ── MCP (Model Context Protocol) servers ────────────────────────────
+    /// MCP server connections and tool registry.
+    pub mcp: Arc<McpManager>,
 
     // ── Nodes & tools ─────────────────────────────────────────────────
     pub nodes: Arc<NodeRegistry>,
@@ -102,6 +116,10 @@ pub struct AppState {
     pub admin_token_hash: Option<Vec<u8>>,
     /// Precompiled exec denied-pattern regexes (compiled once at startup).
     pub denied_command_set: Arc<regex::RegexSet>,
+    /// Precompiled exec approval-pattern regexes (compiled once at startup).
+    pub approval_command_set: Arc<regex::RegexSet>,
+    /// Pending exec approvals awaiting human decision.
+    pub approval_store: Arc<ApprovalStore>,
 
     // ── Caches ────────────────────────────────────────────────────────
     /// Per-user TTL cache for user facts (avoids network calls every turn).

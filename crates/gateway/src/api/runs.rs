@@ -188,6 +188,7 @@ fn make_run_event_stream(
                         crate::runtime::runs::RunEvent::NodeFailed { .. } => "node.failed",
                         crate::runtime::runs::RunEvent::Log { .. } => "log",
                         crate::runtime::runs::RunEvent::Usage { .. } => "usage",
+                        crate::runtime::runs::RunEvent::ExecApprovalRequired { .. } => "exec.approval_required",
                     };
                     let data = serde_json::to_string(&event).unwrap_or_default();
                     yield Ok(Event::default().event(event_type).data(data));

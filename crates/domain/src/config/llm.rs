@@ -36,6 +36,9 @@ pub struct LlmConfig {
     /// Registered LLM providers (data-driven: adding a provider = adding config).
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
+    /// Per-model pricing for cost estimation (key = model name, e.g. "gpt-4o").
+    #[serde(default)]
+    pub pricing: HashMap<String, ModelPricing>,
 }
 
 impl Default for LlmConfig {
@@ -48,6 +51,7 @@ impl Default for LlmConfig {
             startup_policy: LlmStartupPolicy::AllowNone,
             roles: HashMap::new(),
             providers: Vec::new(),
+            pricing: HashMap::new(),
         }
     }
 }
@@ -65,6 +69,23 @@ pub enum LlmStartupPolicy {
     /// Abort startup if no LLM providers successfully initialize.
     /// Use for production deployments where LLM is required.
     RequireOne,
+}
+
+/// Pricing per million tokens for a specific model.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ModelPricing {
+    /// Dollars per 1 million input (prompt) tokens.
+    pub input_per_1m: f64,
+    /// Dollars per 1 million output (completion) tokens.
+    pub output_per_1m: f64,
+}
+
+impl ModelPricing {
+    /// Calculate estimated cost in USD for the given token counts.
+    pub fn estimate_cost(&self, input_tokens: u32, output_tokens: u32) -> f64 {
+        (input_tokens as f64 * self.input_per_1m + output_tokens as f64 * self.output_per_1m)
+            / 1_000_000.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +136,8 @@ pub enum ProviderKind {
     Anthropic,
     Google,
     OpenaiCodexOauth,
+    AzureOpenai,
+    AwsBedrock,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -133,6 +156,17 @@ pub struct AuthConfig {
     /// Direct key (for config-only setups; prefer env or auth profiles).
     #[serde(default)]
     pub key: Option<String>,
+    /// Multiple env var names for round-robin key rotation.
+    /// Each entry is an environment variable name that is resolved at startup.
+    /// When non-empty, takes precedence over `env`/`key`.
+    #[serde(default)]
+    pub keys: Vec<String>,
+    /// Keychain service name (e.g., "serialagent").
+    #[serde(default)]
+    pub service: Option<String>,
+    /// Keychain account name (e.g., "venice-api-key").
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -143,6 +177,7 @@ pub enum AuthMode {
     QueryParam,
     AwsSigv4,
     OauthDevice,
+    Keychain,
     None,
 }
 
@@ -156,4 +191,71 @@ fn d_20000u() -> u64 {
 }
 fn d_2() -> u32 {
     2
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Tests
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_pricing_estimate_cost() {
+        let pricing = ModelPricing {
+            input_per_1m: 2.50,
+            output_per_1m: 10.00,
+        };
+        // 1000 input tokens @ $2.50/1M = $0.0025
+        // 500 output tokens @ $10.00/1M = $0.005
+        // Total = $0.0075
+        let cost = pricing.estimate_cost(1000, 500);
+        assert!((cost - 0.0075).abs() < 1e-10);
+    }
+
+    #[test]
+    fn model_pricing_zero_tokens() {
+        let pricing = ModelPricing {
+            input_per_1m: 5.00,
+            output_per_1m: 15.00,
+        };
+        let cost = pricing.estimate_cost(0, 0);
+        assert!((cost - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn model_pricing_large_token_count() {
+        let pricing = ModelPricing {
+            input_per_1m: 3.00,
+            output_per_1m: 15.00,
+        };
+        // 1_000_000 input tokens @ $3.00/1M = $3.00
+        // 1_000_000 output tokens @ $15.00/1M = $15.00
+        // Total = $18.00
+        let cost = pricing.estimate_cost(1_000_000, 1_000_000);
+        assert!((cost - 18.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn llm_config_default_has_empty_pricing() {
+        let config = LlmConfig::default();
+        assert!(config.pricing.is_empty());
+    }
+
+    #[test]
+    fn llm_config_pricing_deserializes() {
+        let json = r#"{
+            "pricing": {
+                "gpt-4o": { "input_per_1m": 2.50, "output_per_1m": 10.00 },
+                "claude-sonnet-4-5-20250514": { "input_per_1m": 3.00, "output_per_1m": 15.00 }
+            }
+        }"#;
+        let config: LlmConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.pricing.len(), 2);
+
+        let gpt4o = config.pricing.get("gpt-4o").unwrap();
+        assert!((gpt4o.input_per_1m - 2.50).abs() < 1e-10);
+        assert!((gpt4o.output_per_1m - 10.00).abs() < 1e-10);
+    }
 }

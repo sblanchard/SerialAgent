@@ -296,6 +296,7 @@ pub async fn run_agent(
         session_id: child_session_id,
         user_message: task.to_string(),
         model,
+        response_format: None,
         agent: Some(ctx),
     };
 

@@ -12,18 +12,20 @@
 //!
 //! # MCP Tool Mapping
 //!
-//! | Provider method    | MCP tool name               |
-//! |--------------------|-----------------------------|
-//! | `search`           | `serialmemory.rag.search`   |
-//! | `answer`           | `serialmemory.rag.answer`   |
-//! | `ingest`           | `serialmemory.memories.add`  |
-//! | `get_persona`      | `serialmemory.persona.get`  |
-//! | `set_persona`      | `serialmemory.persona.set`  |
-//! | `init_session`     | `serialmemory.session.init` |
-//! | `end_session`      | `serialmemory.session.end`  |
-//! | `graph`            | `serialmemory.graph.query`  |
-//! | `stats`            | `serialmemory.stats.get`    |
-//! | `health`           | `serialmemory.health`       |
+//! | Provider method    | MCP tool name                  |
+//! |--------------------|--------------------------------|
+//! | `search`           | `serialmemory.rag.search`      |
+//! | `answer`           | `serialmemory.rag.answer`      |
+//! | `ingest`           | `serialmemory.memories.add`    |
+//! | `update_memory`    | `serialmemory.memories.update` |
+//! | `delete_memory`    | `serialmemory.memories.delete` |
+//! | `get_persona`      | `serialmemory.persona.get`     |
+//! | `set_persona`      | `serialmemory.persona.set`     |
+//! | `init_session`     | `serialmemory.session.init`    |
+//! | `end_session`      | `serialmemory.session.end`     |
+//! | `graph`            | `serialmemory.graph.query`     |
+//! | `stats`            | `serialmemory.stats.get`       |
+//! | `health`           | `serialmemory.health`          |
 
 use std::time::Duration;
 
@@ -257,6 +259,23 @@ impl SerialMemoryProvider for McpSerialMemoryClient {
     async fn stats(&self) -> Result<serde_json::Value> {
         self.call_tool("serialmemory.stats.get", serde_json::json!({}))
             .await
+    }
+
+    async fn update_memory(&self, id: &str, content: &str) -> Result<serde_json::Value> {
+        self.call_tool(
+            "serialmemory.memories.update",
+            serde_json::json!({ "id": id, "content": content }),
+        )
+        .await
+    }
+
+    async fn delete_memory(&self, id: &str) -> Result<()> {
+        self.call_tool(
+            "serialmemory.memories.delete",
+            serde_json::json!({ "id": id }),
+        )
+        .await?;
+        Ok(())
     }
 
     async fn health(&self) -> Result<serde_json::Value> {

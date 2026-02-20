@@ -10,12 +10,16 @@ pub mod import_openclaw;
 pub mod inbound;
 pub mod memory;
 pub mod nodes;
+pub mod openai_compat;
 pub mod providers;
+pub mod quota;
 pub mod runs;
 pub mod schedules;
 pub mod sessions;
 pub mod skills;
+pub mod tasks;
 pub mod tools;
+pub mod webhooks;
 
 use axum::middleware;
 use axum::routing::{delete, get, post, put};
@@ -55,8 +59,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/v1/memory/ingest", post(memory::ingest))
         .route("/v1/memory/about", get(memory::about_user))
         .route("/v1/memory/health", get(memory::health))
-        // NOTE: PUT/DELETE /v1/memory/:id planned but not yet implemented.
-        // Will be added when SerialMemory supports PATCH/DELETE endpoints.
+        .route("/v1/memory/:id", put(memory::update_entry))
+        .route("/v1/memory/:id", delete(memory::delete_entry))
         // Legacy session proxy (SerialMemory)
         .route("/v1/session/init", post(memory::init_session))
         .route("/v1/session/end", post(memory::end_session))
@@ -67,18 +71,27 @@ pub fn router(state: AppState) -> Router<AppState> {
         // Session detail (path-based)
         .route("/v1/sessions/:key", get(sessions::get_session))
         .route("/v1/sessions/:key/transcript", get(sessions::get_transcript))
+        .route("/v1/sessions/:key/export", get(sessions::export_transcript))
         .route("/v1/sessions/:key/reset", post(sessions::reset_session_by_key))
         .route("/v1/sessions/:key/stop", post(sessions::stop_session))
         .route("/v1/sessions/:key/compact", post(sessions::compact_session))
         // Chat (core runtime)
         .route("/v1/chat", post(chat::chat))
         .route("/v1/chat/stream", post(chat::chat_stream))
+        // OpenAI-compatible chat completions
+        .route(
+            "/v1/chat/completions",
+            post(openai_compat::chat_completions),
+        )
         // Inbound (channel connector contract)
         .route("/v1/inbound", post(inbound::inbound))
-        // Tools (exec / process / invoke)
+        // Tools (exec / process / invoke / approval)
         .route("/v1/tools/exec", post(tools::exec_tool))
         .route("/v1/tools/process", post(tools::process_tool))
         .route("/v1/tools/invoke", post(tools::invoke_tool))
+        .route("/v1/tools/exec/pending", get(tools::list_pending_approvals))
+        .route("/v1/tools/exec/approve/:id", post(tools::approve_exec))
+        .route("/v1/tools/exec/deny/:id", post(tools::deny_exec))
         // Nodes
         .route("/v1/nodes", get(nodes::list_nodes))
         .route("/v1/nodes/ws", get(crate::nodes::ws::node_ws))
@@ -88,6 +101,14 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/v1/clawhub/install", post(clawhub::install_pack))
         .route("/v1/clawhub/update", post(clawhub::update_pack))
         .route("/v1/clawhub/uninstall", post(clawhub::uninstall_pack))
+        // Tasks (concurrent task queue)
+        .route("/v1/tasks", post(tasks::create_task))
+        .route("/v1/tasks", get(tasks::list_tasks))
+        .route("/v1/tasks/:id", get(tasks::get_task))
+        .route("/v1/tasks/:id", delete(tasks::cancel_task))
+        .route("/v1/tasks/:id/events", get(tasks::task_events_sse))
+        // Quotas (per-agent daily usage limits)
+        .route("/v1/quotas", get(quota::get_quotas))
         // Runs (execution tracking)
         .route("/v1/runs", get(runs::list_runs))
         .route("/v1/runs/:id", get(runs::get_run))
@@ -104,6 +125,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/v1/schedules/:id/dry-run", post(schedules::dry_run_schedule))
         .route("/v1/schedules/:id/reset-errors", post(schedules::reset_schedule_errors))
         .route("/v1/schedules/:id/deliveries", get(schedules::list_schedule_deliveries))
+        .route("/v1/schedules/:id/trigger", post(webhooks::trigger_webhook))
         // Deliveries (inbox)
         .route("/v1/deliveries", get(deliveries::list_deliveries))
         .route("/v1/deliveries/events", get(deliveries::delivery_events_sse))

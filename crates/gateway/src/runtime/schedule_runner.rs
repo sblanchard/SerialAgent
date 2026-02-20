@@ -262,6 +262,7 @@ pub async fn spawn_scheduled_run(
         session_id,
         user_message: user_prompt,
         model: None,
+        response_format: None,
         agent: None,
     };
 

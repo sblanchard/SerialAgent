@@ -5,14 +5,17 @@
 //! stream of [`TurnEvent`]s suitable for SSE or non-streaming aggregation.
 
 pub mod agent;
+pub mod approval;
 pub mod cancel;
 pub mod compact;
 pub mod deliveries;
 pub mod digest;
+pub mod quota;
 pub mod runs;
 pub mod schedule_runner;
 pub mod schedules;
 pub mod session_lock;
+pub mod tasks;
 pub mod tools;
 pub mod turn;
 
@@ -289,6 +292,7 @@ pub(super) async fn persist_transcript(
     role: &str,
     content: &str,
     metadata: Option<serde_json::Value>,
+    search_index: Option<&Arc<sa_sessions::TranscriptIndex>>,
 ) {
     let mut line = TranscriptWriter::line(role, content);
     line.metadata = metadata;
@@ -298,6 +302,12 @@ pub(super) async fn persist_transcript(
             session_id = session_id,
             "failed to persist transcript line"
         );
+        return;
+    }
+
+    // Update the search index with the new content.
+    if let Some(idx) = search_index {
+        idx.index_content(session_id, content);
     }
 }
 

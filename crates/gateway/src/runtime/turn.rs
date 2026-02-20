@@ -10,6 +10,7 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use sa_domain::stream::{StreamEvent, Usage};
 use sa_domain::tool::{Message, ToolCall, ToolDefinition};
@@ -49,6 +50,10 @@ pub(super) struct TurnContext {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum TurnEvent {
+    /// Reasoning/thinking content from the model.
+    #[serde(rename = "thought")]
+    Thought { content: String },
+
     /// Incremental text from the assistant.
     #[serde(rename = "assistant_delta")]
     AssistantDelta { text: String },
@@ -106,6 +111,8 @@ pub struct TurnInput {
     pub user_message: String,
     /// Model override (e.g. "openai/gpt-4o"). None = use role default.
     pub model: Option<String>,
+    /// Controls the response format (text, json_object, json_schema).
+    pub response_format: Option<sa_providers::ResponseFormat>,
     /// When running as a sub-agent, carries agent-scoped overrides.
     pub agent: Option<agent::AgentContext>,
 }
@@ -156,6 +163,7 @@ pub fn run_turn(
         "turn",
         %run_id,
         session_key = %session_key,
+        "otel.kind" = "SERVER",
     );
     tokio::spawn(tracing::Instrument::instrument(async move {
         tracing::debug!("turn started");
@@ -237,6 +245,7 @@ async fn handle_cancellation(
             }
         ),
         Some(serde_json::json!({ "stopped": true })),
+        Some(state.sessions.search_index()),
     )
     .await;
     let _ = tx
@@ -263,6 +272,7 @@ async fn finalize_run_success(
         "assistant",
         text_buf,
         None,
+        Some(state.sessions.search_index()),
     )
     .await;
 
@@ -287,11 +297,19 @@ async fn finalize_run_success(
     );
 
     // ── Finalize run (success) ───────────────────────────
+    let pricing_map = &state.config.llm.pricing;
     state.run_store.update(&run_id, |r| {
         r.input_tokens = total_usage.prompt_tokens;
         r.output_tokens = total_usage.completion_tokens;
         r.total_tokens = total_usage.total_tokens;
         r.output_preview = Some(truncate_str(text_buf, 200));
+        // Compute estimated cost from per-model pricing config.
+        if let Some(model_name) = r.model.as_deref() {
+            if let Some(pricing) = pricing_map.get(model_name) {
+                r.estimated_cost_usd =
+                    pricing.estimate_cost(total_usage.prompt_tokens, total_usage.completion_tokens);
+            }
+        }
         r.finish(runs::RunStatus::Completed);
     });
     if let Some(run) = state.run_store.get(&run_id) {
@@ -315,6 +333,20 @@ async fn finalize_run_success(
     );
     state.run_store.cleanup_channel(&run_id);
 
+    // ── Record usage against quota tracker ─────────────────
+    {
+        let estimated_cost = state
+            .run_store
+            .get(&run_id)
+            .map(|r| r.estimated_cost_usd)
+            .unwrap_or(0.0);
+        state.quota_tracker.record_usage(
+            input.agent.as_ref().map(|a| a.agent_id.as_str()),
+            total_usage.total_tokens as u64,
+            estimated_cost,
+        );
+    }
+
     // ── Memory auto-capture (fire-and-forget) ─────────────
     fire_auto_capture(state, input, text_buf);
 }
@@ -331,6 +363,35 @@ async fn run_turn_inner(
     run_id: uuid::Uuid,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut node_seq: u32 = 0;
+
+    // ── Pre-flight: quota check ─────────────────────────────────────────
+    {
+        let agent_id = input.agent.as_ref().map(|a| a.agent_id.as_str());
+        if let Err(exceeded) = state.quota_tracker.check_quota(agent_id) {
+            let msg = format!(
+                "daily {} quota exceeded: {:.2}/{:.2}",
+                exceeded.kind, exceeded.used, exceeded.limit,
+            );
+            let _ = tx.send(TurnEvent::Error { message: msg }).await;
+            state.run_store.update(&run_id, |r| {
+                r.error = Some(format!("quota exceeded: {}", exceeded.kind));
+                r.finish(runs::RunStatus::Failed);
+            });
+            if let Some(run) = state.run_store.get(&run_id) {
+                state.run_store.persist(&run);
+            }
+            state.run_store.emit(
+                &run_id,
+                runs::RunEvent::RunStatus {
+                    run_id,
+                    status: runs::RunStatus::Failed,
+                },
+            );
+            state.run_store.cleanup_channel(&run_id);
+            return Ok(());
+        }
+    }
+
     // ── Phase 1: Build the turn context (provider, messages, tool defs) ──
     let ctx = prepare_turn_context(&state, &input).await?;
     let TurnContext {
@@ -357,6 +418,7 @@ async fn run_turn_inner(
                 "system",
                 "[run aborted by user]",
                 Some(serde_json::json!({ "stopped": true })),
+                Some(state.sessions.search_index()),
             )
             .await;
             let _ = tx
@@ -403,9 +465,24 @@ async fn run_turn_inner(
             tools: (*tool_defs).clone(),
             temperature: Some(0.2),
             max_tokens: None,
-            json_mode: false,
+            response_format: input
+                .response_format
+                .clone()
+                .unwrap_or_default(),
             model: input.model.clone(),
         };
+
+        let llm_call_span = tracing::info_span!(
+            "llm.call",
+            "otel.kind" = "CLIENT",
+            model = req.model.as_deref().unwrap_or("default"),
+            input_tokens = tracing::field::Empty,
+            output_tokens = tracing::field::Empty,
+        );
+
+        // Enter the span for the entire LLM interaction (connect + stream
+        // consumption + token recording) so OTel captures the full duration.
+        let _llm_guard = llm_call_span.enter();
 
         let mut stream = provider.chat_stream(&req).await?;
 
@@ -428,6 +505,11 @@ async fn run_turn_inner(
 
             let event = event_result?;
             match event {
+                StreamEvent::Thinking { text } => {
+                    let _ = tx
+                        .send(TurnEvent::Thought { content: text })
+                        .await;
+                }
                 StreamEvent::Token { text } => {
                     let _ = tx
                         .send(TurnEvent::AssistantDelta { text: text.clone() })
@@ -469,6 +551,15 @@ async fn run_turn_inner(
                 }
             }
         }
+
+        // Record token usage while the span is still entered.
+        if let Some(u) = &turn_usage {
+            llm_call_span.record("input_tokens", u.prompt_tokens);
+            llm_call_span.record("output_tokens", u.completion_tokens);
+        }
+
+        // Close the llm.call span — duration now covers the full streaming interaction.
+        drop(_llm_guard);
 
         // ── Finalize LLM node ─────────────────────────────────────
         {
@@ -550,6 +641,7 @@ async fn run_turn_inner(
             "assistant",
             &text_buf,
             Some(serde_json::json!({ "tool_calls": tc_json })),
+            Some(state.sessions.search_index()),
         )
         .await;
 
@@ -633,6 +725,10 @@ async fn run_turn_inner(
         let tool_futures: Vec<_> = pending_tool_calls
             .iter()
             .map(|tc| {
+                let tool_span = tracing::info_span!(
+                    "tool.call",
+                    tool_name = %tc.tool_name,
+                );
                 tools::dispatch_tool(
                     &state,
                     &tc.tool_name,
@@ -640,6 +736,7 @@ async fn run_turn_inner(
                     Some(&input.session_key),
                     input.agent.as_ref(),
                 )
+                .instrument(tool_span)
             })
             .collect();
         let tool_results = futures_util::future::join_all(tool_futures).await;
@@ -687,6 +784,7 @@ async fn run_turn_inner(
                     "tool_name": tc.tool_name,
                     "is_error": is_error,
                 })),
+                Some(state.sessions.search_index()),
             )
             .await;
         }
@@ -804,6 +902,7 @@ async fn prepare_turn_context(
         "user",
         &input.user_message,
         None,
+        Some(state.sessions.search_index()),
     )
     .await;
 

@@ -10,11 +10,14 @@
 //!   POST /v1/sessions/:key/stop        — cancel a running turn
 
 use axum::extract::{Path, Query, State};
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Json};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use sa_domain::config::InboundMetadata;
-use sa_sessions::store::SessionOrigin;
+use sa_sessions::store::{SessionEntry, SessionOrigin};
+use sa_sessions::transcript::TranscriptLine;
 
 use crate::state::AppState;
 
@@ -123,12 +126,127 @@ pub async fn resolve_session(
 // GET /v1/sessions
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// List all active sessions.
-pub async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
-    let sessions = state.sessions.list();
+/// Query parameters for filtering the session list.
+#[derive(Debug, Deserialize)]
+pub struct SessionListQuery {
+    /// Filter by connector channel (e.g. `"discord"`, `"telegram"`).
+    #[serde(default)]
+    pub channel: Option<String>,
+    /// Filter by peer identity.
+    #[serde(default)]
+    pub peer: Option<String>,
+    /// Filter by agent ID (matches the `agent:<id>:` prefix of session keys).
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    /// Only include sessions updated at or after this timestamp (RFC 3339).
+    #[serde(default)]
+    pub since: Option<DateTime<Utc>>,
+    /// Only include sessions updated at or before this timestamp (RFC 3339).
+    #[serde(default)]
+    pub until: Option<DateTime<Utc>>,
+    /// Maximum number of sessions to return (default 100, max 500).
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Number of sessions to skip for pagination (default 0).
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// Full-text search across transcript content (AND semantics for
+    /// multi-word queries).
+    #[serde(default)]
+    pub q: Option<String>,
+}
+
+/// List active sessions with optional filtering and pagination.
+pub async fn list_sessions(
+    State(state): State<AppState>,
+    Query(query): Query<SessionListQuery>,
+) -> impl IntoResponse {
+    let all_sessions = state.sessions.list();
+
+    // If a full-text query is provided, search the transcript index first
+    // and use the results to filter + annotate sessions.
+    let search_hits = query
+        .q
+        .as_ref()
+        .filter(|q| !q.trim().is_empty())
+        .map(|q| state.sessions.search(q));
+
+    // Build a lookup from session_id -> (match_count, preview) for search hits.
+    let search_map: Option<std::collections::HashMap<String, (usize, String)>> =
+        search_hits.map(|hits| {
+            hits.into_iter()
+                .map(|h| (h.session_id, (h.match_count, h.preview)))
+                .collect()
+        });
+
+    // Apply filters.
+    let filtered: Vec<_> = all_sessions
+        .into_iter()
+        .filter(|s| {
+            // If search was requested, only include sessions that matched.
+            if let Some(ref map) = search_map {
+                if !map.contains_key(&s.session_id) {
+                    return false;
+                }
+            }
+            if let Some(ref ch) = query.channel {
+                if s.origin.channel.as_deref() != Some(ch.as_str()) {
+                    return false;
+                }
+            }
+            if let Some(ref peer) = query.peer {
+                if s.origin.peer.as_deref() != Some(peer.as_str()) {
+                    return false;
+                }
+            }
+            if let Some(ref agent_id) = query.agent_id {
+                let prefix = format!("agent:{agent_id}:");
+                if !s.session_key.starts_with(&prefix) {
+                    return false;
+                }
+            }
+            if let Some(since) = query.since {
+                if s.updated_at < since {
+                    return false;
+                }
+            }
+            if let Some(until) = query.until {
+                if s.updated_at > until {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    let total = filtered.len();
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(100).min(500);
+
+    let page: Vec<_> = filtered.into_iter().skip(offset).take(limit).collect();
+
+    // Enrich response with search metadata when a query was provided.
+    let sessions_json: Vec<serde_json::Value> = page
+        .iter()
+        .map(|s| {
+            let mut val = serde_json::to_value(s).unwrap_or_default();
+            if let Some(ref map) = search_map {
+                if let Some((count, preview)) = map.get(&s.session_id) {
+                    if let serde_json::Value::Object(ref mut obj) = val {
+                        obj.insert("match_count".into(), serde_json::json!(count));
+                        obj.insert("match_preview".into(), serde_json::json!(preview));
+                    }
+                }
+            }
+            val
+        })
+        .collect();
+
     Json(serde_json::json!({
-        "sessions": sessions,
-        "count": sessions.len(),
+        "sessions": sessions_json,
+        "total": total,
+        "offset": offset,
+        "count": sessions_json.len(),
     }))
 }
 
@@ -338,6 +456,139 @@ pub async fn compact_session(
         )
             .into_response(),
     }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /v1/sessions/:key/export  — transcript export
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Query parameters for the export endpoint.
+#[derive(Debug, Deserialize)]
+pub struct ExportQuery {
+    /// Export format: `markdown` (default), `jsonl`, or `json`.
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+/// Export the transcript for a session as Markdown, JSONL, or JSON.
+pub async fn export_transcript(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    Query(params): Query<ExportQuery>,
+) -> impl IntoResponse {
+    let entry = match state.sessions.get(&key) {
+        Some(e) => e,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "session not found" })),
+            )
+                .into_response();
+        }
+    };
+
+    let lines = state
+        .transcripts
+        .read(&entry.session_id)
+        .unwrap_or_default();
+
+    match params.format.as_deref().unwrap_or("markdown") {
+        "markdown" => render_markdown(&lines, &entry),
+        "jsonl" => render_jsonl(&lines, &key),
+        "json" => render_json(&lines, &key),
+        other => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("unknown format: {other}") })),
+        )
+            .into_response(),
+    }
+}
+
+/// Render the transcript as a Markdown document.
+fn render_markdown(lines: &[TranscriptLine], entry: &SessionEntry) -> axum::response::Response {
+    let model = entry.model.as_deref().unwrap_or("default");
+    let mut md = format!(
+        "# Session: {}\n\n\
+         **Created:** {} | **Model:** {} | **Tokens:** {}\n\n\
+         ---\n",
+        entry.session_key,
+        entry.created_at.to_rfc3339(),
+        model,
+        entry.total_tokens,
+    );
+
+    for line in lines {
+        let role_label = match line.role.as_str() {
+            "user" => "User",
+            "assistant" => "Assistant",
+            "system" => "System",
+            "tool" => "Tool",
+            other => other,
+        };
+        md.push_str(&format!(
+            "\n**{}** ({}):\n{}\n",
+            role_label, line.timestamp, line.content,
+        ));
+    }
+
+    let filename = format!("session-{}.md", entry.session_key);
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/markdown; charset=utf-8".to_owned()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        md,
+    )
+        .into_response()
+}
+
+/// Render the transcript as newline-delimited JSON (JSONL / NDJSON).
+fn render_jsonl(lines: &[TranscriptLine], key: &str) -> axum::response::Response {
+    let mut buf = String::with_capacity(lines.len() * 256);
+    for line in lines {
+        if let Ok(json) = serde_json::to_string(line) {
+            buf.push_str(&json);
+            buf.push('\n');
+        }
+    }
+
+    let filename = format!("session-{key}.jsonl");
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/x-ndjson".to_owned()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        buf,
+    )
+        .into_response()
+}
+
+/// Render the transcript as a JSON array.
+fn render_json(lines: &[TranscriptLine], key: &str) -> axum::response::Response {
+    let body = serde_json::to_string_pretty(lines)
+        .unwrap_or_else(|_| "[]".to_owned());
+
+    let filename = format!("session-{key}.json");
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/json".to_owned()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

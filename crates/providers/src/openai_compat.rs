@@ -3,43 +3,71 @@
 //! Works with OpenAI, Azure OpenAI, Ollama, vLLM, LM Studio, Together,
 //! and any other endpoint that follows the OpenAI chat completions contract.
 
+use crate::auth::AuthRotator;
 use crate::traits::{
-    ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider,
+    ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider, ResponseFormat,
 };
-use crate::util::{from_reqwest, resolve_api_key};
+use crate::util::from_reqwest;
 use sa_domain::capability::LlmCapabilities;
-use sa_domain::config::ProviderConfig;
+use sa_domain::config::{ProviderConfig, ProviderKind};
 use sa_domain::error::{Error, Result};
 use sa_domain::stream::{BoxStream, StreamEvent, Usage};
 use sa_domain::tool::{ContentPart, Message, MessageContent, Role, ToolCall, ToolDefinition};
 use serde_json::Value;
+use std::sync::Arc;
+
+/// Default Azure OpenAI API version used in deployment URLs.
+const AZURE_API_VERSION: &str = "2024-10-21";
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Adapter struct
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// An LLM provider adapter for any OpenAI-compatible API endpoint.
+///
+/// Also handles Azure OpenAI, which uses the same wire format but with a
+/// different URL pattern (`/openai/deployments/{model}/chat/completions`)
+/// and auth header (`api-key` instead of `Authorization: Bearer`).
 pub struct OpenAiCompatProvider {
     id: String,
     base_url: String,
-    api_key: String,
+    auth: Arc<AuthRotator>,
     auth_header: String,
     auth_prefix: String,
     default_model: String,
     capabilities: LlmCapabilities,
     client: reqwest::Client,
+    /// When true, uses Azure OpenAI URL pattern and omits `model` from body.
+    is_azure: bool,
 }
 
 impl OpenAiCompatProvider {
     /// Create a new provider from the deserialized provider config.
+    ///
+    /// Accepts `ProviderKind::OpenaiCompat`, `ProviderKind::OpenaiCodexOauth`,
+    /// and `ProviderKind::AzureOpenai`. Azure uses a different URL layout and
+    /// auth header but the same wire format.
     pub fn from_config(cfg: &ProviderConfig) -> Result<Self> {
-        let api_key = resolve_api_key(&cfg.auth)?;
-        let auth_header = cfg
-            .auth
-            .header
-            .clone()
-            .unwrap_or_else(|| "Authorization".into());
-        let auth_prefix = cfg.auth.prefix.clone().unwrap_or_else(|| "Bearer ".into());
+        let is_azure = cfg.kind == ProviderKind::AzureOpenai;
+        let auth = Arc::new(AuthRotator::from_auth_config(&cfg.auth)?);
+
+        // Azure uses `api-key` header with no prefix; standard OpenAI uses
+        // `Authorization: Bearer <key>`.
+        let auth_header = cfg.auth.header.clone().unwrap_or_else(|| {
+            if is_azure {
+                "api-key".into()
+            } else {
+                "Authorization".into()
+            }
+        });
+        let auth_prefix = cfg.auth.prefix.clone().unwrap_or_else(|| {
+            if is_azure {
+                String::new()
+            } else {
+                "Bearer ".into()
+            }
+        });
+
         let default_model = cfg.default_model.clone().unwrap_or_else(|| "gpt-4o".into());
 
         let capabilities = LlmCapabilities {
@@ -59,19 +87,21 @@ impl OpenAiCompatProvider {
         Ok(Self {
             id: cfg.id.clone(),
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
-            api_key,
+            auth,
             auth_header,
             auth_prefix,
             default_model,
             capabilities,
             client,
+            is_azure,
         })
     }
 
     // ── Internal: build authenticated request builder ──────────────
 
     fn authed_post(&self, url: &str) -> reqwest::RequestBuilder {
-        let header_value = format!("{}{}", self.auth_prefix, self.api_key);
+        let entry = self.auth.next_key();
+        let header_value = format!("{}{}", self.auth_prefix, entry.key);
         self.client
             .post(url)
             .header(&self.auth_header, &header_value)
@@ -80,19 +110,49 @@ impl OpenAiCompatProvider {
 
     // ── Internal: build the JSON body ─────────────────────────────
 
-    fn build_chat_body(&self, req: &ChatRequest, stream: bool) -> Value {
-        let model = req
-            .model
+    /// Resolve the effective model name for this request.
+    fn effective_model(&self, req: &ChatRequest) -> String {
+        req.model
             .clone()
-            .unwrap_or_else(|| self.default_model.clone());
+            .unwrap_or_else(|| self.default_model.clone())
+    }
 
+    /// Build the Azure-style chat completions URL:
+    /// `{base_url}/openai/deployments/{model}/chat/completions?api-version=…`
+    ///
+    /// Returns an error if the model name contains path-control characters
+    /// (`/`, `?`, `#`, `..`) that could alter the URL's intended path.
+    fn azure_chat_url(&self, model: &str) -> Result<String> {
+        validate_azure_deployment(model)?;
+        Ok(format!(
+            "{}/openai/deployments/{}/chat/completions?api-version={}",
+            self.base_url, model, AZURE_API_VERSION
+        ))
+    }
+
+    /// Build the Azure-style embeddings URL.
+    fn azure_embeddings_url(&self, model: &str) -> Result<String> {
+        validate_azure_deployment(model)?;
+        Ok(format!(
+            "{}/openai/deployments/{}/embeddings?api-version={}",
+            self.base_url, model, AZURE_API_VERSION
+        ))
+    }
+
+    fn build_chat_body(&self, req: &ChatRequest, stream: bool) -> Value {
         let messages: Vec<Value> = req.messages.iter().map(msg_to_openai).collect();
 
         let mut body = serde_json::json!({
-            "model": model,
             "messages": messages,
             "stream": stream,
         });
+
+        // Azure embeds the model (deployment) name in the URL, so we omit it
+        // from the request body. Standard OpenAI requires it in the body.
+        if !self.is_azure {
+            let model = self.effective_model(req);
+            body["model"] = Value::String(model);
+        }
 
         if !req.tools.is_empty() {
             let tools: Vec<Value> = req.tools.iter().map(tool_to_openai).collect();
@@ -104,14 +164,46 @@ impl OpenAiCompatProvider {
         if let Some(max) = req.max_tokens {
             body["max_tokens"] = serde_json::json!(max);
         }
-        if req.json_mode {
-            body["response_format"] = serde_json::json!({"type": "json_object"});
+        match &req.response_format {
+            ResponseFormat::Text => {}
+            ResponseFormat::JsonObject => {
+                body["response_format"] = serde_json::json!({"type": "json_object"});
+            }
+            ResponseFormat::JsonSchema {
+                name,
+                schema,
+                strict,
+            } => {
+                body["response_format"] = serde_json::json!({
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": name,
+                        "schema": schema,
+                        "strict": strict,
+                    }
+                });
+            }
         }
         if stream {
             body["stream_options"] = serde_json::json!({"include_usage": true});
         }
         body
     }
+}
+
+/// Reject Azure deployment names that contain path-control characters.
+fn validate_azure_deployment(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('?')
+        || name.contains('#')
+        || name.contains("..")
+    {
+        return Err(Error::Config(format!(
+            "invalid Azure deployment name: '{name}'"
+        )));
+    }
+    Ok(())
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -373,6 +465,15 @@ fn parse_sse_data(data: &str) -> Option<Result<StreamEvent>> {
         }
     }
 
+    // Reasoning content (DeepSeek, etc.)
+    if let Some(text) = delta.get("reasoning_content").and_then(|v| v.as_str()) {
+        if !text.is_empty() {
+            return Some(Ok(StreamEvent::Thinking {
+                text: text.to_string(),
+            }));
+        }
+    }
+
     // Text content delta.
     if let Some(text) = delta.get("content").and_then(|v| v.as_str()) {
         if !text.is_empty() {
@@ -408,7 +509,11 @@ fn parse_sse_data_vec(data: &str) -> Vec<Result<StreamEvent>> {
 #[async_trait::async_trait]
 impl LlmProvider for OpenAiCompatProvider {
     async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse> {
-        let url = format!("{}/chat/completions", self.base_url);
+        let url = if self.is_azure {
+            self.azure_chat_url(&self.effective_model(req))?
+        } else {
+            format!("{}/chat/completions", self.base_url)
+        };
         let body = self.build_chat_body(req, false);
 
         tracing::debug!(provider = %self.id, url = %url, "openai_compat chat request");
@@ -438,7 +543,11 @@ impl LlmProvider for OpenAiCompatProvider {
         &self,
         req: &ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamEvent>>> {
-        let url = format!("{}/chat/completions", self.base_url);
+        let url = if self.is_azure {
+            self.azure_chat_url(&self.effective_model(req))?
+        } else {
+            format!("{}/chat/completions", self.base_url)
+        };
         let body = self.build_chat_body(req, true);
         let provider_id = self.id.clone();
 
@@ -464,13 +573,20 @@ impl LlmProvider for OpenAiCompatProvider {
     }
 
     async fn embeddings(&self, req: EmbeddingsRequest) -> Result<EmbeddingsResponse> {
-        let url = format!("{}/embeddings", self.base_url);
         let model = req.model.unwrap_or_else(|| "text-embedding-3-small".into());
 
-        let body = serde_json::json!({
-            "model": model,
-            "input": req.input,
-        });
+        let url = if self.is_azure {
+            self.azure_embeddings_url(&model)?
+        } else {
+            format!("{}/embeddings", self.base_url)
+        };
+
+        // Azure embeds the model in the URL; standard OpenAI needs it in body.
+        let body = if self.is_azure {
+            serde_json::json!({ "input": req.input })
+        } else {
+            serde_json::json!({ "model": model, "input": req.input })
+        };
 
         let resp = self
             .authed_post(&url)

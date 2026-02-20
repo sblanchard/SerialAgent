@@ -10,6 +10,7 @@ use serde_json::Value;
 use sa_domain::config::ToolPolicy;
 use sa_domain::tool::ToolDefinition;
 use sa_tools::exec::{self, ExecRequest};
+use sa_tools::file_ops;
 use sa_tools::process::{self, ProcessRequest};
 
 use crate::nodes::router::{LocalTool, ToolDestination};
@@ -89,6 +90,84 @@ pub fn build_tool_definitions(
                 "data": { "type": "string", "description": "Data to write to stdin" }
             },
             "required": ["action"]
+        }),
+    });
+
+    // ── File operation tools ──────────────────────────────────────
+    defs.push(ToolDefinition {
+        name: "file.read".into(),
+        description: "Read file contents (text). Supports optional line offset and limit.".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "File path relative to workspace root" },
+                "offset": { "type": "integer", "description": "Line number to start from (0-indexed)" },
+                "limit": { "type": "integer", "description": "Maximum number of lines to return" }
+            },
+            "required": ["path"]
+        }),
+    });
+
+    defs.push(ToolDefinition {
+        name: "file.write".into(),
+        description: "Write/create a file atomically (writes to temp file, then renames into place).".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "File path relative to workspace root" },
+                "content": { "type": "string", "description": "Content to write" }
+            },
+            "required": ["path", "content"]
+        }),
+    });
+
+    defs.push(ToolDefinition {
+        name: "file.append".into(),
+        description: "Append content to an existing file (creates if it does not exist).".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "File path relative to workspace root" },
+                "content": { "type": "string", "description": "Content to append" }
+            },
+            "required": ["path", "content"]
+        }),
+    });
+
+    defs.push(ToolDefinition {
+        name: "file.move".into(),
+        description: "Move or rename a file or directory within the workspace.".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "source": { "type": "string", "description": "Source path relative to workspace root" },
+                "destination": { "type": "string", "description": "Destination path relative to workspace root" }
+            },
+            "required": ["source", "destination"]
+        }),
+    });
+
+    defs.push(ToolDefinition {
+        name: "file.delete".into(),
+        description: "Delete a file or empty directory.".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "File or empty directory path relative to workspace root" }
+            },
+            "required": ["path"]
+        }),
+    });
+
+    defs.push(ToolDefinition {
+        name: "file.list".into(),
+        description: "List directory contents with metadata (name, size, modified timestamp, is_dir).".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Directory path relative to workspace root" }
+            },
+            "required": ["path"]
         }),
     });
 
@@ -215,6 +294,17 @@ pub fn build_tool_definitions(
         }
     }
 
+    // ── MCP tools ──────────────────────────────────────────────────
+    // Add definitions for tools discovered from MCP servers.
+    for (server_id, tool) in state.mcp.list_tools() {
+        let prefixed_name = format!("mcp:{server_id}:{}", tool.name);
+        defs.push(ToolDefinition {
+            name: prefixed_name,
+            description: tool.description.clone(),
+            parameters: tool.input_schema.clone(),
+        });
+    }
+
     // ── Node-advertised tools ─────────────────────────────────────
     // Add definitions for capabilities advertised by connected nodes.
     let node_list = state.nodes.list();
@@ -264,6 +354,12 @@ pub fn all_base_tool_names(state: &AppState) -> Vec<String> {
     let mut names: HashSet<String> = HashSet::from([
         "exec".into(),
         "process".into(),
+        "file.read".into(),
+        "file.write".into(),
+        "file.append".into(),
+        "file.move".into(),
+        "file.delete".into(),
+        "file.list".into(),
         "skill.read_doc".into(),
         "skill.read_resource".into(),
         "memory.search".into(),
@@ -278,6 +374,10 @@ pub fn all_base_tool_names(state: &AppState) -> Vec<String> {
         for cap in &node_info.capabilities {
             names.insert(cap.clone());
         }
+    }
+    // Include MCP tools.
+    for (server_id, tool) in state.mcp.list_tools() {
+        names.insert(format!("mcp:{server_id}:{}", tool.name));
     }
     names.into_iter().collect()
 }
@@ -316,10 +416,21 @@ pub async fn dispatch_tool(
         }
     }
 
+    // Handle MCP tools (mcp:{server_id}:{tool_name}).
+    if let Some(rest) = tool_name.strip_prefix("mcp:") {
+        return dispatch_mcp_tool(state, rest, arguments).await;
+    }
+
     // Handle our built-in tools first.
     match tool_name {
-        "exec" => dispatch_exec(state, arguments).await,
+        "exec" => dispatch_exec(state, arguments, session_key).await,
         "process" => dispatch_process(state, arguments).await,
+        "file.read" => dispatch_file_read(state, arguments).await,
+        "file.write" => dispatch_file_write(state, arguments).await,
+        "file.append" => dispatch_file_append(state, arguments).await,
+        "file.move" => dispatch_file_move(state, arguments).await,
+        "file.delete" => dispatch_file_delete(state, arguments).await,
+        "file.list" => dispatch_file_list(state, arguments).await,
         "skill.read_doc" => dispatch_skill_read_doc(state, arguments),
         "skill.read_resource" => dispatch_skill_read_resource(state, arguments),
         "memory.search" => dispatch_memory_search(state, arguments).await,
@@ -339,7 +450,11 @@ pub async fn dispatch_tool(
     }
 }
 
-async fn dispatch_exec(state: &AppState, arguments: &Value) -> (String, bool) {
+async fn dispatch_exec(
+    state: &AppState,
+    arguments: &Value,
+    session_key: Option<&str>,
+) -> (String, bool) {
     let req: ExecRequest = match ExecRequest::deserialize(arguments) {
         Ok(r) => r,
         Err(e) => return (format!("invalid exec arguments: {e}"), true),
@@ -359,6 +474,74 @@ async fn dispatch_exec(state: &AppState, arguments: &Value) -> (String, bool) {
         );
     }
 
+    // Approval gate — commands matching approval_patterns require human approval.
+    if state.approval_command_set.is_match(&req.command) {
+        tracing::info!(command = %req.command, "exec command requires approval");
+
+        let sk = session_key.unwrap_or("anonymous").to_string();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let approval_id = uuid::Uuid::new_v4();
+
+        let pending = crate::runtime::approval::PendingApproval {
+            id: approval_id,
+            command: req.command.clone(),
+            session_key: sk.clone(),
+            created_at: chrono::Utc::now(),
+            respond: tx,
+        };
+        state.approval_store.insert(pending);
+
+        // Emit SSE event to all run subscribers so the dashboard can show the dialog.
+        // We broadcast on a well-known "global" run ID derived from the approval UUID
+        // as well as attempt to emit on any active run for the session.
+        let event = crate::runtime::runs::RunEvent::ExecApprovalRequired {
+            approval_id,
+            command: req.command.clone(),
+            session_key: sk,
+        };
+        // Best-effort broadcast: emit on all currently tracked run channels.
+        // The SSE endpoint for runs will pick this up.
+        state.run_store.emit(&approval_id, event);
+
+        // Await human decision with a timeout.
+        let timeout = state.approval_store.timeout();
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(crate::runtime::approval::ApprovalDecision::Approved)) => {
+                tracing::info!(approval_id = %approval_id, "exec command approved");
+                // Fall through to execute the command.
+            }
+            Ok(Ok(crate::runtime::approval::ApprovalDecision::Denied { reason })) => {
+                let msg = match reason {
+                    Some(r) => format!("command denied by human reviewer: {r}"),
+                    None => "command denied by human reviewer".to_owned(),
+                };
+                tracing::warn!(approval_id = %approval_id, "exec command denied");
+                return (msg, true);
+            }
+            Ok(Err(_)) => {
+                // Sender dropped (store cleaned up) — treat as timeout.
+                state.approval_store.remove_expired(&approval_id);
+                tracing::warn!(approval_id = %approval_id, "exec approval channel dropped");
+                return (
+                    "exec approval timed out (reviewer channel closed)".to_owned(),
+                    true,
+                );
+            }
+            Err(_) => {
+                // Timeout elapsed — clean up and reject.
+                state.approval_store.remove_expired(&approval_id);
+                tracing::warn!(approval_id = %approval_id, "exec approval timed out");
+                return (
+                    format!(
+                        "exec approval timed out after {}s",
+                        timeout.as_secs()
+                    ),
+                    true,
+                );
+            }
+        }
+    }
+
     let resp = exec::exec(&state.processes, req).await;
     let json = serde_json::to_string_pretty(&resp).unwrap_or_default();
     (json, false)
@@ -372,6 +555,113 @@ async fn dispatch_process(state: &AppState, arguments: &Value) -> (String, bool)
     let resp = process::handle_process(&state.processes, req).await;
     let json = serde_json::to_string_pretty(&resp).unwrap_or_default();
     (json, false)
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// File operation dispatch
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Resolve the workspace root from config, canonicalizing relative paths
+/// against the current working directory.
+fn resolve_workspace_root(state: &AppState) -> Result<std::path::PathBuf, String> {
+    let ws_path = &state.config.workspace.path;
+    if ws_path.is_absolute() {
+        Ok(ws_path.clone())
+    } else {
+        let cwd = std::env::current_dir()
+            .map_err(|e| format!("cannot determine current directory: {e}"))?;
+        Ok(cwd.join(ws_path))
+    }
+}
+
+async fn dispatch_file_read(state: &AppState, arguments: &Value) -> (String, bool) {
+    let req: file_ops::FileReadRequest = match file_ops::FileReadRequest::deserialize(arguments) {
+        Ok(r) => r,
+        Err(e) => return (format!("invalid file.read arguments: {e}"), true),
+    };
+    let workspace_root = match resolve_workspace_root(state) {
+        Ok(p) => p,
+        Err(e) => return (e, true),
+    };
+    match file_ops::file_read(&workspace_root, req).await {
+        Ok(val) => (serde_json::to_string_pretty(&val).unwrap_or_default(), false),
+        Err(e) => (serde_json::json!({ "error": e }).to_string(), true),
+    }
+}
+
+async fn dispatch_file_write(state: &AppState, arguments: &Value) -> (String, bool) {
+    let req: file_ops::FileWriteRequest = match file_ops::FileWriteRequest::deserialize(arguments) {
+        Ok(r) => r,
+        Err(e) => return (format!("invalid file.write arguments: {e}"), true),
+    };
+    let workspace_root = match resolve_workspace_root(state) {
+        Ok(p) => p,
+        Err(e) => return (e, true),
+    };
+    match file_ops::file_write(&workspace_root, req).await {
+        Ok(val) => (serde_json::to_string_pretty(&val).unwrap_or_default(), false),
+        Err(e) => (serde_json::json!({ "error": e }).to_string(), true),
+    }
+}
+
+async fn dispatch_file_append(state: &AppState, arguments: &Value) -> (String, bool) {
+    let req: file_ops::FileAppendRequest = match file_ops::FileAppendRequest::deserialize(arguments) {
+        Ok(r) => r,
+        Err(e) => return (format!("invalid file.append arguments: {e}"), true),
+    };
+    let workspace_root = match resolve_workspace_root(state) {
+        Ok(p) => p,
+        Err(e) => return (e, true),
+    };
+    match file_ops::file_append(&workspace_root, req).await {
+        Ok(val) => (serde_json::to_string_pretty(&val).unwrap_or_default(), false),
+        Err(e) => (serde_json::json!({ "error": e }).to_string(), true),
+    }
+}
+
+async fn dispatch_file_move(state: &AppState, arguments: &Value) -> (String, bool) {
+    let req: file_ops::FileMoveRequest = match file_ops::FileMoveRequest::deserialize(arguments) {
+        Ok(r) => r,
+        Err(e) => return (format!("invalid file.move arguments: {e}"), true),
+    };
+    let workspace_root = match resolve_workspace_root(state) {
+        Ok(p) => p,
+        Err(e) => return (e, true),
+    };
+    match file_ops::file_move(&workspace_root, req).await {
+        Ok(val) => (serde_json::to_string_pretty(&val).unwrap_or_default(), false),
+        Err(e) => (serde_json::json!({ "error": e }).to_string(), true),
+    }
+}
+
+async fn dispatch_file_delete(state: &AppState, arguments: &Value) -> (String, bool) {
+    let req: file_ops::FileDeleteRequest = match file_ops::FileDeleteRequest::deserialize(arguments) {
+        Ok(r) => r,
+        Err(e) => return (format!("invalid file.delete arguments: {e}"), true),
+    };
+    let workspace_root = match resolve_workspace_root(state) {
+        Ok(p) => p,
+        Err(e) => return (e, true),
+    };
+    match file_ops::file_delete(&workspace_root, req).await {
+        Ok(val) => (serde_json::to_string_pretty(&val).unwrap_or_default(), false),
+        Err(e) => (serde_json::json!({ "error": e }).to_string(), true),
+    }
+}
+
+async fn dispatch_file_list(state: &AppState, arguments: &Value) -> (String, bool) {
+    let req: file_ops::FileListRequest = match file_ops::FileListRequest::deserialize(arguments) {
+        Ok(r) => r,
+        Err(e) => return (format!("invalid file.list arguments: {e}"), true),
+    };
+    let workspace_root = match resolve_workspace_root(state) {
+        Ok(p) => p,
+        Err(e) => return (e, true),
+    };
+    match file_ops::file_list(&workspace_root, req).await {
+        Ok(val) => (serde_json::to_string_pretty(&val).unwrap_or_default(), false),
+        Err(e) => (serde_json::json!({ "error": e }).to_string(), true),
+    }
 }
 
 fn dispatch_skill_read_doc(state: &AppState, arguments: &Value) -> (String, bool) {
@@ -545,6 +835,53 @@ fn dispatch_agent_list(state: &AppState) -> (String, bool) {
     )
 }
 
+/// Dispatch a tool call to an MCP server.
+///
+/// `rest` is the part after `mcp:` — expected format: `{server_id}:{tool_name}`.
+async fn dispatch_mcp_tool(
+    state: &AppState,
+    rest: &str,
+    arguments: &Value,
+) -> (String, bool) {
+    let (server_id, tool_name) = match rest.split_once(':') {
+        Some(pair) => pair,
+        None => {
+            return (
+                format!("invalid MCP tool name format: 'mcp:{rest}' — expected 'mcp:{{server_id}}:{{tool_name}}'"),
+                true,
+            );
+        }
+    };
+
+    match state.mcp.call_tool(server_id, tool_name, arguments.clone()).await {
+        Ok(result) => {
+            // Concatenate all text content items into a single response string.
+            let text: String = result
+                .content
+                .iter()
+                .filter(|c| c.content_type == "text")
+                .map(|c| c.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            if text.is_empty() {
+                (
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "content": result.content.iter().map(|c| {
+                            serde_json::json!({ "type": c.content_type, "text": c.text })
+                        }).collect::<Vec<_>>()
+                    }))
+                    .unwrap_or_default(),
+                    result.is_error,
+                )
+            } else {
+                (text, result.is_error)
+            }
+        }
+        Err(e) => (format!("MCP tool error: {e}"), true),
+    }
+}
+
 fn stub_tool(name: &str, message: &str) -> (String, bool) {
     (
         serde_json::json!({
@@ -607,7 +944,7 @@ async fn dispatch_to_node(
             // Shouldn't reach here since we handle exec/process above,
             // but handle gracefully.
             match tool_type {
-                LocalTool::Exec => dispatch_exec(state, arguments).await,
+                LocalTool::Exec => dispatch_exec(state, arguments, session_key).await,
                 LocalTool::Process => dispatch_process(state, arguments).await,
             }
         }
