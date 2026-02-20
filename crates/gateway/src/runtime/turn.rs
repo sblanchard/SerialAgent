@@ -496,6 +496,8 @@ async fn run_turn_inner(
         // Tool call assembly state.
         let mut tc_bufs: std::collections::HashMap<String, (String, String)> =
             std::collections::HashMap::new(); // call_id -> (name, args_json)
+        let mut tc_idx_to_id: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new(); // "0","1",... -> real call_id
 
         while let Some(event_result) = stream.next().await {
             // Check cancellation during streaming.
@@ -521,10 +523,19 @@ async fn run_turn_inner(
                     call_id,
                     tool_name,
                 } => {
+                    // Map index → real call_id for providers that use
+                    // index-based deltas (DeepSeek).
+                    let idx = tc_idx_to_id.len().to_string();
+                    tc_idx_to_id.insert(idx, call_id.clone());
                     tc_bufs.insert(call_id, (tool_name, String::new()));
                 }
                 StreamEvent::ToolCallDelta { call_id, delta } => {
-                    if let Some((_, args)) = tc_bufs.get_mut(&call_id) {
+                    // call_id may be the real ID or a stringified index.
+                    let real_id = tc_idx_to_id
+                        .get(&call_id)
+                        .cloned()
+                        .unwrap_or(call_id);
+                    if let Some((_, args)) = tc_bufs.get_mut(&real_id) {
                         args.push_str(&delta);
                     }
                 }
