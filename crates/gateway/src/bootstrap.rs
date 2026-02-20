@@ -78,9 +78,8 @@ pub async fn build_app_state(
         ProviderRegistry::from_config(&config.llm).context("initializing LLM providers")?,
     );
     if llm.is_empty() {
-        tracing::warn!(
-            "no LLM providers initialized — gateway will run but \
-             /v1/models will be empty and LLM calls will fail"
+        tracing::info!(
+            "no LLM providers initialized — configure API keys to enable LLM endpoints"
         );
     } else {
         tracing::info!(providers = llm.len(), "LLM provider registry ready");

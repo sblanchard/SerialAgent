@@ -110,12 +110,26 @@ impl ProviderRegistry {
                     // storing the error, so they never leak to dashboards
                     // or readiness endpoints.
                     let safe_error = mask_secrets(&e.to_string());
-                    tracing::warn!(
-                        provider_id = %pc.id,
-                        kind = ?pc.kind,
-                        error = %safe_error,
-                        "failed to initialize LLM provider, skipping"
-                    );
+
+                    // Missing env var is expected when a provider is configured
+                    // but not yet activated — log at debug, not warn.
+                    let is_missing_key = safe_error.contains("not set or not valid UTF-8");
+                    if is_missing_key {
+                        tracing::debug!(
+                            provider_id = %pc.id,
+                            kind = ?pc.kind,
+                            error = %safe_error,
+                            "LLM provider not configured, skipping"
+                        );
+                    } else {
+                        tracing::warn!(
+                            provider_id = %pc.id,
+                            kind = ?pc.kind,
+                            error = %safe_error,
+                            "failed to initialize LLM provider, skipping"
+                        );
+                    }
+
                     init_errors.push(ProviderInitError {
                         provider_id: pc.id.clone(),
                         kind: format!("{:?}", pc.kind),
@@ -150,11 +164,10 @@ impl ProviderRegistry {
                     ));
                 }
                 LlmStartupPolicy::AllowNone => {
-                    tracing::warn!(
+                    tracing::info!(
                         failed_providers = init_errors.len(),
-                        "no LLM providers initialized (startup_policy = allow_none); \
-                         gateway will boot but LLM endpoints will fail until auth \
-                         is configured — check /v1/models/readiness for details"
+                        "no LLM providers initialized — configure API keys to enable \
+                         LLM endpoints (check /v1/models/readiness for details)"
                     );
                 }
             }
