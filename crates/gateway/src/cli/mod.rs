@@ -1,6 +1,12 @@
+pub mod chat;
 pub mod config;
 pub mod doctor;
+pub mod import_cmd;
+pub mod init;
 pub mod login;
+pub mod pid;
+pub mod run;
+pub mod systemd;
 
 use clap::{Parser, Subcommand};
 
@@ -21,8 +27,50 @@ pub enum Command {
     /// Configuration utilities.
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// Initialize a new SerialAgent project in the current directory.
+    Init {
+        /// Skip interactive prompts and use sensible defaults (OpenAI provider).
+        #[arg(long)]
+        defaults: bool,
+    },
+    /// Send a single message to the agent and print the response.
+    Run {
+        /// The message to send.
+        message: String,
+        /// Session key (defaults to "cli:run").
+        #[arg(long, default_value = "cli:run")]
+        session: String,
+        /// Model override (e.g. "openai/gpt-4o").
+        #[arg(long)]
+        model: Option<String>,
+        /// Output the full response as JSON instead of plain text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print version information.
     Version,
+    /// Systemd service management.
+    #[command(subcommand)]
+    Systemd(SystemdCommand),
+    /// Import data from external systems (e.g. OpenClaw).
+    #[command(subcommand)]
+    Import(ImportCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SystemdCommand {
+    /// Generate a systemd unit file and print it to stdout.
+    Generate {
+        /// Linux user to run the service as.
+        #[arg(long, default_value = "serialagent")]
+        user: String,
+        /// Working directory for the service.
+        #[arg(long)]
+        working_dir: Option<String>,
+        /// Path to the config file.
+        #[arg(long, default_value = "config.toml")]
+        config: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -45,6 +93,40 @@ pub enum ConfigCommand {
     Login {
         /// Provider ID from config.toml (must use oauth_device auth mode).
         provider_id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ImportCommand {
+    /// Preview an OpenClaw import (stage, scan, report).
+    Preview {
+        /// Path to the .openclaw directory (local).
+        #[arg(long)]
+        path: String,
+        /// Include workspaces (default: true).
+        #[arg(long, default_value = "true")]
+        include_workspaces: bool,
+        /// Include sessions (default: true).
+        #[arg(long, default_value = "true")]
+        include_sessions: bool,
+        /// Include model configs.
+        #[arg(long)]
+        include_models: bool,
+    },
+    /// Apply a staged import.
+    Apply {
+        /// Staging ID from the preview step.
+        staging_id: String,
+        /// Merge strategy: merge_safe, replace, or skip_existing.
+        #[arg(long, default_value = "merge_safe")]
+        strategy: String,
+    },
+    /// List all staged imports.
+    StagingList,
+    /// Delete a staged import.
+    StagingDelete {
+        /// Staging ID to delete.
+        id: String,
     },
 }
 
