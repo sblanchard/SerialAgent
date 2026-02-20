@@ -10,6 +10,7 @@ use futures_util::stream::Stream;
 use serde::Deserialize;
 
 use sa_domain::config::InboundMetadata;
+use sa_providers::ResponseFormat;
 use sa_sessions::compute_session_key;
 use sa_sessions::store::SessionOrigin;
 
@@ -31,6 +32,9 @@ pub struct ChatRequest {
     /// Optional model override (e.g. "openai/gpt-4o").
     #[serde(default)]
     pub model: Option<String>,
+    /// Controls the response format: text, json_object, or json_schema.
+    #[serde(default)]
+    pub response_format: Option<ResponseFormat>,
     /// Inbound channel context (used to compute session key if not explicit).
     #[serde(default)]
     pub channel_context: Option<InboundMetadata>,
@@ -79,6 +83,7 @@ pub async fn chat(
         session_id: session_id.clone(),
         user_message: body.message,
         model: body.model,
+        response_format: body.response_format,
         agent: None,
     };
 
@@ -202,6 +207,7 @@ pub async fn chat_stream(
         session_id,
         user_message: body.message,
         model: body.model,
+        response_format: body.response_format,
         agent: None,
     };
 

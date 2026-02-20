@@ -111,6 +111,8 @@ pub struct TurnInput {
     pub user_message: String,
     /// Model override (e.g. "openai/gpt-4o"). None = use role default.
     pub model: Option<String>,
+    /// Controls the response format (text, json_object, json_schema).
+    pub response_format: Option<sa_providers::ResponseFormat>,
     /// When running as a sub-agent, carries agent-scoped overrides.
     pub agent: Option<agent::AgentContext>,
 }
@@ -417,7 +419,10 @@ async fn run_turn_inner(
             tools: (*tool_defs).clone(),
             temperature: Some(0.2),
             max_tokens: None,
-            json_mode: false,
+            response_format: input
+                .response_format
+                .clone()
+                .unwrap_or_default(),
             model: input.model.clone(),
         };
 

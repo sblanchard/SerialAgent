@@ -6,7 +6,7 @@
 use crate::auth::AuthRotator;
 use crate::util::from_reqwest;
 use crate::traits::{
-    ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider,
+    ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider, ResponseFormat,
 };
 use sa_domain::capability::LlmCapabilities;
 use sa_domain::config::ProviderConfig;
@@ -126,8 +126,15 @@ impl GoogleProvider {
         if let Some(max) = req.max_tokens {
             gen_config["maxOutputTokens"] = serde_json::json!(max);
         }
-        if req.json_mode {
-            gen_config["responseMimeType"] = serde_json::json!("application/json");
+        match &req.response_format {
+            ResponseFormat::Text => {}
+            ResponseFormat::JsonObject => {
+                gen_config["responseMimeType"] = serde_json::json!("application/json");
+            }
+            ResponseFormat::JsonSchema { schema, .. } => {
+                gen_config["responseMimeType"] = serde_json::json!("application/json");
+                gen_config["responseSchema"] = schema.clone();
+            }
         }
         if gen_config.as_object().is_some_and(|o| !o.is_empty()) {
             body["generationConfig"] = gen_config;

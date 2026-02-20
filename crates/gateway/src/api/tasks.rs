@@ -110,6 +110,7 @@ pub async fn create_task(
         session_id,
         user_message: body.message,
         model: body.model,
+        response_format: None,
         agent: None,
     };
 

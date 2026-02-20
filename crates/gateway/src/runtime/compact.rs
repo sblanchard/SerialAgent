@@ -120,7 +120,7 @@ pub async fn generate_summary(
         tools: vec![],
         temperature: Some(0.1),
         max_tokens: Some(2000),
-        json_mode: false,
+        response_format: sa_providers::ResponseFormat::Text,
         model: None,
     };
 

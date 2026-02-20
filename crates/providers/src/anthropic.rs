@@ -7,7 +7,7 @@
 use crate::auth::AuthRotator;
 use crate::util::from_reqwest;
 use crate::traits::{
-    ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider,
+    ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider, ResponseFormat,
 };
 use sa_domain::capability::LlmCapabilities;
 use sa_domain::config::ProviderConfig;
@@ -106,6 +106,32 @@ impl AnthropicProvider {
                     // Anthropic expects tool results as user messages with
                     // tool_result content blocks.
                     api_messages.push(tool_result_to_anthropic(msg));
+                }
+            }
+        }
+
+        // JSON output: use prefill approach to guide the model.
+        // Anthropic does not have native JSON mode; we add an assistant prefill
+        // with `{` so the model continues producing valid JSON.
+        match &req.response_format {
+            ResponseFormat::Text => {}
+            ResponseFormat::JsonObject | ResponseFormat::JsonSchema { .. } => {
+                tracing::debug!(
+                    "Anthropic: structured output requested — using assistant prefill; \
+                     schema enforcement is best-effort for this provider"
+                );
+                // Only add prefill if the last message is from the user (to keep
+                // valid Anthropic message alternation).
+                let last_is_user = api_messages
+                    .last()
+                    .and_then(|m| m.get("role"))
+                    .and_then(|r| r.as_str())
+                    == Some("user");
+                if last_is_user {
+                    api_messages.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": "{",
+                    }));
                 }
             }
         }

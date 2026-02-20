@@ -5,7 +5,7 @@
 
 use crate::auth::AuthRotator;
 use crate::traits::{
-    ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider,
+    ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, LlmProvider, ResponseFormat,
 };
 use crate::util::from_reqwest;
 use sa_domain::capability::LlmCapabilities;
@@ -164,8 +164,25 @@ impl OpenAiCompatProvider {
         if let Some(max) = req.max_tokens {
             body["max_tokens"] = serde_json::json!(max);
         }
-        if req.json_mode {
-            body["response_format"] = serde_json::json!({"type": "json_object"});
+        match &req.response_format {
+            ResponseFormat::Text => {}
+            ResponseFormat::JsonObject => {
+                body["response_format"] = serde_json::json!({"type": "json_object"});
+            }
+            ResponseFormat::JsonSchema {
+                name,
+                schema,
+                strict,
+            } => {
+                body["response_format"] = serde_json::json!({
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": name,
+                        "schema": schema,
+                        "strict": strict,
+                    }
+                });
+            }
         }
         if stream {
             body["stream_options"] = serde_json::json!({"include_usage": true});

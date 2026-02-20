@@ -198,6 +198,7 @@ async fn send_message(
         session_id: entry.session_id.clone(),
         user_message: user_message.to_string(),
         model: model.clone(),
+        response_format: None,
         agent: None,
     };
 

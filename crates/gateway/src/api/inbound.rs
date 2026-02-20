@@ -458,6 +458,7 @@ pub async fn inbound(
         session_id: entry.session_id.clone(),
         user_message: body.text,
         model: body.model,
+        response_format: None,
         agent: None,
     };
 

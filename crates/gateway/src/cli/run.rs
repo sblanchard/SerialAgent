@@ -36,6 +36,7 @@ pub async fn run(
         session_id: entry.session_id.clone(),
         user_message: message,
         model,
+        response_format: None,
         agent: None,
     };
 

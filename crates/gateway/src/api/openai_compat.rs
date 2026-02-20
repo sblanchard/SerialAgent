@@ -13,6 +13,7 @@ use axum::response::{IntoResponse, Json};
 use futures_util::stream::Stream;
 use serde::{Deserialize, Serialize};
 
+use sa_providers::ResponseFormat;
 use sa_sessions::store::SessionOrigin;
 
 use crate::runtime::session_lock::SessionBusy;
@@ -33,6 +34,9 @@ pub struct OpenAIChatRequest {
     pub temperature: Option<f64>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Controls the response format (text, json_object, json_schema).
+    #[serde(default)]
+    pub response_format: Option<ResponseFormat>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,6 +168,7 @@ async fn chat_completions_blocking(
         session_id,
         user_message,
         model: Some(body.model),
+        response_format: body.response_format,
         agent: None,
     };
 
@@ -278,6 +283,7 @@ async fn chat_completions_stream(state: AppState, body: OpenAIChatRequest) -> im
         session_id,
         user_message,
         model: Some(body.model),
+        response_format: body.response_format,
         agent: None,
     };
 
