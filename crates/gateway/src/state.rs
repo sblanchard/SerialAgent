@@ -18,6 +18,7 @@ use crate::nodes::router::ToolRouter;
 use crate::runtime::agent::AgentManager;
 use crate::runtime::approval::ApprovalStore;
 use crate::runtime::cancel::CancelMap;
+use crate::runtime::quota::QuotaTracker;
 use crate::runtime::deliveries::DeliveryStore;
 use crate::runtime::runs::RunStore;
 use crate::runtime::schedules::ScheduleStore;
@@ -87,6 +88,8 @@ pub struct AppState {
     pub agents: Option<Arc<AgentManager>>,
     pub processes: Arc<ProcessManager>,
     pub cancel_map: Arc<CancelMap>,
+    /// Per-agent daily token and cost quota tracker.
+    pub quota_tracker: Arc<QuotaTracker>,
 
     // ── MCP (Model Context Protocol) servers ────────────────────────────
     /// MCP server connections and tool registry.

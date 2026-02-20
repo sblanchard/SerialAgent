@@ -124,6 +124,12 @@ pub async fn build_app_state(config: Arc<Config>) -> anyhow::Result<AppState> {
     );
     tracing::info!("cancel map ready");
 
+    // ── Quota tracker (per-agent daily limits) ──────────────────────
+    let quota_tracker = Arc::new(
+        crate::runtime::quota::QuotaTracker::new(config.quota.clone()),
+    );
+    tracing::info!("quota tracker ready");
+
     // ── Dedupe store (inbound idempotency, 24h TTL) ────────────────
     let dedupe = Arc::new(
         crate::api::inbound::DedupeStore::new(std::time::Duration::from_secs(86_400)),
@@ -269,6 +275,7 @@ pub async fn build_app_state(config: Arc<Config>) -> anyhow::Result<AppState> {
         tool_router,
         session_locks,
         cancel_map,
+        quota_tracker,
         agents: None,
         dedupe,
         run_store,

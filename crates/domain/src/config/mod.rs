@@ -5,6 +5,7 @@ mod llm;
 mod mcp;
 mod observability;
 mod pruning;
+mod quota;
 mod serial_memory;
 mod server;
 mod sessions;
@@ -19,6 +20,7 @@ pub use llm::*;
 pub use mcp::*;
 pub use observability::*;
 pub use pruning::*;
+pub use quota::*;
 pub use serial_memory::*;
 pub use server::*;
 pub use sessions::*;
@@ -72,6 +74,9 @@ pub struct Config {
     /// OpenTelemetry observability settings.
     #[serde(default)]
     pub observability: ObservabilityConfig,
+    /// Per-agent daily token and cost quota limits.
+    #[serde(default)]
+    pub quota: QuotaConfig,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

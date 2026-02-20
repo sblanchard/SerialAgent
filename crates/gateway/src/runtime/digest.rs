@@ -405,6 +405,7 @@ mod tests {
             last_error_at: None,
             consecutive_failures: 0,
             cooldown_until: None,
+            webhook_secret: None,
             total_input_tokens: 0,
             total_output_tokens: 0,
             total_runs: 0,

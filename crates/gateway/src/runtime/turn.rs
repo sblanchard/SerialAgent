@@ -245,6 +245,7 @@ async fn handle_cancellation(
             }
         ),
         Some(serde_json::json!({ "stopped": true })),
+        Some(state.sessions.search_index()),
     )
     .await;
     let _ = tx
@@ -271,6 +272,7 @@ async fn finalize_run_success(
         "assistant",
         text_buf,
         None,
+        Some(state.sessions.search_index()),
     )
     .await;
 
@@ -331,6 +333,20 @@ async fn finalize_run_success(
     );
     state.run_store.cleanup_channel(&run_id);
 
+    // ── Record usage against quota tracker ─────────────────
+    {
+        let estimated_cost = state
+            .run_store
+            .get(&run_id)
+            .map(|r| r.estimated_cost_usd)
+            .unwrap_or(0.0);
+        state.quota_tracker.record_usage(
+            input.agent.as_ref().map(|a| a.agent_id.as_str()),
+            total_usage.total_tokens as u64,
+            estimated_cost,
+        );
+    }
+
     // ── Memory auto-capture (fire-and-forget) ─────────────
     fire_auto_capture(state, input, text_buf);
 }
@@ -347,6 +363,35 @@ async fn run_turn_inner(
     run_id: uuid::Uuid,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut node_seq: u32 = 0;
+
+    // ── Pre-flight: quota check ─────────────────────────────────────────
+    {
+        let agent_id = input.agent.as_ref().map(|a| a.agent_id.as_str());
+        if let Err(exceeded) = state.quota_tracker.check_quota(agent_id) {
+            let msg = format!(
+                "daily {} quota exceeded: {:.2}/{:.2}",
+                exceeded.kind, exceeded.used, exceeded.limit,
+            );
+            let _ = tx.send(TurnEvent::Error { message: msg }).await;
+            state.run_store.update(&run_id, |r| {
+                r.error = Some(format!("quota exceeded: {}", exceeded.kind));
+                r.finish(runs::RunStatus::Failed);
+            });
+            if let Some(run) = state.run_store.get(&run_id) {
+                state.run_store.persist(&run);
+            }
+            state.run_store.emit(
+                &run_id,
+                runs::RunEvent::RunStatus {
+                    run_id,
+                    status: runs::RunStatus::Failed,
+                },
+            );
+            state.run_store.cleanup_channel(&run_id);
+            return Ok(());
+        }
+    }
+
     // ── Phase 1: Build the turn context (provider, messages, tool defs) ──
     let ctx = prepare_turn_context(&state, &input).await?;
     let TurnContext {
@@ -373,6 +418,7 @@ async fn run_turn_inner(
                 "system",
                 "[run aborted by user]",
                 Some(serde_json::json!({ "stopped": true })),
+                Some(state.sessions.search_index()),
             )
             .await;
             let _ = tx
@@ -595,6 +641,7 @@ async fn run_turn_inner(
             "assistant",
             &text_buf,
             Some(serde_json::json!({ "tool_calls": tc_json })),
+            Some(state.sessions.search_index()),
         )
         .await;
 
@@ -737,6 +784,7 @@ async fn run_turn_inner(
                     "tool_name": tc.tool_name,
                     "is_error": is_error,
                 })),
+                Some(state.sessions.search_index()),
             )
             .await;
         }
@@ -854,6 +902,7 @@ async fn prepare_turn_context(
         "user",
         &input.user_message,
         None,
+        Some(state.sessions.search_index()),
     )
     .await;
 

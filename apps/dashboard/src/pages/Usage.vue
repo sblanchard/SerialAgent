@@ -2,13 +2,14 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { api, ApiError } from "@/api/client";
-import type { RunListItem, RunListResponse } from "@/api/client";
+import type { RunListItem, RunListResponse, QuotaStatus } from "@/api/client";
 import Card from "@/components/Card.vue";
 import LoadingPanel from "@/components/LoadingPanel.vue";
 
 const router = useRouter();
 
 const runs = ref<RunListItem[]>([]);
+const quotas = ref<QuotaStatus[]>([]);
 const loading = ref(false);
 const error = ref("");
 
@@ -18,8 +19,12 @@ async function load() {
   loading.value = true;
   error.value = "";
   try {
-    const res: RunListResponse = await api.getRuns({ limit: 200 });
-    runs.value = res.runs;
+    const [runsRes, quotasRes] = await Promise.all([
+      api.getRuns({ limit: 200 }),
+      api.getQuotas().catch(() => ({ quotas: [] as QuotaStatus[] })),
+    ]);
+    runs.value = runsRes.runs;
+    quotas.value = quotasRes.quotas;
   } catch (e: unknown) {
     error.value = e instanceof ApiError ? e.friendly : String(e);
   } finally {
@@ -184,6 +189,27 @@ function statusColor(status: string): string {
     default: return "var(--text-dim)";
   }
 }
+
+// ── Quota helpers ─────────────────────────────────────────────────
+
+const quotasWithLimits = computed(() =>
+  quotas.value.filter(q => q.tokens_limit != null || q.cost_limit_usd != null)
+);
+
+function quotaPercent(used: number, limit: number | null): number {
+  if (limit == null || limit === 0) return 0;
+  return Math.min(100, (used / limit) * 100);
+}
+
+function quotaBarColor(pct: number): string {
+  if (pct >= 90) return "var(--red)";
+  if (pct >= 75) return "var(--yellow, #e6a700)";
+  return "var(--green)";
+}
+
+function formatCost(usd: number): string {
+  return `$${usd.toFixed(4)}`;
+}
 </script>
 
 <template>
@@ -220,6 +246,45 @@ function statusColor(status: string): string {
           <span class="stat-label">Avg / Run</span>
         </div>
       </div>
+
+      <!-- Daily Quotas -->
+      <Card v-if="quotasWithLimits.length > 0" title="Daily Quotas">
+        <div class="quota-list">
+          <div v-for="q in quotasWithLimits" :key="q.agent_id" class="quota-row">
+            <div class="quota-agent mono">{{ q.agent_id }}</div>
+            <div v-if="q.tokens_limit != null" class="quota-bar-group">
+              <div class="quota-bar-label">
+                <span>Tokens</span>
+                <span class="mono">{{ formatTokens(q.tokens_used) }} / {{ formatTokens(q.tokens_limit) }}</span>
+              </div>
+              <div class="quota-bar-track">
+                <div
+                  class="quota-bar-fill"
+                  :style="{
+                    width: quotaPercent(q.tokens_used, q.tokens_limit) + '%',
+                    background: quotaBarColor(quotaPercent(q.tokens_used, q.tokens_limit)),
+                  }"
+                ></div>
+              </div>
+            </div>
+            <div v-if="q.cost_limit_usd != null" class="quota-bar-group">
+              <div class="quota-bar-label">
+                <span>Cost</span>
+                <span class="mono">{{ formatCost(q.cost_used_usd) }} / {{ formatCost(q.cost_limit_usd) }}</span>
+              </div>
+              <div class="quota-bar-track">
+                <div
+                  class="quota-bar-fill"
+                  :style="{
+                    width: quotaPercent(q.cost_used_usd, q.cost_limit_usd) + '%',
+                    background: quotaBarColor(quotaPercent(q.cost_used_usd, q.cost_limit_usd)),
+                  }"
+                ></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Card>
 
       <!-- Breakdown by status -->
       <Card title="Tokens by Status">
@@ -434,6 +499,52 @@ function statusColor(status: string): string {
 
 .clickable:hover {
   background: rgba(88, 166, 255, 0.03);
+}
+
+/* ── Quota bars ────────────────────────────────────────────────── */
+
+.quota-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+}
+
+.quota-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.quota-agent {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.quota-bar-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.quota-bar-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+.quota-bar-track {
+  height: 8px;
+  background: var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.quota-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
 }
 
 /* ── Status badge ───────────────────────────────────────────────── */

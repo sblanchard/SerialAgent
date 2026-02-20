@@ -12,6 +12,7 @@ pub mod memory;
 pub mod nodes;
 pub mod openai_compat;
 pub mod providers;
+pub mod quota;
 pub mod runs;
 pub mod schedules;
 pub mod sessions;
@@ -106,6 +107,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/v1/tasks/:id", get(tasks::get_task))
         .route("/v1/tasks/:id", delete(tasks::cancel_task))
         .route("/v1/tasks/:id/events", get(tasks::task_events_sse))
+        // Quotas (per-agent daily usage limits)
+        .route("/v1/quotas", get(quota::get_quotas))
         // Runs (execution tracking)
         .route("/v1/runs", get(runs::list_runs))
         .route("/v1/runs/:id", get(runs::get_run))

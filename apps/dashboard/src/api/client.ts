@@ -162,7 +162,17 @@ export type SessionEntry = {
 
 export type SessionsListResponse = {
   sessions: SessionEntry[];
+  total: number;
   count: number;
+};
+
+export type SessionsListParams = {
+  q?: string;
+  channel?: string;
+  peer?: string;
+  agent_id?: string;
+  limit?: number;
+  offset?: number;
 };
 
 export type SessionDetailResponse = SessionEntry & {
@@ -718,6 +728,21 @@ export type SkillEngineListResponse = {
   count: number;
 };
 
+// ── Quota types ─────────────────────────────────────────────────────
+
+export type QuotaStatus = {
+  agent_id: string;
+  date: string;
+  tokens_used: number;
+  tokens_limit: number | null;
+  cost_used_usd: number;
+  cost_limit_usd: number | null;
+};
+
+export type QuotaListResponse = {
+  quotas: QuotaStatus[];
+};
+
 // ── API functions ──────────────────────────────────────────────────
 
 export const api = {
@@ -725,7 +750,17 @@ export const api = {
   readiness: () => get<ReadinessResponse>("/v1/models/readiness"),
   nodes: () => get<NodesListResponse>("/v1/nodes"),
   agents: () => get<AgentsListResponse>("/v1/agents"),
-  sessions: () => get<SessionsListResponse>("/v1/sessions"),
+  sessions: (params?: SessionsListParams) => {
+    const q = new URLSearchParams();
+    if (params?.q) q.set("q", params.q);
+    if (params?.channel) q.set("channel", params.channel);
+    if (params?.peer) q.set("peer", params.peer);
+    if (params?.agent_id) q.set("agent_id", params.agent_id);
+    if (params?.limit) q.set("limit", String(params.limit));
+    if (params?.offset) q.set("offset", String(params.offset));
+    const qs = q.toString();
+    return get<SessionsListResponse>(`/v1/sessions${qs ? "?" + qs : ""}`);
+  },
   session: (key: string) =>
     get<SessionDetailResponse>(`/v1/sessions/${encodeURIComponent(key)}`),
   transcript: (key: string, offset = 0, limit = 200) =>
@@ -810,6 +845,9 @@ export const api = {
 
   // Skill engine
   getSkillEngine: () => get<SkillEngineListResponse>("/v1/skill-engine"),
+
+  // Quotas (per-agent daily limits)
+  getQuotas: () => get<QuotaListResponse>("/v1/quotas"),
 
   // Provider listing
   providers: () => get<{ providers: string[]; count: number }>("/v1/models"),
