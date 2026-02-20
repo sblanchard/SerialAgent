@@ -1,0 +1,194 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Step 1: Bump version, commit, tag, push ───────────────────────
+  bump:
+    name: Bump version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: v${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate version format
+        run: |
+          if ! echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "::error::Invalid version format: ${{ inputs.version }}"
+            exit 1
+          fi
+
+      - name: Bump workspace Cargo.toml
+        run: |
+          sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' Cargo.toml
+
+      - name: Bump src-tauri/Cargo.toml
+        run: |
+          sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' apps/dashboard/src-tauri/Cargo.toml
+
+      - name: Bump tauri.conf.json
+        run: |
+          jq '.version = "${{ inputs.version }}"' apps/dashboard/src-tauri/tauri.conf.json > tmp.json
+          mv tmp.json apps/dashboard/src-tauri/tauri.conf.json
+
+      - name: Bump package.json
+        run: |
+          jq '.version = "${{ inputs.version }}"' apps/dashboard/package.json > tmp.json
+          mv tmp.json apps/dashboard/package.json
+
+      - name: Update Cargo.lock
+        run: cargo generate-lockfile
+
+      - name: Commit and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock apps/dashboard/src-tauri/Cargo.toml \
+                  apps/dashboard/src-tauri/tauri.conf.json apps/dashboard/package.json
+          git commit -m "chore: bump version to ${{ inputs.version }}"
+          git tag -a "v${{ inputs.version }}" -m "Release v${{ inputs.version }}"
+          git push origin HEAD --tags
+
+  # ── Step 2: Build release binaries ────────────────────────────────
+  build:
+    name: Build (${{ matrix.target }})
+    needs: bump
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: serialagent
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: serialagent.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-${{ matrix.target }}-
+
+      - name: Build release binary
+        run: cargo build --release --bin serialagent --package sa-gateway --target ${{ matrix.target }} --locked
+
+      - name: Package binary (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/serialagent dist/
+          cp config.toml dist/config.toml.example
+          tar czf serialagent-v${{ inputs.version }}-${{ matrix.target }}.tar.gz -C dist .
+
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/serialagent.exe dist/
+          cp config.toml dist/config.toml.example
+          7z a serialagent-v${{ inputs.version }}-${{ matrix.target }}.zip dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: serialagent-${{ matrix.target }}
+          path: serialagent-v${{ inputs.version }}-*
+
+  # ── Step 3: Build dashboard ───────────────────────────────────────
+  dashboard:
+    name: Build dashboard
+    needs: bump
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/dashboard
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/dashboard/package-lock.json
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Package dashboard
+        run: tar czf ../../dashboard-v${{ inputs.version }}.tar.gz -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dashboard
+          path: dashboard-v${{ inputs.version }}.tar.gz
+
+  # ── Step 4: Create GitHub release ─────────────────────────────────
+  release:
+    name: Create release
+    needs: [build, dashboard]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Find previous tag
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "v${{ inputs.version }}" | head -1)
+          if [ -z "$PREV_TAG" ]; then
+            RANGE="v${{ inputs.version }}"
+          else
+            RANGE="${PREV_TAG}..v${{ inputs.version }}"
+          fi
+
+          echo "## Changes" > changelog.md
+          echo "" >> changelog.md
+          git log "$RANGE" --pretty=format:"- %s (%h)" --no-merges >> changelog.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ inputs.version }}" \
+            --title "v${{ inputs.version }}" \
+            --notes-file changelog.md \
+            artifacts/*
