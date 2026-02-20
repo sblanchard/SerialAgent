@@ -3,7 +3,39 @@
     // Hover to view descriptions of existing attributes.
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
+    "compounds": [
+        {
+            "name": "Gateway + Dashboard Dev",
+            "configurations": [
+                "Gateway (serve)",
+                "Dashboard (vite dev)"
+            ]
+        }
+    ],
     "configurations": [
+        {
+            "name": "Gateway (serve)",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=serialagent",
+                    "--package=sa-gateway"
+                ]
+            },
+            "args": ["serve"],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Dashboard (vite dev)",
+            "type": "node",
+            "request": "launch",
+            "runtimeExecutable": "npx",
+            "runtimeArgs": ["vite", "--host", "localhost"],
+            "cwd": "${workspaceFolder}/apps/dashboard",
+            "console": "integratedTerminal"
+        },
         {
             "name": "Debug executable 'serialagent'",
             "type": "lldb",
