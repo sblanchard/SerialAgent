@@ -2,6 +2,9 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # SerialAgent — one-click build & launch
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Usage:
+#   ./start.sh           — build & open in browser
+#   ./start.sh --tauri   — build & open Tauri desktop app
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -10,7 +13,15 @@ cd "$ROOT"
 GATEWAY_PORT=3210
 MEMORY_PORT=4545
 LOG_DIR="$ROOT/data/logs"
+TAURI=false
 mkdir -p "$LOG_DIR"
+
+# ── Parse flags ───────────────────────────────────────────────────────
+for arg in "$@"; do
+    case "$arg" in
+        --tauri) TAURI=true ;;
+    esac
+done
 
 # ── Colors ────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'
@@ -40,6 +51,39 @@ else
         warn "SerialMemory not found at $MEMORY_DIR — skipping (memory features disabled)"
     fi
 fi
+
+# ── Tauri mode: let `cargo tauri dev` handle everything ──────────────
+if [ "$TAURI" = true ]; then
+    # Build gateway (Tauri dev needs it running separately)
+    log "Building gateway..."
+    cargo build -p sa-gateway 2>&1 | tail -1
+    ok "Gateway built"
+
+    # Stop old gateway if running
+    if ss -tlnp 2>/dev/null | grep -q ":${GATEWAY_PORT} "; then
+        log "Stopping old gateway..."
+        pkill -f "serialagent serve" 2>/dev/null || true
+        sleep 1
+    fi
+
+    # Start gateway in background
+    log "Starting gateway..."
+    nohup ./target/debug/serialagent serve > "$LOG_DIR/gateway.log" 2>&1 &
+
+    for i in $(seq 1 10); do
+        if ss -tlnp 2>/dev/null | grep -q ":${GATEWAY_PORT} "; then break; fi
+        sleep 0.5
+    done
+    ok "Gateway running on :${GATEWAY_PORT}"
+
+    # Launch Tauri desktop app (blocks until window closes)
+    log "Launching Tauri desktop app..."
+    cd apps/dashboard
+    npx tauri dev 2>&1
+    exit 0
+fi
+
+# ── Browser mode (default) ───────────────────────────────────────────
 
 # ── 2. Build dashboard ───────────────────────────────────────────────
 log "Building dashboard..."
@@ -90,4 +134,4 @@ ok "SerialAgent is running!"
 echo "   Dashboard:  $URL"
 echo "   API:        http://localhost:${GATEWAY_PORT}/v1/health"
 echo "   Logs:       $LOG_DIR/"
-echo "   Stop:       pkill -f 'serialagent serve'"
+echo "   Stop:       ./stop.sh"
