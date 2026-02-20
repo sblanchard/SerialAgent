@@ -596,16 +596,21 @@ async fn run_turn_inner(
         // Assemble any tool calls that came through start/delta but not
         // through ToolCallFinished (some providers only use start+delta).
         for (call_id, (name, args_str)) in tc_bufs.drain() {
-            let arguments = match serde_json::from_str(&args_str) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        call_id = %call_id,
-                        tool = %name,
-                        error = %e,
-                        "tool call arguments are not valid JSON; wrapping as string"
-                    );
-                    Value::String(args_str)
+            let arguments = if args_str.trim().is_empty() {
+                // Empty arguments (common with DeepSeek) → default to empty object.
+                Value::Object(Default::default())
+            } else {
+                match serde_json::from_str(&args_str) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            call_id = %call_id,
+                            tool = %name,
+                            error = %e,
+                            "tool call arguments are not valid JSON; defaulting to empty object"
+                        );
+                        Value::Object(Default::default())
+                    }
                 }
             };
             pending_tool_calls.push(ToolCall {
