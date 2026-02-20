@@ -3,5 +3,7 @@
 *.swo
 .env
 .env.local
+config.toml
+config.toml.bak.*
 data/
 *.db
