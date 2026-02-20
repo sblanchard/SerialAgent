@@ -573,7 +573,7 @@ fn render_jsonl(lines: &[TranscriptLine], key: &str) -> axum::response::Response
 
 /// Render the transcript as a JSON array.
 fn render_json(lines: &[TranscriptLine], key: &str) -> axum::response::Response {
-    let body = serde_json::to_string_pretty(lines.as_ref())
+    let body = serde_json::to_string_pretty(lines)
         .unwrap_or_else(|_| "[]".to_owned());
 
     let filename = format!("session-{key}.json");

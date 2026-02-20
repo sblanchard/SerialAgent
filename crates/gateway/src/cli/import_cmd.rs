@@ -170,10 +170,7 @@ async fn run_staging_list(import_root: &std::path::Path) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<38}  {:<14}  {:<12}  {}",
-        "STAGING ID", "CREATED (UTC)", "AGE (secs)", "SIZE"
-    );
+    println!("{:<38}  {:<14}  {:<12}  SIZE", "STAGING ID", "CREATED (UTC)", "AGE (secs)");
     for entry in &entries {
         println!(
             "{:<38}  {:<14}  {:<12}  {} bytes",

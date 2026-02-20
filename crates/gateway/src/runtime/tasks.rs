@@ -225,7 +225,7 @@ impl TaskStore {
         let mut tasks = self.tasks.write();
         tasks.retain(|_, t| {
             !t.status.is_terminal()
-                || t.completed_at.map_or(true, |ts| ts > cutoff)
+                || t.completed_at.is_none_or(|ts| ts > cutoff)
         });
     }
 }

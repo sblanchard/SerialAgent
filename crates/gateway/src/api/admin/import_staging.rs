@@ -205,9 +205,8 @@ pub async fn import_openclaw_test_ssh(
         cmd.arg("-p").arg(p.to_string());
     }
 
-    match &req.auth {
-        SshAuth::KeyFile { key_path } => { cmd.arg("-i").arg(key_path); }
-        _ => {}
+    if let SshAuth::KeyFile { key_path } = &req.auth {
+        cmd.arg("-i").arg(key_path);
     }
 
     cmd.arg(&target).arg("echo ok");
