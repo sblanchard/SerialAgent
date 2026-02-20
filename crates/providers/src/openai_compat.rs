@@ -251,7 +251,7 @@ fn assistant_to_openai(msg: &Message) -> Value {
                             "id": id,
                             "type": "function",
                             "function": {
-                                "name": name,
+                                "name": sanitize_tool_name(name),
                                 "arguments": input.to_string(),
                             }
                         }));
@@ -300,11 +300,23 @@ fn tool_result_to_openai(msg: &Message) -> Value {
     }
 }
 
+/// Sanitize a tool name for providers that reject dots (DeepSeek, etc.).
+/// Converts dots to underscores: `web.fetch` → `web_fetch`.
+fn sanitize_tool_name(name: &str) -> String {
+    name.replace('.', "_")
+}
+
+/// Restore the original tool name from the sanitized version.
+/// Converts underscores back to dots: `web_fetch` → `web.fetch`.
+fn restore_tool_name(name: &str) -> String {
+    name.replace('_', ".")
+}
+
 fn tool_to_openai(tool: &ToolDefinition) -> Value {
     serde_json::json!({
         "type": "function",
         "function": {
-            "name": tool.name,
+            "name": sanitize_tool_name(&tool.name),
             "description": tool.description,
             "parameters": tool.parameters,
         }
@@ -368,7 +380,8 @@ fn parse_openai_tool_calls(message: &Value) -> Vec<ToolCall> {
         .filter_map(|tc| {
             let call_id = tc.get("id")?.as_str()?.to_string();
             let func = tc.get("function")?;
-            let tool_name = func.get("name")?.as_str()?.to_string();
+            let raw_name = func.get("name")?.as_str()?.to_string();
+            let tool_name = restore_tool_name(&raw_name);
             let args_str = func.get("arguments")?.as_str().unwrap_or("{}");
             let arguments: Value =
                 serde_json::from_str(args_str).unwrap_or(Value::Object(Default::default()));
@@ -448,7 +461,7 @@ fn parse_sse_data(data: &str) -> Option<Result<StreamEvent>> {
                     .unwrap_or("");
                 return Some(Ok(StreamEvent::ToolCallStarted {
                     call_id: id.to_string(),
-                    tool_name: name.to_string(),
+                    tool_name: restore_tool_name(name),
                 }));
             }
 
