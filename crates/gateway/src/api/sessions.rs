@@ -10,12 +10,14 @@
 //!   POST /v1/sessions/:key/stop        — cancel a running turn
 
 use axum::extract::{Path, Query, State};
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Json};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use sa_domain::config::InboundMetadata;
-use sa_sessions::store::SessionOrigin;
+use sa_sessions::store::{SessionEntry, SessionOrigin};
+use sa_sessions::transcript::TranscriptLine;
 
 use crate::state::AppState;
 
@@ -411,6 +413,139 @@ pub async fn compact_session(
         )
             .into_response(),
     }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /v1/sessions/:key/export  — transcript export
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Query parameters for the export endpoint.
+#[derive(Debug, Deserialize)]
+pub struct ExportQuery {
+    /// Export format: `markdown` (default), `jsonl`, or `json`.
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+/// Export the transcript for a session as Markdown, JSONL, or JSON.
+pub async fn export_transcript(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    Query(params): Query<ExportQuery>,
+) -> impl IntoResponse {
+    let entry = match state.sessions.get(&key) {
+        Some(e) => e,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "session not found" })),
+            )
+                .into_response();
+        }
+    };
+
+    let lines = state
+        .transcripts
+        .read(&entry.session_id)
+        .unwrap_or_default();
+
+    match params.format.as_deref().unwrap_or("markdown") {
+        "markdown" => render_markdown(&lines, &entry),
+        "jsonl" => render_jsonl(&lines, &key),
+        "json" => render_json(&lines, &key),
+        other => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("unknown format: {other}") })),
+        )
+            .into_response(),
+    }
+}
+
+/// Render the transcript as a Markdown document.
+fn render_markdown(lines: &[TranscriptLine], entry: &SessionEntry) -> axum::response::Response {
+    let model = entry.model.as_deref().unwrap_or("default");
+    let mut md = format!(
+        "# Session: {}\n\n\
+         **Created:** {} | **Model:** {} | **Tokens:** {}\n\n\
+         ---\n",
+        entry.session_key,
+        entry.created_at.to_rfc3339(),
+        model,
+        entry.total_tokens,
+    );
+
+    for line in lines {
+        let role_label = match line.role.as_str() {
+            "user" => "User",
+            "assistant" => "Assistant",
+            "system" => "System",
+            "tool" => "Tool",
+            other => other,
+        };
+        md.push_str(&format!(
+            "\n**{}** ({}):\n{}\n",
+            role_label, line.timestamp, line.content,
+        ));
+    }
+
+    let filename = format!("session-{}.md", entry.session_key);
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/markdown; charset=utf-8".to_owned()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        md,
+    )
+        .into_response()
+}
+
+/// Render the transcript as newline-delimited JSON (JSONL / NDJSON).
+fn render_jsonl(lines: &[TranscriptLine], key: &str) -> axum::response::Response {
+    let mut buf = String::with_capacity(lines.len() * 256);
+    for line in lines {
+        if let Ok(json) = serde_json::to_string(line) {
+            buf.push_str(&json);
+            buf.push('\n');
+        }
+    }
+
+    let filename = format!("session-{key}.jsonl");
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/x-ndjson".to_owned()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        buf,
+    )
+        .into_response()
+}
+
+/// Render the transcript as a JSON array.
+fn render_json(lines: &[TranscriptLine], key: &str) -> axum::response::Response {
+    let body = serde_json::to_string_pretty(lines.as_ref())
+        .unwrap_or_else(|_| "[]".to_owned());
+
+    let filename = format!("session-{key}.json");
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/json".to_owned()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

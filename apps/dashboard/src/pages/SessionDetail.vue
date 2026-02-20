@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from "vue";
-import { api } from "@/api/client";
+import { api, buildHeaders } from "@/api/client";
 import type { SessionDetailResponse, TranscriptLine } from "@/api/client";
 import Card from "@/components/Card.vue";
 import StatusDot from "@/components/StatusDot.vue";
@@ -15,6 +15,7 @@ const offset = ref(0);
 const limit = 200;
 const copied = ref(false);
 const actionMsg = ref("");
+const exportOpen = ref(false);
 
 const sessionKey = computed(() => props.key);
 
@@ -75,6 +76,28 @@ async function resetSession() {
   }
 }
 
+async function exportTranscript(format: string) {
+  exportOpen.value = false;
+  try {
+    const url = `/v1/sessions/${encodeURIComponent(sessionKey.value)}/export?format=${format}`;
+    const res = await fetch(url, { headers: buildHeaders() });
+    if (!res.ok) {
+      error.value = `Export failed: ${res.status}`;
+      return;
+    }
+    const blob = await res.blob();
+    const ext = format === "markdown" ? "md" : format === "jsonl" ? "jsonl" : "json";
+    const filename = `session-${sessionKey.value}.${ext}`;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (e: any) {
+    error.value = e.message;
+  }
+}
+
 function nextPage() {
   offset.value += limit;
   load();
@@ -122,6 +145,13 @@ onMounted(load);
       <div class="action-bar">
         <button v-if="session.running" class="action-btn stop" @click="stopSession">Stop Turn</button>
         <button class="action-btn reset" @click="resetSession">Reset Session</button>
+        <div class="export-wrap">
+          <button class="action-btn export" @click="exportOpen = !exportOpen">Export</button>
+          <div v-if="exportOpen" class="export-menu">
+            <button class="export-item" @click="exportTranscript('markdown')">Markdown</button>
+            <button class="export-item" @click="exportTranscript('jsonl')">JSONL</button>
+          </div>
+        </div>
       </div>
     </Card>
 
@@ -195,6 +225,33 @@ onMounted(load);
 .action-btn.stop:hover { background: rgba(248, 81, 73, 0.1); }
 .action-btn.reset { border-color: var(--yellow); color: var(--yellow); }
 .action-btn.reset:hover { background: rgba(210, 153, 34, 0.1); }
+.action-btn.export { border-color: var(--accent); color: var(--accent); }
+.action-btn.export:hover { background: rgba(88, 166, 255, 0.1); }
+
+.export-wrap { position: relative; }
+.export-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 0.3rem;
+  background: #161b22;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  z-index: 10;
+  min-width: 8rem;
+}
+.export-item {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  padding: 0.4rem 0.8rem;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.82rem;
+}
+.export-item:hover { color: var(--text); background: rgba(88, 166, 255, 0.08); }
 
 .transcript { display: flex; flex-direction: column; gap: 0; }
 .line {

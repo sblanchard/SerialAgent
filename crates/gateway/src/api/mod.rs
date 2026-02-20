@@ -18,6 +18,7 @@ pub mod sessions;
 pub mod skills;
 pub mod tasks;
 pub mod tools;
+pub mod webhooks;
 
 use axum::middleware;
 use axum::routing::{delete, get, post, put};
@@ -69,6 +70,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         // Session detail (path-based)
         .route("/v1/sessions/:key", get(sessions::get_session))
         .route("/v1/sessions/:key/transcript", get(sessions::get_transcript))
+        .route("/v1/sessions/:key/export", get(sessions::export_transcript))
         .route("/v1/sessions/:key/reset", post(sessions::reset_session_by_key))
         .route("/v1/sessions/:key/stop", post(sessions::stop_session))
         .route("/v1/sessions/:key/compact", post(sessions::compact_session))
@@ -120,6 +122,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/v1/schedules/:id/dry-run", post(schedules::dry_run_schedule))
         .route("/v1/schedules/:id/reset-errors", post(schedules::reset_schedule_errors))
         .route("/v1/schedules/:id/deliveries", get(schedules::list_schedule_deliveries))
+        .route("/v1/schedules/:id/trigger", post(webhooks::trigger_webhook))
         // Deliveries (inbox)
         .route("/v1/deliveries", get(deliveries::list_deliveries))
         .route("/v1/deliveries/events", get(deliveries::delivery_events_sse))
