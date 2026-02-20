@@ -40,7 +40,7 @@ use std::fmt;
 pub struct Config {
     #[serde(default)]
     pub context: ContextConfig,
-    #[serde(default)]
+    #[serde(default, alias = "serialmemory")]
     pub serial_memory: SerialMemoryConfig,
     #[serde(default)]
     pub server: ServerConfig,
