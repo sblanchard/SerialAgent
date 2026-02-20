@@ -19,8 +19,8 @@
 //! | `ingest`           | `serialmemory.memories.add`    |
 //! | `update_memory`    | `serialmemory.memories.update` |
 //! | `delete_memory`    | `serialmemory.memories.delete` |
-//! | `get_persona`      | `serialmemory.persona.get`     |
-//! | `set_persona`      | `serialmemory.persona.set`     |
+//! | `get_persona`      | `memory_about_user`     |
+//! | `set_persona`      | `execute_tool`     |
 //! | `init_session`     | `serialmemory.session.init`    |
 //! | `end_session`      | `serialmemory.session.end`     |
 //! | `graph`            | `serialmemory.graph.query`     |
@@ -126,6 +126,22 @@ impl McpSerialMemoryClient {
         self.timeout
     }
 
+    /// Call a tool via the `execute_tool` meta-tool (for tools accessed by category path).
+    async fn call_tool_via_execute(
+        &self,
+        tool_path: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.call_tool(
+            "execute_tool",
+            serde_json::json!({
+                "tool_path": tool_path,
+                "arguments": arguments,
+            }),
+        )
+        .await
+    }
+
     /// Call an MCP tool and return the text content.
     async fn call_tool(
         &self,
@@ -204,82 +220,79 @@ impl McpSerialMemoryClient {
 impl SerialMemoryProvider for McpSerialMemoryClient {
     async fn search(&self, req: RagSearchRequest) -> Result<RagSearchResponse> {
         let args = serde_json::to_value(&req).map_err(|e| Error::SerialMemory(e.to_string()))?;
-        let val = self.call_tool("serialmemory.rag.search", args).await?;
+        let val = self.call_tool("memory_search", args).await?;
         serde_json::from_value(val)
             .map_err(|e| Error::SerialMemory(format!("search response parse: {e}")))
     }
 
     async fn answer(&self, req: RagAnswerRequest) -> Result<RagAnswerResponse> {
         let args = serde_json::to_value(&req).map_err(|e| Error::SerialMemory(e.to_string()))?;
-        let val = self.call_tool("serialmemory.rag.answer", args).await?;
+        let val = self.call_tool("memory_multi_hop_search", args).await?;
         serde_json::from_value(val)
             .map_err(|e| Error::SerialMemory(format!("answer response parse: {e}")))
     }
 
     async fn ingest(&self, req: MemoryIngestRequest) -> Result<IngestResponse> {
         let args = serde_json::to_value(&req).map_err(|e| Error::SerialMemory(e.to_string()))?;
-        let val = self.call_tool("serialmemory.memories.add", args).await?;
+        let val = self.call_tool("memory_ingest", args).await?;
         serde_json::from_value(val)
             .map_err(|e| Error::SerialMemory(format!("ingest response parse: {e}")))
     }
 
     async fn get_persona(&self) -> Result<serde_json::Value> {
-        self.call_tool("serialmemory.persona.get", serde_json::json!({}))
+        self.call_tool("memory_about_user", serde_json::json!({}))
             .await
     }
 
     async fn set_persona(&self, req: UserPersonaRequest) -> Result<()> {
         let args = serde_json::to_value(&req).map_err(|e| Error::SerialMemory(e.to_string()))?;
-        self.call_tool("serialmemory.persona.set", args).await?;
+        self.call_tool_via_execute("lifecycle.memory_update", args).await?;
         Ok(())
     }
 
-    async fn init_session(&self, req: SessionRequest) -> Result<serde_json::Value> {
-        let args = serde_json::to_value(&req).map_err(|e| Error::SerialMemory(e.to_string()))?;
-        self.call_tool("serialmemory.session.init", args).await
+    async fn init_session(&self, _req: SessionRequest) -> Result<serde_json::Value> {
+        // SerialMemory MCP doesn't have a dedicated session init tool.
+        // Return a success stub — sessions are implicit.
+        Ok(serde_json::json!({ "status": "ok" }))
     }
 
-    async fn end_session(&self, session_id: &str) -> Result<()> {
-        self.call_tool(
-            "serialmemory.session.end",
-            serde_json::json!({ "sessionId": session_id }),
-        )
-        .await?;
+    async fn end_session(&self, _session_id: &str) -> Result<()> {
+        // SerialMemory MCP doesn't have a dedicated session end tool.
         Ok(())
     }
 
     async fn graph(&self, hops: u32, limit: u32) -> Result<serde_json::Value> {
         self.call_tool(
-            "serialmemory.graph.query",
-            serde_json::json!({ "hops": hops, "limit": limit }),
+            "memory_multi_hop_search",
+            serde_json::json!({ "query": "", "hops": hops, "max_results_per_hop": limit }),
         )
         .await
     }
 
     async fn stats(&self) -> Result<serde_json::Value> {
-        self.call_tool("serialmemory.stats.get", serde_json::json!({}))
+        self.call_tool_via_execute("observability.memory_stats", serde_json::json!({}))
             .await
     }
 
     async fn update_memory(&self, id: &str, content: &str) -> Result<serde_json::Value> {
-        self.call_tool(
-            "serialmemory.memories.update",
-            serde_json::json!({ "id": id, "content": content }),
+        self.call_tool_via_execute(
+            "lifecycle.memory_update",
+            serde_json::json!({ "memory_id": id, "new_content": content }),
         )
         .await
     }
 
     async fn delete_memory(&self, id: &str) -> Result<()> {
-        self.call_tool(
-            "serialmemory.memories.delete",
-            serde_json::json!({ "id": id }),
+        self.call_tool_via_execute(
+            "lifecycle.memory_delete",
+            serde_json::json!({ "memory_id": id }),
         )
         .await?;
         Ok(())
     }
 
     async fn health(&self) -> Result<serde_json::Value> {
-        self.call_tool("serialmemory.health", serde_json::json!({}))
+        self.call_tool_via_execute("observability.memory_stats", serde_json::json!({}))
             .await
     }
 }
