@@ -221,6 +221,17 @@ default_model = "gemini-2.0-flash"
 mode = "api_key"
 env = "GOOGLE_API_KEY"
 
+# ── OpenAI Codex (OAuth) ──────────────────────────────────────────────
+# Authenticate via ChatGPT account (no API key needed).
+# Run `serialagent config login openai-codex` to authenticate.
+# [[llm.providers]]
+# id = "openai-codex"
+# kind = "openai_codex_oauth"
+# base_url = "https://api.openai.com/v1"
+# default_model = "gpt-5.2-codex"
+# [llm.providers.auth]
+# mode = "oauth_device"
+
 # ── OpenRouter (OpenAI-compatible) ────────────────────────────────────
 # [[llm.providers]]
 # id = "openrouter"

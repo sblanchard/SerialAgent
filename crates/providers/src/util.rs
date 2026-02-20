@@ -1,6 +1,6 @@
 //! Shared utility functions for provider adapters.
 
-use sa_domain::config::AuthConfig;
+use sa_domain::config::{AuthConfig, AuthMode};
 use sa_domain::error::{Error, Result};
 
 /// Convert a [`reqwest::Error`] into the domain [`Error`] type.
@@ -31,6 +31,11 @@ pub fn resolve_api_key(auth: &AuthConfig) -> Result<String> {
              prefer 'env' or 'keychain' mode instead"
         );
         return Ok(key.clone());
+    }
+
+    // 1.5. OAuth device flow tokens — exclusive path for OauthDevice mode.
+    if auth.mode == AuthMode::OauthDevice {
+        return crate::oauth::resolve_oauth_token(crate::oauth::DEFAULT_OAUTH_PROFILE);
     }
 
     // 2. OS keychain via service + account

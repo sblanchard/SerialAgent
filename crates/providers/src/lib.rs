@@ -2,6 +2,7 @@ pub mod anthropic;
 pub mod auth;
 pub mod bedrock;
 pub mod google;
+pub mod oauth;
 pub mod openai_compat;
 pub mod registry;
 pub mod router;

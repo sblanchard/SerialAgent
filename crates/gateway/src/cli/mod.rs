@@ -1,5 +1,6 @@
 pub mod config;
 pub mod doctor;
+pub mod login;
 
 use clap::{Parser, Subcommand};
 
@@ -38,6 +39,11 @@ pub enum ConfigCommand {
     /// Read and display (masked) an API key from the OS keychain.
     GetSecret {
         /// Provider ID from config.toml.
+        provider_id: String,
+    },
+    /// Authenticate with an OAuth provider (e.g. OpenAI Codex).
+    Login {
+        /// Provider ID from config.toml (must use oauth_device auth mode).
         provider_id: String,
     },
 }
