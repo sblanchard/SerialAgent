@@ -10,7 +10,7 @@ use tracing_subscriber::EnvFilter;
 use sa_domain::config::Config;
 use sa_gateway::api;
 use sa_gateway::bootstrap;
-use sa_gateway::cli::{Cli, Command, ConfigCommand, SystemdCommand};
+use sa_gateway::cli::{Cli, Command, ConfigCommand, ImportCommand, SystemdCommand};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -67,6 +67,11 @@ async fn main() -> anyhow::Result<()> {
             let (config, _) = sa_gateway::cli::load_config()?;
             sa_gateway::cli::run::run(Arc::new(config), message, session, model, json).await
         }
+        Some(Command::Chat { session, model }) => {
+            init_cli_tracing();
+            let (config, _) = sa_gateway::cli::load_config()?;
+            sa_gateway::cli::chat::chat(Arc::new(config), session, model).await
+        }
         Some(Command::Version) => {
             println!(
                 "serialagent {}",
@@ -77,6 +82,11 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Systemd(SystemdCommand::Generate { user, working_dir, config })) => {
             sa_gateway::cli::systemd::generate(&user, working_dir.as_deref(), &config);
             Ok(())
+        }
+        Some(Command::Import(import_cmd)) => {
+            init_cli_tracing();
+            let (config, _) = sa_gateway::cli::load_config()?;
+            sa_gateway::cli::import_cmd::run(config, import_cmd).await
         }
     }
 }

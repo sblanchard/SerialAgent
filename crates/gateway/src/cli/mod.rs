@@ -47,6 +47,15 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Start an interactive chat session with the agent.
+    Chat {
+        /// Session key (defaults to "cli:chat").
+        #[arg(long, default_value = "cli:chat")]
+        session: String,
+        /// Model override (e.g. "openai/gpt-4o").
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// Print version information.
     Version,
     /// Systemd service management.
