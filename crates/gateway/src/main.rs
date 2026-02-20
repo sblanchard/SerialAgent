@@ -112,11 +112,24 @@ fn init_tracing(
 
     match &obs.otlp_endpoint {
         Some(endpoint) => {
-            let exporter = opentelemetry_otlp::SpanExporter::builder()
+            let exporter = match opentelemetry_otlp::SpanExporter::builder()
                 .with_tonic()
                 .with_endpoint(endpoint)
                 .build()
-                .expect("failed to create OTLP span exporter");
+            {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!(
+                        "WARNING: failed to create OTLP exporter for {endpoint}: {e} — \
+                         starting without OpenTelemetry"
+                    );
+                    tracing_subscriber::registry()
+                        .with(env_filter)
+                        .with(fmt_layer)
+                        .init();
+                    return None;
+                }
+            };
 
             let resource = opentelemetry_sdk::Resource::builder()
                 .with_service_name(obs.service_name.clone())

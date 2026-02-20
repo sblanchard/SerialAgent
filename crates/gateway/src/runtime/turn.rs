@@ -429,10 +429,11 @@ async fn run_turn_inner(
             output_tokens = tracing::field::Empty,
         );
 
-        let mut stream = provider
-            .chat_stream(&req)
-            .instrument(llm_call_span.clone())
-            .await?;
+        // Enter the span for the entire LLM interaction (connect + stream
+        // consumption + token recording) so OTel captures the full duration.
+        let _llm_guard = llm_call_span.enter();
+
+        let mut stream = provider.chat_stream(&req).await?;
 
         // Accumulate the response.
         let mut text_buf = String::new();
@@ -500,11 +501,14 @@ async fn run_turn_inner(
             }
         }
 
-        // Record token usage on the llm.call span.
+        // Record token usage while the span is still entered.
         if let Some(u) = &turn_usage {
             llm_call_span.record("input_tokens", u.prompt_tokens);
             llm_call_span.record("output_tokens", u.completion_tokens);
         }
+
+        // Close the llm.call span — duration now covers the full streaming interaction.
+        drop(_llm_guard);
 
         // ── Finalize LLM node ─────────────────────────────────────
         {

@@ -315,6 +315,18 @@ impl Config {
             }
         }
 
+        // ── Observability validation ──────────────────────────────────
+        if !(0.0..=1.0).contains(&self.observability.sample_rate) {
+            errors.push(ConfigError {
+                severity: ConfigSeverity::Error,
+                field: "observability.sample_rate".into(),
+                message: format!(
+                    "must be between 0.0 and 1.0 (got {})",
+                    self.observability.sample_rate
+                ),
+            });
+        }
+
         // ── MCP server validation ─────────────────────────────────────
         let mut seen_mcp_ids: HashSet<&str> = HashSet::new();
         for (i, server) in self.mcp.servers.iter().enumerate() {
