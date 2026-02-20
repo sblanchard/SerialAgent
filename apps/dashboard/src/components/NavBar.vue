@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { useRoute } from "vue-router";
+import { useTheme } from "@/composables/useTheme";
+
 const route = useRoute();
+const { theme, toggleTheme } = useTheme();
 
 const links = [
   { to: "/", label: "Overview", icon: "~" },
@@ -35,6 +38,11 @@ const links = [
         </router-link>
       </li>
     </ul>
+    <div class="nav-footer">
+      <button class="theme-toggle" @click="toggleTheme">
+        {{ theme === "dark" ? "Light Mode" : "Dark Mode" }}
+      </button>
+    </div>
   </nav>
 </template>
 
@@ -46,6 +54,8 @@ const links = [
   border-right: 1px solid var(--border);
   padding: 1rem 0;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
 }
 .logo {
   font-size: 1.4rem;
@@ -76,5 +86,24 @@ li a.active {
   font-weight: 700;
   width: 1.2em;
   text-align: center;
+}
+.nav-footer {
+  margin-top: auto;
+  padding: 0.8rem 1.2rem;
+  border-top: 1px solid var(--border);
+}
+.theme-toggle {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 0.3rem 0.8rem;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  width: 100%;
+}
+.theme-toggle:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
 }
 </style>

@@ -2,9 +2,10 @@
 import { ref, nextTick, onUnmounted } from "vue";
 import { api, ApiError } from "@/api/client";
 import Card from "@/components/Card.vue";
+import ThoughtBubble from "@/components/ThoughtBubble.vue";
 
 type ChatMessage = {
-  role: "user" | "assistant" | "tool_call" | "tool_result" | "error";
+  role: "user" | "assistant" | "tool_call" | "tool_result" | "error" | "thought";
   content: string;
   tool_name?: string;
   timestamp: string;
@@ -16,9 +17,27 @@ const sending = ref(false);
 const sessionKey = ref("chat:dashboard:" + Date.now());
 const streamingContent = ref("");
 const isStreaming = ref(false);
+const showThoughts = ref(localStorage.getItem("sa_show_thoughts") !== "false");
+const thoughtBuffer = ref("");
 
 function now(): string {
   return new Date().toLocaleTimeString();
+}
+
+function toggleThoughts() {
+  showThoughts.value = !showThoughts.value;
+  localStorage.setItem("sa_show_thoughts", String(showThoughts.value));
+}
+
+function flushThoughtBuffer() {
+  if (thoughtBuffer.value) {
+    messages.value.push({
+      role: "thought",
+      content: thoughtBuffer.value,
+      timestamp: now(),
+    });
+    thoughtBuffer.value = "";
+  }
 }
 
 async function send() {
@@ -81,41 +100,49 @@ async function send() {
 
         try {
           const event = JSON.parse(raw);
-          if (event.type === "assistant_delta") {
-            streamingContent.value += event.text;
+
+          if (event.type === "thought") {
+            thoughtBuffer.value += event.content;
             scrollToBottom();
-          } else if (event.type === "tool_call") {
-            messages.value.push({
-              role: "tool_call",
-              content: JSON.stringify(event.arguments, null, 2),
-              tool_name: event.tool_name,
-              timestamp: now(),
-            });
-            scrollToBottom();
-          } else if (event.type === "tool_result") {
-            messages.value.push({
-              role: "tool_result",
-              content: event.content,
-              tool_name: event.tool_name,
-              timestamp: now(),
-            });
-            scrollToBottom();
-          } else if (event.type === "final") {
-            // Final message replaces streaming content
-            if (streamingContent.value) {
+          } else {
+            // Flush accumulated thoughts before handling non-thought events
+            flushThoughtBuffer();
+
+            if (event.type === "assistant_delta") {
+              streamingContent.value += event.text;
+              scrollToBottom();
+            } else if (event.type === "tool_call") {
               messages.value.push({
-                role: "assistant",
-                content: event.content || streamingContent.value,
+                role: "tool_call",
+                content: JSON.stringify(event.arguments, null, 2),
+                tool_name: event.tool_name,
                 timestamp: now(),
               });
-              streamingContent.value = "";
+              scrollToBottom();
+            } else if (event.type === "tool_result") {
+              messages.value.push({
+                role: "tool_result",
+                content: event.content,
+                tool_name: event.tool_name,
+                timestamp: now(),
+              });
+              scrollToBottom();
+            } else if (event.type === "final") {
+              if (streamingContent.value) {
+                messages.value.push({
+                  role: "assistant",
+                  content: event.content || streamingContent.value,
+                  timestamp: now(),
+                });
+                streamingContent.value = "";
+              }
+            } else if (event.type === "error") {
+              messages.value.push({
+                role: "error",
+                content: event.message,
+                timestamp: now(),
+              });
             }
-          } else if (event.type === "error") {
-            messages.value.push({
-              role: "error",
-              content: event.message,
-              timestamp: now(),
-            });
           }
         } catch {
           // Skip unparseable events
@@ -123,7 +150,8 @@ async function send() {
       }
     }
 
-    // If we still have streaming content, push it as final
+    // Flush remaining thought buffer and streaming content
+    flushThoughtBuffer();
     if (streamingContent.value) {
       messages.value.push({
         role: "assistant",
@@ -139,6 +167,7 @@ async function send() {
       timestamp: now(),
     });
   } finally {
+    flushThoughtBuffer();
     sending.value = false;
     isStreaming.value = false;
   }
@@ -173,6 +202,9 @@ onUnmounted(() => {
     <div class="chat-header">
       <h1 class="page-title">Chat</h1>
       <button class="secondary" @click="newSession">New Session</button>
+      <button class="secondary" @click="toggleThoughts">
+        {{ showThoughts ? "Hide Thoughts" : "Show Thoughts" }}
+      </button>
       <span class="dim session-id">{{ sessionKey.split(":").pop() }}</span>
     </div>
 
@@ -182,19 +214,34 @@ onUnmounted(() => {
           Send a message to start a conversation. Tool calls and results will appear inline.
         </div>
 
-        <div
-          v-for="(msg, i) in messages"
-          :key="i"
-          class="chat-msg"
-          :class="msg.role"
-        >
+        <template v-for="(msg, i) in messages" :key="i">
+          <ThoughtBubble
+            v-if="msg.role === 'thought' && showThoughts"
+            :content="msg.content"
+            :timestamp="msg.timestamp"
+          />
+          <div
+            v-else-if="msg.role !== 'thought'"
+            class="chat-msg"
+            :class="msg.role"
+          >
+            <div class="msg-header">
+              <span class="msg-role">{{ msg.role === "tool_call" ? `tool: ${msg.tool_name}` : msg.role === "tool_result" ? `result: ${msg.tool_name}` : msg.role }}</span>
+              <span class="msg-time dim">{{ msg.timestamp }}</span>
+            </div>
+            <div class="msg-body" :class="{ 'mono': msg.role === 'tool_call' || msg.role === 'tool_result' }">
+              {{ msg.content }}
+            </div>
+          </div>
+        </template>
+
+        <!-- Streaming thought indicator -->
+        <div v-if="isStreaming && thoughtBuffer && showThoughts" class="chat-msg thought-streaming">
           <div class="msg-header">
-            <span class="msg-role">{{ msg.role === "tool_call" ? `tool: ${msg.tool_name}` : msg.role === "tool_result" ? `result: ${msg.tool_name}` : msg.role }}</span>
-            <span class="msg-time dim">{{ msg.timestamp }}</span>
+            <span class="msg-role">thinking</span>
+            <span class="streaming-dot"></span>
           </div>
-          <div class="msg-body" :class="{ 'mono': msg.role === 'tool_call' || msg.role === 'tool_result' }">
-            {{ msg.content }}
-          </div>
+          <div class="msg-body thought-preview">{{ thoughtBuffer.slice(-200) }}</div>
         </div>
 
         <!-- Streaming indicator -->
@@ -206,7 +253,7 @@ onUnmounted(() => {
           <div class="msg-body">{{ streamingContent }}</div>
         </div>
 
-        <div v-if="sending && !streamingContent" class="typing-indicator dim">
+        <div v-if="sending && !streamingContent && !thoughtBuffer" class="typing-indicator dim">
           Thinking...
         </div>
       </div>
@@ -267,6 +314,19 @@ onUnmounted(() => {
 .chat-msg.tool_result { background: rgba(139, 148, 158, 0.06); border-left: 2px solid var(--text-dim); }
 .chat-msg.error { background: rgba(248, 81, 73, 0.06); border-left: 2px solid var(--red); }
 .chat-msg.streaming { opacity: 0.8; }
+
+.chat-msg.thought-streaming {
+  background: rgba(139, 148, 158, 0.04);
+  border-left: 2px solid var(--text-dim);
+  opacity: 0.6;
+}
+.thought-preview {
+  font-style: italic;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  max-height: 2.8em;
+  overflow: hidden;
+}
 
 .msg-header {
   display: flex;

@@ -1,44 +1,25 @@
 import { createRouter, createWebHashHistory } from "vue-router";
 
-import Overview from "./pages/Overview.vue";
-import Nodes from "./pages/Nodes.vue";
-import Agents from "./pages/Agents.vue";
-import Sessions from "./pages/Sessions.vue";
-import SessionDetail from "./pages/SessionDetail.vue";
-import LlmReadiness from "./pages/LlmReadiness.vue";
-import ImportOpenClaw from "./pages/ImportOpenClaw.vue";
-import Staging from "./pages/Staging.vue";
-import Runs from "./pages/Runs.vue";
-import RunDetail from "./pages/RunDetail.vue";
-import Inbox from "./pages/Inbox.vue";
-import Schedules from "./pages/Schedules.vue";
-import ScheduleDetail from "./pages/ScheduleDetail.vue";
-import SkillsEngine from "./pages/SkillsEngine.vue";
-import Usage from "./pages/Usage.vue";
-import Chat from "./pages/Chat.vue";
-import Logs from "./pages/Logs.vue";
-import Settings from "./pages/Settings.vue";
-
 export const router = createRouter({
   history: createWebHashHistory(),
   routes: [
-    { path: "/", name: "overview", component: Overview },
-    { path: "/inbox", name: "inbox", component: Inbox },
-    { path: "/chat", name: "chat", component: Chat },
-    { path: "/schedules", name: "schedules", component: Schedules },
-    { path: "/schedules/:id", name: "schedule-detail", component: ScheduleDetail, props: true },
-    { path: "/runs", name: "runs", component: Runs },
-    { path: "/runs/:id", name: "run-detail", component: RunDetail, props: true },
-    { path: "/skills", name: "skills-engine", component: SkillsEngine },
-    { path: "/usage", name: "usage", component: Usage },
-    { path: "/logs", name: "logs", component: Logs },
-    { path: "/nodes", name: "nodes", component: Nodes },
-    { path: "/agents", name: "agents", component: Agents },
-    { path: "/sessions", name: "sessions", component: Sessions },
-    { path: "/sessions/:key", name: "session-detail", component: SessionDetail, props: true },
-    { path: "/llm", name: "llm-readiness", component: LlmReadiness },
-    { path: "/import", name: "import-openclaw", component: ImportOpenClaw },
-    { path: "/staging", name: "staging", component: Staging },
-    { path: "/settings", name: "settings", component: Settings },
+    { path: "/", name: "overview", component: () => import("./pages/Overview.vue") },
+    { path: "/inbox", name: "inbox", component: () => import("./pages/Inbox.vue") },
+    { path: "/chat", name: "chat", component: () => import("./pages/Chat.vue") },
+    { path: "/schedules", name: "schedules", component: () => import("./pages/Schedules.vue") },
+    { path: "/schedules/:id", name: "schedule-detail", component: () => import("./pages/ScheduleDetail.vue"), props: true },
+    { path: "/runs", name: "runs", component: () => import("./pages/Runs.vue") },
+    { path: "/runs/:id", name: "run-detail", component: () => import("./pages/RunDetail.vue"), props: true },
+    { path: "/skills", name: "skills-engine", component: () => import("./pages/SkillsEngine.vue") },
+    { path: "/usage", name: "usage", component: () => import("./pages/Usage.vue") },
+    { path: "/logs", name: "logs", component: () => import("./pages/Logs.vue") },
+    { path: "/nodes", name: "nodes", component: () => import("./pages/Nodes.vue") },
+    { path: "/agents", name: "agents", component: () => import("./pages/Agents.vue") },
+    { path: "/sessions", name: "sessions", component: () => import("./pages/Sessions.vue") },
+    { path: "/sessions/:key", name: "session-detail", component: () => import("./pages/SessionDetail.vue"), props: true },
+    { path: "/llm", name: "llm-readiness", component: () => import("./pages/LlmReadiness.vue") },
+    { path: "/import", name: "import-openclaw", component: () => import("./pages/ImportOpenClaw.vue") },
+    { path: "/staging", name: "staging", component: () => import("./pages/Staging.vue") },
+    { path: "/settings", name: "settings", component: () => import("./pages/Settings.vue") },
   ],
 });
