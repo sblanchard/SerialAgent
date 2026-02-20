@@ -1,35 +1,48 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, watch, onMounted, onUnmounted } from "vue";
 import { api } from "@/api/client";
 import type { SessionEntry } from "@/api/client";
 import Card from "@/components/Card.vue";
 import StatusDot from "@/components/StatusDot.vue";
 
 const sessions = ref<SessionEntry[]>([]);
+const totalCount = ref(0);
 const error = ref("");
 const search = ref("");
+const searching = ref(false);
 const copied = ref("");
 
-const filtered = computed(() => {
-  const q = search.value.toLowerCase().trim();
-  if (!q) return sessions.value;
-  return sessions.value.filter(
-    (s) =>
-      s.session_key.toLowerCase().includes(q) ||
-      (s.origin?.channel ?? "").toLowerCase().includes(q) ||
-      (s.origin?.peer ?? "").toLowerCase().includes(q) ||
-      (s.model ?? "").toLowerCase().includes(q)
-  );
-});
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-async function load() {
+async function load(q?: string) {
   try {
-    const res = await api.sessions();
+    searching.value = true;
+    const params = q ? { q } : undefined;
+    const res = await api.sessions(params);
     sessions.value = res.sessions;
+    totalCount.value = res.total;
   } catch (e: any) {
     error.value = e.message;
+  } finally {
+    searching.value = false;
   }
 }
+
+watch(search, (val) => {
+  if (debounceTimer !== null) {
+    clearTimeout(debounceTimer);
+  }
+  debounceTimer = setTimeout(() => {
+    const q = val.trim();
+    load(q || undefined);
+  }, 300);
+});
+
+onUnmounted(() => {
+  if (debounceTimer !== null) {
+    clearTimeout(debounceTimer);
+  }
+});
 
 function copyKey(key: string) {
   navigator.clipboard.writeText(key).then(() => {
@@ -41,7 +54,7 @@ function copyKey(key: string) {
 async function stopSession(key: string) {
   try {
     await api.stopSession(key);
-    await load(); // refresh list
+    await load(search.value.trim() || undefined);
   } catch (e: any) {
     error.value = e.message;
   }
@@ -50,7 +63,7 @@ async function stopSession(key: string) {
 async function resetSession(key: string) {
   try {
     await api.resetSession(key);
-    await load();
+    await load(search.value.trim() || undefined);
   } catch (e: any) {
     error.value = e.message;
   }
@@ -67,7 +80,7 @@ function timeSince(iso: string): string {
   return `${Math.floor(hr / 24)}d ago`;
 }
 
-onMounted(load);
+onMounted(() => load());
 </script>
 
 <template>
@@ -79,9 +92,10 @@ onMounted(load);
       <input
         v-model="search"
         class="search"
-        placeholder="Filter by key, channel, peer, model..."
+        placeholder="Search transcripts or filter by key, channel, peer..."
       />
-      <span class="dim">{{ filtered.length }} of {{ sessions.length }}</span>
+      <span v-if="searching" class="dim">searching...</span>
+      <span v-else class="dim">{{ sessions.length }} of {{ totalCount }}</span>
     </div>
 
     <Card>
@@ -99,7 +113,7 @@ onMounted(load);
           </tr>
         </thead>
         <tbody>
-          <tr v-for="s in filtered" :key="s.session_key">
+          <tr v-for="s in sessions" :key="s.session_key">
             <td>
               <StatusDot :status="s.running ? 'ok' : 'off'" />
             </td>
@@ -115,6 +129,10 @@ onMounted(load);
               >
                 {{ copied === s.session_key ? "ok" : "cp" }}
               </button>
+              <span
+                v-if="(s as any).match_preview"
+                class="match-preview"
+              >{{ (s as any).match_preview }}</span>
             </td>
             <td>{{ s.origin?.channel || "-" }}</td>
             <td>{{ s.origin?.peer || "-" }}</td>
@@ -135,9 +153,9 @@ onMounted(load);
               >reset</button>
             </td>
           </tr>
-          <tr v-if="filtered.length === 0">
+          <tr v-if="sessions.length === 0">
             <td colspan="8" class="dim" style="text-align:center;padding:2rem">
-              {{ sessions.length === 0 ? "No sessions" : "No matches" }}
+              {{ search.trim() ? "No matches" : "No sessions" }}
             </td>
           </tr>
         </tbody>
@@ -205,4 +223,15 @@ onMounted(load);
 .action-btn.stop:hover { background: rgba(248, 81, 73, 0.1); }
 .action-btn.reset { border-color: var(--yellow); color: var(--yellow); }
 .action-btn.reset:hover { background: rgba(210, 153, 34, 0.1); }
+
+.match-preview {
+  display: block;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  margin-top: 0.2rem;
+  max-width: 30rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 </style>

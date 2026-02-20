@@ -150,6 +150,10 @@ pub struct SessionListQuery {
     /// Number of sessions to skip for pagination (default 0).
     #[serde(default)]
     pub offset: Option<usize>,
+    /// Full-text search across transcript content (AND semantics for
+    /// multi-word queries).
+    #[serde(default)]
+    pub q: Option<String>,
 }
 
 /// List active sessions with optional filtering and pagination.
@@ -159,10 +163,32 @@ pub async fn list_sessions(
 ) -> impl IntoResponse {
     let all_sessions = state.sessions.list();
 
+    // If a full-text query is provided, search the transcript index first
+    // and use the results to filter + annotate sessions.
+    let search_hits = query
+        .q
+        .as_ref()
+        .filter(|q| !q.trim().is_empty())
+        .map(|q| state.sessions.search(q));
+
+    // Build a lookup from session_id -> (match_count, preview) for search hits.
+    let search_map: Option<std::collections::HashMap<String, (usize, String)>> =
+        search_hits.map(|hits| {
+            hits.into_iter()
+                .map(|h| (h.session_id, (h.match_count, h.preview)))
+                .collect()
+        });
+
     // Apply filters.
     let filtered: Vec<_> = all_sessions
         .into_iter()
         .filter(|s| {
+            // If search was requested, only include sessions that matched.
+            if let Some(ref map) = search_map {
+                if !map.contains_key(&s.session_id) {
+                    return false;
+                }
+            }
             if let Some(ref ch) = query.channel {
                 if s.origin.channel.as_deref() != Some(ch.as_str()) {
                     return false;
@@ -199,11 +225,28 @@ pub async fn list_sessions(
 
     let page: Vec<_> = filtered.into_iter().skip(offset).take(limit).collect();
 
+    // Enrich response with search metadata when a query was provided.
+    let sessions_json: Vec<serde_json::Value> = page
+        .iter()
+        .map(|s| {
+            let mut val = serde_json::to_value(s).unwrap_or_default();
+            if let Some(ref map) = search_map {
+                if let Some((count, preview)) = map.get(&s.session_id) {
+                    if let serde_json::Value::Object(ref mut obj) = val {
+                        obj.insert("match_count".into(), serde_json::json!(count));
+                        obj.insert("match_preview".into(), serde_json::json!(preview));
+                    }
+                }
+            }
+            val
+        })
+        .collect();
+
     Json(serde_json::json!({
-        "sessions": page,
+        "sessions": sessions_json,
         "total": total,
         "offset": offset,
-        "count": page.len(),
+        "count": sessions_json.len(),
     }))
 }
 
