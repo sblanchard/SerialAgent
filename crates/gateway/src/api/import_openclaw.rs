@@ -146,6 +146,8 @@ pub struct WorkspaceInventory {
 pub struct Totals {
     pub approx_files: u32,
     pub approx_bytes: u64,
+    #[serde(default)]
+    pub schedules_found: usize,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -224,6 +226,8 @@ pub struct ImportedSummary {
     pub sessions_copied: u32,
     pub dest_workspace_root: String,
     pub dest_sessions_root: String,
+    #[serde(default)]
+    pub schedules_imported: Vec<String>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -236,4 +240,42 @@ pub struct ImportStatusResponse {
     pub phase: String,
     pub progress: f32,
     pub message: String,
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OpenClaw cron job format (for schedule import)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OcCronJob {
+    pub name: String,
+    pub schedule: OcSchedule,
+    pub payload: OcPayload,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub delivery: Option<OcDelivery>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OcSchedule {
+    pub kind: String,
+    #[serde(default)]
+    pub expr: Option<String>,
+    #[serde(default, rename = "everyMs")]
+    pub every_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OcPayload {
+    pub message: String,
+    #[serde(default, rename = "timeoutSeconds")]
+    pub timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OcDelivery {
+    pub mode: String,
 }

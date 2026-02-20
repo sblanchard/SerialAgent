@@ -108,6 +108,25 @@ pub async fn import_openclaw_apply_v2(
                 }
             }
 
+            // ── Import schedules (cron jobs) ──────────────────────
+            let extracted_dir_sched = staging_root
+                .join(staging_id.to_string())
+                .join("extracted");
+            let schedule_names = crate::import::openclaw::import_schedules(
+                &extracted_dir_sched,
+                &state.schedule_store,
+                &state.config.sessions.agent_id,
+            )
+            .await;
+            if !schedule_names.is_empty() {
+                resp.warnings.push(format!(
+                    "Imported {} schedule(s) (disabled): {}",
+                    schedule_names.len(),
+                    schedule_names.join(", "),
+                ));
+            }
+            resp.imported.schedules_imported = schedule_names;
+
             // Refresh workspace reader after import.
             state.workspace.refresh();
             Json(resp).into_response()

@@ -62,7 +62,7 @@ use sanitize::sanitize_ident;
 use scan::{scan_inventory, scan_sensitive};
 use scan::redact_secrets;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -290,6 +290,135 @@ pub async fn apply_openclaw_import(
         imported,
         warnings,
     })
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Schedule (cron job) import
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Import OpenClaw cron jobs as SerialAgent schedules.
+///
+/// Scans the extracted workspace for `*cron*.json` and `*schedule*.json`
+/// files, parses them as [`OcCronJob`], converts to [`Schedule`], and
+/// inserts into the store. Returns the names of imported schedules.
+///
+/// Safety: imported schedules always start **disabled** so they cannot
+/// trigger unexpected work before the operator has reviewed them.
+pub async fn import_schedules(
+    extracted_dir: &Path,
+    schedule_store: &crate::runtime::schedules::ScheduleStore,
+    default_agent_id: &str,
+) -> Vec<String> {
+    let mut imported = Vec::new();
+
+    // Recursively find *cron*.json and *schedule*.json files
+    let patterns = ["*cron*.json", "*schedule*.json"];
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    for pattern in &patterns {
+        for entry in walkdir_json(extracted_dir, pattern) {
+            candidates.push(entry);
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+
+    for path in &candidates {
+        let content = match tokio::fs::read_to_string(path).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::debug!(path = %path.display(), error = %e, "skipping non-readable cron file");
+                continue;
+            }
+        };
+
+        let job: OcCronJob = match serde_json::from_str(&content) {
+            Ok(j) => j,
+            Err(_) => continue, // Not a valid cron job JSON, skip silently
+        };
+
+        // Convert schedule kind to a cron expression
+        let cron_expr = match job.schedule.kind.as_str() {
+            "cron" => match &job.schedule.expr {
+                Some(e) => e.clone(),
+                None => continue,
+            },
+            "every" => match job.schedule.every_ms {
+                Some(ms) => {
+                    let minutes = (ms / 60_000).max(1);
+                    if minutes >= 60 {
+                        let hours = minutes / 60;
+                        format!("0 */{} * * *", hours.min(23))
+                    } else {
+                        format!("*/{} * * * *", minutes)
+                    }
+                }
+                None => continue,
+            },
+            _ => continue,
+        };
+
+        // Dedup: skip if schedule with same name already exists
+        let existing = schedule_store.list().await;
+        if existing.iter().any(|s| s.name == job.name) {
+            tracing::debug!(name = %job.name, "schedule already exists, skipping");
+            continue;
+        }
+
+        let timeout_ms = job.payload.timeout_seconds.map(|s| s * 1000);
+
+        let schedule = crate::runtime::schedules::model::Schedule {
+            id: uuid::Uuid::new_v4(),
+            name: job.name.clone(),
+            cron: cron_expr,
+            timezone: "UTC".to_string(),
+            enabled: false, // Safety: imported schedules start disabled
+            agent_id: default_agent_id.to_string(),
+            prompt_template: job.payload.message.clone(),
+            sources: Vec::new(),
+            delivery_targets: vec![
+                crate::runtime::schedules::model::DeliveryTarget::InApp,
+            ],
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            last_run_id: None,
+            last_run_at: None,
+            next_run_at: None,
+            missed_policy: Default::default(),
+            max_concurrency: 1,
+            timeout_ms,
+            digest_mode: Default::default(),
+            fetch_config: Default::default(),
+            source_states: Default::default(),
+            max_catchup_runs: 5,
+            last_error: None,
+            last_error_at: None,
+            consecutive_failures: 0,
+            cooldown_until: None,
+            webhook_secret: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_runs: 0,
+        };
+
+        schedule_store.insert(schedule).await;
+        tracing::info!(name = %job.name, "imported OpenClaw cron job as schedule (disabled)");
+        imported.push(job.name.clone());
+    }
+
+    imported
+}
+
+/// Recursively find files matching a glob pattern under `root`.
+fn walkdir_json(root: &Path, pattern: &str) -> Vec<PathBuf> {
+    let mut results = Vec::new();
+    let glob_pattern = format!("{}/**/{}", root.display(), pattern);
+    if let Ok(entries) = glob::glob(&glob_pattern) {
+        for entry in entries.flatten() {
+            results.push(entry);
+        }
+    }
+    results
 }
 
 

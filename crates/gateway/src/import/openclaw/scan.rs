@@ -108,6 +108,32 @@ pub(super) async fn scan_inventory(
         inv.workspaces.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     }
 
+    // ── Schedules (cron job files) ─────────────────────────────
+    {
+        let cron_patterns = ["*cron*.json", "*schedule*.json"];
+        let mut cron_paths = Vec::new();
+        for pat in &cron_patterns {
+            let glob_pattern = format!("{}/**/{}", extracted_root.display(), pat);
+            if let Ok(entries) = glob(&glob_pattern) {
+                for entry in entries.flatten() {
+                    cron_paths.push(entry);
+                }
+            }
+        }
+        cron_paths.sort();
+        cron_paths.dedup();
+
+        let mut count = 0usize;
+        for path in &cron_paths {
+            if let Ok(data) = tokio::fs::read_to_string(path).await {
+                if serde_json::from_str::<crate::api::import_openclaw::OcCronJob>(&data).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+        inv.totals.schedules_found = count;
+    }
+
     // ── Totals ──────────────────────────────────────────────────
     inv.totals.approx_files = inv.workspaces.iter().map(|w| w.approx_files).sum::<u32>()
         + inv.agents.iter().map(|a| a.session_files).sum::<u32>();
