@@ -44,12 +44,14 @@ pub async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
     let roles = state.llm.list_roles();
     let has_executor = state.llm.for_role("executor").is_some();
 
-    // Surface provider init errors so operators can diagnose missing
-    // credentials without scraping startup logs.
+    // Surface provider init errors so operators can diagnose issues.
+    // Filter out "not set" errors (unconfigured providers are expected,
+    // not errors) — only show genuine failures.
     let init_errors: Vec<serde_json::Value> = state
         .llm
         .init_errors()
         .iter()
+        .filter(|e| !e.error.contains("not set or not valid UTF-8"))
         .map(|e| {
             serde_json::json!({
                 "provider_id": e.provider_id,

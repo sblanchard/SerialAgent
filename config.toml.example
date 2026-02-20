@@ -1,0 +1,220 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SerialAgent Configuration
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Copy to config.toml and fill in your values.
+# All fields shown are defaults — uncomment and modify as needed.
+
+[context]
+bootstrap_max_chars = 20000
+bootstrap_total_max_chars = 24000
+user_facts_max_chars = 4000
+skills_index_max_chars = 2000
+
+[serial_memory]
+base_url = "http://localhost:4545/mcp"
+transport = "rest"
+# api_key = "sm_your_key_here"
+timeout_ms = 8000
+max_retries = 3
+default_user_id = "default_user"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Server
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[server]
+port = 3210
+host = "127.0.0.1"
+
+# API bearer token — generate with: openssl rand -hex 32
+# All protected endpoints require Authorization: Bearer <token>.
+# If unset, API auth is DISABLED (dev mode).
+# api_token = ""
+
+# CORS — defaults to localhost only. Use ["*"] for permissive (not recommended).
+[server.cors]
+allowed_origins = [
+    "http://localhost:*",
+    "http://127.0.0.1:*",
+]
+
+# Rate limiting (disabled by default)
+# [server.rate_limit]
+# requests_per_second = 50
+# burst_size = 100
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Admin
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Admin bearer token for gated endpoints (ClawHub install, system info).
+# Generate with: openssl rand -hex 32
+# [admin]
+# token = ""
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Workspace & Skills
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[workspace]
+path = "./workspace"
+state_path = "./data/state"
+
+[skills]
+path = "./skills"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# LLM Providers
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# startup_policy: "allow_none" (dev) or "require_one" (production)
+
+[llm]
+router_mode = "capability"
+default_timeout_ms = 20000
+max_retries = 2
+startup_policy = "allow_none"
+
+# ── Role Assignments ─────────────────────────────────────────────────
+# Format: "provider_id/model_name" — must match a [[llm.providers]] entry.
+
+[llm.roles.executor]
+model = "deepseek/deepseek-chat"
+require_tools = true
+require_streaming = true
+
+[llm.roles.planner]
+model = "deepseek/deepseek-chat"
+require_tools = true
+require_streaming = true
+
+[llm.roles.summarizer]
+model = "deepseek/deepseek-chat"
+require_tools = false
+require_streaming = false
+
+# ── Provider Registry ────────────────────────────────────────────────
+# kind: openai_compat | anthropic | google
+# auth.mode: api_key | none | oauth_device
+
+# DeepSeek
+[[llm.providers]]
+id = "deepseek"
+kind = "openai_compat"
+base_url = "https://api.deepseek.com/v1"
+default_model = "deepseek-chat"
+[llm.providers.auth]
+mode = "api_key"
+key = ""  # paste your DeepSeek key here
+
+# Venice AI
+# [[llm.providers]]
+# id = "venice"
+# kind = "openai_compat"
+# base_url = "https://api.venice.ai/api/v1"
+# default_model = "llama-3.3-70b"
+# [llm.providers.auth]
+# mode = "api_key"
+# key = ""  # paste your Venice key here
+
+# Ollama (local, no key needed)
+# [[llm.providers]]
+# id = "ollama"
+# kind = "openai_compat"
+# base_url = "http://localhost:11434/v1"
+# default_model = "llama3.1:8b"
+# [llm.providers.auth]
+# mode = "none"
+
+# OpenAI (optional)
+# [[llm.providers]]
+# id = "openai"
+# kind = "openai_compat"
+# base_url = "https://api.openai.com/v1"
+# default_model = "gpt-4o"
+# [llm.providers.auth]
+# mode = "api_key"
+# env = "OPENAI_API_KEY"
+
+# Anthropic (optional)
+# [[llm.providers]]
+# id = "anthropic"
+# kind = "anthropic"
+# base_url = "https://api.anthropic.com"
+# default_model = "claude-sonnet-4-20250514"
+# [llm.providers.auth]
+# mode = "api_key"
+# header = "x-api-key"
+# prefix = ""
+# env = "ANTHROPIC_API_KEY"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Sessions
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[sessions]
+agent_id = "serial-agent"
+dm_scope = "per_channel_peer"
+
+[sessions.lifecycle]
+daily_reset_hour = 4
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Tools
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[tools.exec]
+background_ms = 10000
+timeout_sec = 1800
+
+# [tools.exec_security]
+# audit_log = true
+# denied_patterns = ["rm\\s+-rf\\s+/", "mkfs\\."]
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Compaction & Pruning
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[compaction]
+auto = true
+max_turns = 80
+keep_last_turns = 12
+
+[pruning]
+mode = "off"
+
+[memory_lifecycle]
+auto_capture = true
+capture_on_compaction = true
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Observability
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[observability]
+service_name = "serialagent"
+sample_rate = 1.0
+# otlp_endpoint = "http://localhost:4317"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# MCP (Model Context Protocol)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[mcp]
+servers = []
+
+[mcp.presets.browser]
+enabled = false
+
+[mcp.presets.filesystem]
+enabled = false
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Tasks & Quotas
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[tasks]
+max_concurrent = 5
+
+[quota]
+# [quota.per_agent.my-agent]
+# daily_tokens = 1000000
+# daily_cost_usd = 5.0

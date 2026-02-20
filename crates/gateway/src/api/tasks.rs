@@ -370,6 +370,7 @@ fn require_llm_provider(
         .llm
         .init_errors()
         .iter()
+        .filter(|e| !e.error.contains("not set or not valid UTF-8"))
         .map(|e| {
             serde_json::json!({
                 "provider_id": e.provider_id,
