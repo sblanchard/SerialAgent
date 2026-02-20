@@ -11,17 +11,24 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json};
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 use crate::state::AppState;
 
 /// Verify the admin bearer token from the `Authorization` header.
+///
+/// Uses the pre-computed SHA-256 hash from `AppState` and constant-time
+/// comparison via `subtle::ConstantTimeEq` to prevent timing side-channel
+/// attacks.  Unlike `AdminGuard`, this returns 403 when no admin token is
+/// configured (ClawHub endpoints must always be gated).
 fn verify_admin_token(
     headers: &HeaderMap,
-    admin_config: &sa_domain::config::AdminConfig,
+    expected_hash: &Option<Vec<u8>>,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    let expected = match std::env::var(&admin_config.token_env) {
-        Ok(t) if !t.is_empty() => t,
-        _ => {
+    let expected_hash = match expected_hash {
+        Some(h) => h,
+        None => {
             return Err((
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!({
@@ -37,13 +44,9 @@ fn verify_admin_token(
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    if provided.len() != expected.len()
-        || !provided
-            .as_bytes()
-            .iter()
-            .zip(expected.as_bytes())
-            .all(|(a, b)| a == b)
-    {
+    let provided_hash = Sha256::digest(provided.as_bytes());
+
+    if !bool::from(provided_hash.ct_eq(expected_hash.as_slice())) {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({ "error": "invalid admin token" })),
@@ -91,7 +94,7 @@ pub async fn install_pack(
     headers: HeaderMap,
     Json(body): Json<PackRef>,
 ) -> impl IntoResponse {
-    if let Err(resp) = verify_admin_token(&headers, &state.config.admin) {
+    if let Err(resp) = verify_admin_token(&headers, &state.admin_token_hash) {
         return resp.into_response();
     }
     let skills_root = &state.config.skills.path;
@@ -127,7 +130,7 @@ pub async fn update_pack(
     headers: HeaderMap,
     Json(body): Json<PackRef>,
 ) -> impl IntoResponse {
-    if let Err(resp) = verify_admin_token(&headers, &state.config.admin) {
+    if let Err(resp) = verify_admin_token(&headers, &state.admin_token_hash) {
         return resp.into_response();
     }
     let skills_root = &state.config.skills.path;
@@ -166,7 +169,7 @@ pub async fn uninstall_pack(
     headers: HeaderMap,
     Json(body): Json<PackRef>,
 ) -> impl IntoResponse {
-    if let Err(resp) = verify_admin_token(&headers, &state.config.admin) {
+    if let Err(resp) = verify_admin_token(&headers, &state.admin_token_hash) {
         return resp.into_response();
     }
     let skills_root = &state.config.skills.path;
