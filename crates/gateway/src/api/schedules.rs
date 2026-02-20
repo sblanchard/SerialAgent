@@ -85,6 +85,8 @@ pub struct CreateScheduleRequest {
     pub fetch_config: FetchConfig,
     #[serde(default = "default_max_catchup_runs")]
     pub max_catchup_runs: usize,
+    #[serde(default)]
+    pub webhook_secret: Option<String>,
 }
 
 fn default_max_catchup_runs() -> usize {
@@ -161,6 +163,7 @@ pub async fn create_schedule(
         digest_mode: req.digest_mode,
         fetch_config: req.fetch_config,
         max_catchup_runs: req.max_catchup_runs,
+        webhook_secret: req.webhook_secret,
         source_states: std::collections::HashMap::new(),
         last_error: None,
         last_error_at: None,
@@ -199,6 +202,7 @@ pub struct UpdateScheduleRequest {
     pub digest_mode: Option<DigestMode>,
     pub fetch_config: Option<FetchConfig>,
     pub max_catchup_runs: Option<usize>,
+    pub webhook_secret: Option<Option<String>>,
 }
 
 pub async fn update_schedule(
@@ -291,6 +295,9 @@ pub async fn update_schedule(
             }
             if let Some(mcr) = req.max_catchup_runs {
                 s.max_catchup_runs = mcr;
+            }
+            if let Some(ws) = req.webhook_secret {
+                s.webhook_secret = ws;
             }
         })
         .await

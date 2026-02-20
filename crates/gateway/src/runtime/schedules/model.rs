@@ -168,6 +168,13 @@ pub struct Schedule {
     #[serde(default)]
     pub cooldown_until: Option<DateTime<Utc>>,
 
+    // ── Webhook trigger ───────────────────────────────────────────────
+    /// HMAC-SHA256 secret for webhook trigger authentication.
+    /// When set, `POST /v1/schedules/:id/trigger` additionally verifies
+    /// the `X-Hub-Signature-256` header against this secret.
+    #[serde(default)]
+    pub webhook_secret: Option<String>,
+
     // ── Usage tracking ───────────────────────────────────────────────
     /// Cumulative input tokens across all runs.
     #[serde(default)]
@@ -193,9 +200,17 @@ impl Schedule {
     }
 
     /// Build an API-facing view with computed `status`.
+    ///
+    /// The `webhook_secret` field is masked: if a secret is set the view
+    /// shows `Some("****")`, otherwise `None`. This prevents secret leakage
+    /// through the API while still indicating whether a secret is configured.
     pub fn to_view(&self) -> ScheduleView {
+        let mut masked = self.clone();
+        if masked.webhook_secret.is_some() {
+            masked.webhook_secret = Some("****".into());
+        }
         ScheduleView {
-            schedule: self.clone(),
+            schedule: masked,
             status: self.computed_status(),
         }
     }
@@ -272,6 +287,7 @@ mod tests {
             last_error_at: None,
             consecutive_failures,
             cooldown_until: None,
+            webhook_secret: None,
             total_input_tokens: 0,
             total_output_tokens: 0,
             total_runs: 0,
@@ -430,5 +446,50 @@ mod tests {
         let s: Schedule = serde_json::from_value(json).unwrap();
         assert!(s.cooldown_until.is_none());
         assert_eq!(s.max_catchup_runs, 5);
+    }
+
+    #[test]
+    fn to_view_masks_webhook_secret() {
+        let mut s = test_schedule(true, 0);
+        s.webhook_secret = Some("super-secret-key".into());
+        let view = s.to_view();
+        assert_eq!(
+            view.schedule.webhook_secret,
+            Some("****".into()),
+            "webhook_secret should be masked in the view"
+        );
+    }
+
+    #[test]
+    fn to_view_preserves_none_webhook_secret() {
+        let s = test_schedule(true, 0);
+        assert!(s.webhook_secret.is_none());
+        let view = s.to_view();
+        assert!(
+            view.schedule.webhook_secret.is_none(),
+            "webhook_secret should remain None when not set"
+        );
+    }
+
+    #[test]
+    fn schedule_backward_compat_no_webhook_secret_field() {
+        let json = serde_json::json!({
+            "id": Uuid::new_v4(),
+            "name": "no-webhook",
+            "cron": "0 9 * * *",
+            "timezone": "UTC",
+            "enabled": true,
+            "agent_id": "",
+            "prompt_template": "test",
+            "sources": [],
+            "delivery_targets": [],
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+        });
+        let s: Schedule = serde_json::from_value(json).unwrap();
+        assert!(
+            s.webhook_secret.is_none(),
+            "webhook_secret should default to None for legacy schedules"
+        );
     }
 }
