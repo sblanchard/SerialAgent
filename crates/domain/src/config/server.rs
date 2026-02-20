@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -23,6 +25,11 @@ pub struct ServerConfig {
     /// development.  Set `requests_per_second` and `burst_size` in production.
     #[serde(default)]
     pub rate_limit: Option<RateLimitConfig>,
+    /// Optional path for a PID file.  When set, the server writes its PID on
+    /// startup and removes the file on shutdown.  An `fs2` exclusive lock
+    /// prevents multiple instances from running with the same PID file.
+    #[serde(default)]
+    pub pid_file: Option<PathBuf>,
 }
 
 impl Default for ServerConfig {
@@ -33,6 +40,7 @@ impl Default for ServerConfig {
             cors: CorsConfig::default(),
             api_token_env: d_api_token_env(),
             rate_limit: None,
+            pid_file: None,
         }
     }
 }
@@ -134,6 +142,7 @@ mod tests {
         assert_eq!(cfg.host, "127.0.0.1");
         assert_eq!(cfg.api_token_env, "SA_API_TOKEN");
         assert!(cfg.rate_limit.is_none());
+        assert!(cfg.pid_file.is_none());
     }
 
     #[test]

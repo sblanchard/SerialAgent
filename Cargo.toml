@@ -41,6 +41,7 @@ regex = "1"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+rustyline = "15"
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
