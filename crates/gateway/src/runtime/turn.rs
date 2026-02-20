@@ -31,6 +31,7 @@ use super::{
 /// Maximum number of tool-call loops before we force-stop.
 const MAX_TOOL_LOOPS: usize = 25;
 
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // TurnContext — pre-built state for one turn
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

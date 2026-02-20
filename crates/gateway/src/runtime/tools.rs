@@ -161,13 +161,12 @@ pub fn build_tool_definitions(
 
     defs.push(ToolDefinition {
         name: "file.list".into(),
-        description: "List directory contents with metadata (name, size, modified timestamp, is_dir).".into(),
+        description: "List directory contents with metadata (name, size, modified timestamp, is_dir). Defaults to workspace root if path is omitted.".into(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "Directory path relative to workspace root" }
-            },
-            "required": ["path"]
+                "path": { "type": "string", "description": "Directory path relative to workspace root (default: root)" }
+            }
         }),
     });
 

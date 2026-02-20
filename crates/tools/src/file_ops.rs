@@ -54,7 +54,12 @@ pub struct FileDeleteRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileListRequest {
+    #[serde(default = "default_dot")]
     pub path: String,
+}
+
+fn default_dot() -> String {
+    ".".into()
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
