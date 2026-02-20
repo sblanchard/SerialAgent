@@ -3737,7 +3737,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "sa-contextpack"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "sa-domain",
  "serde",
@@ -3747,7 +3747,7 @@ dependencies = [
 
 [[package]]
 name = "sa-dashboard-app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3758,7 +3758,7 @@ dependencies = [
 
 [[package]]
 name = "sa-domain"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "futures-core",
@@ -3773,7 +3773,7 @@ dependencies = [
 
 [[package]]
 name = "sa-gateway"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3828,7 +3828,7 @@ dependencies = [
 
 [[package]]
 name = "sa-hello-node"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3844,7 +3844,7 @@ dependencies = [
 
 [[package]]
 name = "sa-mcp-client"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -3858,7 +3858,7 @@ dependencies = [
 
 [[package]]
 name = "sa-memory"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3875,7 +3875,7 @@ dependencies = [
 
 [[package]]
 name = "sa-node-macos"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3890,7 +3890,7 @@ dependencies = [
 
 [[package]]
 name = "sa-node-sdk"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3909,7 +3909,7 @@ dependencies = [
 
 [[package]]
 name = "sa-protocol"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "sa-domain",
@@ -3920,7 +3920,7 @@ dependencies = [
 
 [[package]]
 name = "sa-providers"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3942,7 +3942,7 @@ dependencies = [
 
 [[package]]
 name = "sa-sessions"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "parking_lot",
@@ -3956,7 +3956,7 @@ dependencies = [
 
 [[package]]
 name = "sa-skills"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "flate2",
@@ -3974,7 +3974,7 @@ dependencies = [
 
 [[package]]
 name = "sa-tools"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "parking_lot",
