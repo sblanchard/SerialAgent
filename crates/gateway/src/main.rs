@@ -6,8 +6,13 @@ use clap::Parser;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
-use sa_domain::config::Config;
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_otlp::WithExportConfig as _;
+
+use sa_domain::config::{Config, ObservabilityConfig};
 use sa_gateway::api;
 use sa_gateway::bootstrap;
 use sa_gateway::cli::{Cli, Command, ConfigCommand, SystemdCommand};
@@ -19,9 +24,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         // Default to serve when no subcommand is given.
         None | Some(Command::Serve) => {
-            init_tracing();
             let (config, _config_path) = sa_gateway::cli::load_config()?;
-            run_server(Arc::new(config)).await
+            let _tracer_provider = init_tracing(&config.observability);
+            run_server(Arc::new(config), _tracer_provider).await
         }
         Some(Command::Doctor) => {
             let (config, config_path) = sa_gateway::cli::load_config()?;
@@ -92,14 +97,59 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Initialize structured JSON tracing (only for the `serve` command).
-fn init_tracing() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info,sa_gateway=debug")),
-        )
-        .json()
-        .init();
+///
+/// When `otlp_endpoint` is configured, an OpenTelemetry layer is added
+/// so that every `tracing` span is also exported as an OTel span via
+/// OTLP/gRPC.  The returned [`SdkTracerProvider`] handle must be shut
+/// down on exit to flush pending spans.
+fn init_tracing(
+    obs: &ObservabilityConfig,
+) -> Option<opentelemetry_sdk::trace::SdkTracerProvider> {
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,sa_gateway=debug"));
+
+    let fmt_layer = tracing_subscriber::fmt::layer().json();
+
+    match &obs.otlp_endpoint {
+        Some(endpoint) => {
+            let exporter = opentelemetry_otlp::SpanExporter::builder()
+                .with_tonic()
+                .with_endpoint(endpoint)
+                .build()
+                .expect("failed to create OTLP span exporter");
+
+            let resource = opentelemetry_sdk::Resource::builder()
+                .with_service_name(obs.service_name.clone())
+                .build();
+
+            let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+                .with_batch_exporter(exporter)
+                .with_sampler(opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(
+                    obs.sample_rate,
+                ))
+                .with_resource(resource)
+                .build();
+
+            let otel_layer = tracing_opentelemetry::layer()
+                .with_tracer(tracer_provider.tracer("serialagent"));
+
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(fmt_layer)
+                .with(otel_layer)
+                .init();
+
+            Some(tracer_provider)
+        }
+        None => {
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(fmt_layer)
+                .init();
+
+            None
+        }
+    }
 }
 
 /// Initialize compact stderr-only tracing for CLI one-shot commands.
@@ -117,7 +167,10 @@ fn init_cli_tracing() {
 }
 
 /// Start the gateway server with the given configuration.
-async fn run_server(config: Arc<Config>) -> anyhow::Result<()> {
+async fn run_server(
+    config: Arc<Config>,
+    tracer_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
+) -> anyhow::Result<()> {
     tracing::info!("SerialAgent starting");
 
     // ── Build shared state & spawn background loops ──────────────────
@@ -210,6 +263,15 @@ async fn run_server(config: Arc<Config>) -> anyhow::Result<()> {
 
     // ── Post-shutdown flush ─────────────────────────────────────────
     tracing::info!("server stopped, flushing stores...");
+
+    // Flush and shut down the OTel tracer provider so pending spans
+    // are exported before the process exits.
+    if let Some(provider) = tracer_provider {
+        if let Err(e) = provider.shutdown() {
+            tracing::warn!(error = ?e, "OpenTelemetry tracer provider shutdown failed");
+        }
+    }
+
     if let Err(e) = state.sessions.flush().await {
         tracing::warn!(error = %e, "session store flush on shutdown failed");
     }

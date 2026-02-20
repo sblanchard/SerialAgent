@@ -10,6 +10,7 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use sa_domain::stream::{StreamEvent, Usage};
 use sa_domain::tool::{Message, ToolCall, ToolDefinition};
@@ -160,6 +161,7 @@ pub fn run_turn(
         "turn",
         %run_id,
         session_key = %session_key,
+        "otel.kind" = "SERVER",
     );
     tokio::spawn(tracing::Instrument::instrument(async move {
         tracing::debug!("turn started");
@@ -419,7 +421,18 @@ async fn run_turn_inner(
             model: input.model.clone(),
         };
 
-        let mut stream = provider.chat_stream(&req).await?;
+        let llm_call_span = tracing::info_span!(
+            "llm.call",
+            "otel.kind" = "CLIENT",
+            model = req.model.as_deref().unwrap_or("default"),
+            input_tokens = tracing::field::Empty,
+            output_tokens = tracing::field::Empty,
+        );
+
+        let mut stream = provider
+            .chat_stream(&req)
+            .instrument(llm_call_span.clone())
+            .await?;
 
         // Accumulate the response.
         let mut text_buf = String::new();
@@ -485,6 +498,12 @@ async fn run_turn_inner(
                     return Ok(());
                 }
             }
+        }
+
+        // Record token usage on the llm.call span.
+        if let Some(u) = &turn_usage {
+            llm_call_span.record("input_tokens", u.prompt_tokens);
+            llm_call_span.record("output_tokens", u.completion_tokens);
         }
 
         // ── Finalize LLM node ─────────────────────────────────────
@@ -650,6 +669,10 @@ async fn run_turn_inner(
         let tool_futures: Vec<_> = pending_tool_calls
             .iter()
             .map(|tc| {
+                let tool_span = tracing::info_span!(
+                    "tool.call",
+                    tool_name = %tc.tool_name,
+                );
                 tools::dispatch_tool(
                     &state,
                     &tc.tool_name,
@@ -657,6 +680,7 @@ async fn run_turn_inner(
                     Some(&input.session_key),
                     input.agent.as_ref(),
                 )
+                .instrument(tool_span)
             })
             .collect();
         let tool_results = futures_util::future::join_all(tool_futures).await;

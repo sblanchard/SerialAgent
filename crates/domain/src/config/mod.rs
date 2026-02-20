@@ -3,6 +3,7 @@ mod compaction;
 mod context;
 mod llm;
 mod mcp;
+mod observability;
 mod pruning;
 mod serial_memory;
 mod server;
@@ -16,6 +17,7 @@ pub use compaction::*;
 pub use context::*;
 pub use llm::*;
 pub use mcp::*;
+pub use observability::*;
 pub use pruning::*;
 pub use serial_memory::*;
 pub use server::*;
@@ -67,6 +69,9 @@ pub struct Config {
     /// Sub-agent definitions (key = agent_id).
     #[serde(default)]
     pub agents: HashMap<String, AgentConfig>,
+    /// OpenTelemetry observability settings.
+    #[serde(default)]
+    pub observability: ObservabilityConfig,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
