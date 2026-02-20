@@ -52,6 +52,43 @@ else
     fi
 fi
 
+# ── 1b. Check SearXNG ─────────────────────────────────────────────────
+if ss -tlnp 2>/dev/null | grep -q ":8080 "; then
+    ok "SearXNG already running on :8080"
+else
+    if [ -f "$ROOT/deploy/docker-compose.yml" ]; then
+        log "Starting SearXNG..."
+        (cd "$ROOT/deploy" && docker compose up -d 2>&1 | tail -1)
+        sleep 3
+        if ss -tlnp 2>/dev/null | grep -q ":8080 "; then
+            ok "SearXNG started on :8080"
+        else
+            warn "SearXNG may still be starting"
+        fi
+    else
+        warn "deploy/docker-compose.yml not found — SearXNG not available"
+    fi
+fi
+
+# ── 1c. Check OpenBB ─────────────────────────────────────────────────
+if ss -tlnp 2>/dev/null | grep -q ":6900 "; then
+    ok "OpenBB already running on :6900"
+else
+    OPENBB_BIN="$HOME/.local/openbb-venv/bin/openbb-api"
+    if [ -x "$OPENBB_BIN" ]; then
+        log "Starting OpenBB..."
+        nohup "$OPENBB_BIN" --port 6900 --host 0.0.0.0 > "$LOG_DIR/openbb.log" 2>&1 &
+        sleep 5
+        if ss -tlnp 2>/dev/null | grep -q ":6900 "; then
+            ok "OpenBB started on :6900"
+        else
+            warn "OpenBB may still be starting — check $LOG_DIR/openbb.log"
+        fi
+    else
+        warn "OpenBB not installed — run: python3 -m venv ~/.local/openbb-venv && ~/.local/openbb-venv/bin/pip install openbb-platform-api"
+    fi
+fi
+
 # ── Tauri mode: let `cargo tauri dev` handle everything ──────────────
 if [ "$TAURI" = true ]; then
     # Build gateway (Tauri dev needs it running separately)
