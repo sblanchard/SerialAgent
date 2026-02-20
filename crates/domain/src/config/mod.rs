@@ -261,7 +261,8 @@ impl Config {
                         severity: ConfigSeverity::Error,
                         field: format!("llm.providers[{i}].auth"),
                         message: format!(
-                            "provider \"{}\" uses keychain auth mode but has no auth.account configured",
+                            "provider \"{}\" uses keychain auth mode but has no auth.account configured \
+                         (auth.service defaults to \"serialagent\" if omitted)",
                             provider.id
                         ),
                     });

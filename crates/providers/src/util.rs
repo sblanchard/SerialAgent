@@ -38,7 +38,7 @@ pub fn resolve_api_key(auth: &AuthConfig) -> Result<String> {
         match resolve_from_keychain(service, account) {
             Ok(secret) => return Ok(secret),
             Err(e) => {
-                tracing::warn!(
+                tracing::debug!(
                     service = %service,
                     account = %account,
                     error = %e,

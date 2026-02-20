@@ -102,6 +102,7 @@ pub fn set_secret(config: &Config, provider_id: &str) -> anyhow::Result<()> {
     ))
     .map_err(|e| anyhow::anyhow!("failed to read secret from stdin: {e}"))?;
 
+    let secret = secret.trim().to_owned();
     if secret.is_empty() {
         anyhow::bail!("empty secret provided — aborting");
     }
@@ -143,10 +144,11 @@ pub fn get_secret(config: &Config, provider_id: &str) -> anyhow::Result<()> {
 ///
 /// For short secrets (8 chars or fewer), replaces the entire value with `****`.
 fn mask_secret(secret: &str) -> String {
-    if secret.len() <= 8 {
+    let chars: Vec<char> = secret.chars().collect();
+    if chars.len() <= 8 {
         return "****".to_owned();
     }
-    let prefix = &secret[..4];
-    let suffix = &secret[secret.len() - 4..];
+    let prefix: String = chars[..4].iter().collect();
+    let suffix: String = chars[chars.len() - 4..].iter().collect();
     format!("{prefix}...{suffix}")
 }
