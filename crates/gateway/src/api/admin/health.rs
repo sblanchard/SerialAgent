@@ -1,6 +1,7 @@
-//! Health, metrics, system info, and OpenAPI spec endpoints.
+//! Health, metrics, system info, config save, and restart endpoints.
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 
 use crate::state::AppState;
@@ -358,5 +359,98 @@ pub async fn system_info(
         "provider_count": state.llm.len(),
         "node_count": state.nodes.list().len(),
         "session_count": state.sessions.list().len(),
+    }))
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PUT /v1/admin/config — save config.toml to disk
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub async fn save_config(
+    _guard: AdminGuard,
+    State(state): State<AppState>,
+    body: String,
+) -> impl IntoResponse {
+    // Validate the TOML parses as a Config before saving.
+    if let Err(e) = toml::from_str::<sa_domain::config::Config>(&body) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("invalid TOML: {e}"),
+            })),
+        )
+            .into_response();
+    }
+
+    let config_path = &state.config_path;
+
+    // Back up existing file with timestamp.
+    if config_path.exists() {
+        let ts = chrono::Utc::now().format("%Y%m%d%H%M%S");
+        let backup_name = format!(
+            "{}.bak.{ts}",
+            config_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+        );
+        let backup = config_path.with_file_name(backup_name);
+        if let Err(e) = tokio::fs::copy(config_path, &backup).await {
+            tracing::warn!(error = %e, "failed to back up config");
+        }
+    }
+
+    // Atomic write: tmp file + rename.
+    let tmp_path = config_path.with_extension("toml.tmp");
+    if let Err(e) = tokio::fs::write(&tmp_path, &body).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("write failed: {e}") })),
+        )
+            .into_response();
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = tokio::fs::set_permissions(
+            &tmp_path,
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .await;
+    }
+
+    if let Err(e) = tokio::fs::rename(&tmp_path, config_path).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("rename failed: {e}") })),
+        )
+            .into_response();
+    }
+
+    tracing::info!(path = %config_path.display(), "config saved via API");
+
+    Json(serde_json::json!({
+        "saved": true,
+        "path": config_path.display().to_string(),
+        "note": "restart the server for changes to take effect",
+    }))
+    .into_response()
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// POST /v1/admin/restart — trigger graceful server shutdown
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pub async fn restart(
+    _guard: AdminGuard,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    tracing::info!("restart requested via API");
+    state.shutdown_tx.notify_one();
+
+    Json(serde_json::json!({
+        "restarting": true,
+        "note": "server will shut down gracefully — use a process manager (systemd) to auto-restart",
     }))
 }

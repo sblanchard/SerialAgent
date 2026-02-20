@@ -3,6 +3,7 @@
 //! This module exposes two public functions that CLI commands (`serve`, `run`,
 //! `chat`) share so they can boot the full runtime without an HTTP listener.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -25,7 +26,11 @@ use crate::workspace::files::WorkspaceReader;
 /// Validate config, initialize every subsystem and return a fully-wired
 /// [`AppState`].  This is the shared "boot" path used by `serve`, `run` and
 /// `chat`.
-pub async fn build_app_state(config: Arc<Config>) -> anyhow::Result<AppState> {
+pub async fn build_app_state(
+    config: Arc<Config>,
+    config_path: String,
+    shutdown_tx: Arc<tokio::sync::Notify>,
+) -> anyhow::Result<AppState> {
     // ── Config validation ────────────────────────────────────────────
     let issues = config.validate();
     for issue in &issues {
@@ -312,7 +317,9 @@ pub async fn build_app_state(config: Arc<Config>) -> anyhow::Result<AppState> {
         skill_engine,
         schedule_store,
         delivery_store,
+        config_path: PathBuf::from(config_path),
         import_root,
+        shutdown_tx,
         user_facts_cache: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
         tool_defs_cache: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
         api_token_hash,

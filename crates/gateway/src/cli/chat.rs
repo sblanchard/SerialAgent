@@ -28,7 +28,12 @@ pub async fn chat(
     mut model: Option<String>,
 ) -> anyhow::Result<()> {
     // 1. Boot the full runtime.
-    let state = bootstrap::build_app_state(config).await?;
+    let state = bootstrap::build_app_state(
+        config,
+        "config.toml".into(),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    )
+    .await?;
 
     // 2. Spawn background tasks (chat is long-lived).
     bootstrap::spawn_background_tasks(&state);

@@ -23,7 +23,12 @@ pub async fn run(
     json_output: bool,
 ) -> anyhow::Result<()> {
     // 1. Boot the full runtime (without background tasks).
-    let state = bootstrap::build_app_state(config).await?;
+    let state = bootstrap::build_app_state(
+        config,
+        "config.toml".into(),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    )
+    .await?;
 
     // 2. Resolve or create the session.
     let (entry, _is_new) = state

@@ -136,6 +136,19 @@ async function del<T>(path: string): Promise<T> {
   return res.json();
 }
 
+async function putText<T>(path: string, body: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "PUT",
+    headers: buildHeaders("text/plain"),
+    body,
+  });
+  if (!res.ok) {
+    const respBody = await res.text().catch(() => "");
+    throw new ApiError("PUT", path, res.status, respBody);
+  }
+  return res.json();
+}
+
 // ── Types ──────────────────────────────────────────────────────────
 
 export type SessionOrigin = {
@@ -848,6 +861,12 @@ export const api = {
 
   // Quotas (per-agent daily limits)
   getQuotas: () => get<QuotaListResponse>("/v1/quotas"),
+
+  // Config management
+  saveConfig: (toml: string) =>
+    putText<{ saved: boolean; path: string; note: string }>("/v1/admin/config", toml),
+  restartServer: () =>
+    post<{ restarting: boolean; note: string }>("/v1/admin/restart", {}),
 
   // Provider listing
   providers: () => get<{ providers: string[]; count: number }>("/v1/models"),

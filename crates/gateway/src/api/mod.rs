@@ -142,6 +142,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/v1/metrics", get(admin::metrics))
         // Admin
         .route("/v1/admin/info", get(admin::system_info))
+        .route("/v1/admin/config", put(admin::save_config))
+        .route("/v1/admin/restart", post(admin::restart))
         .route(
             "/v1/admin/import/openclaw/scan",
             post(admin::scan_openclaw),

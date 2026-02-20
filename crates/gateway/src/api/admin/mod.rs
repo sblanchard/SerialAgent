@@ -14,7 +14,7 @@ mod workspace;
 pub use guard::AdminGuard;
 
 // Re-export handler functions so `admin::function_name` paths remain valid.
-pub use health::{health, metrics, openapi_spec, system_info};
+pub use health::{health, metrics, openapi_spec, restart, save_config, system_info};
 pub use import_legacy::{apply_openclaw_import, scan_openclaw};
 pub use import_staging::{
     import_openclaw_apply_v2, import_openclaw_delete_staging, import_openclaw_list_staging,

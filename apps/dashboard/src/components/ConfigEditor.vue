@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
 import { downloadAsFile } from "@/utils/toml";
+import { api } from "@/api/client";
 
 const props = defineProps<{
   initialToml: string;
 }>();
 
 const content = ref(props.initialToml);
+const saving = ref(false);
+const saveStatus = ref<"idle" | "saved" | "error">("idle");
+const saveMessage = ref("");
 
 watch(
   () => props.initialToml,
@@ -19,10 +23,26 @@ function download() {
 
 function reset() {
   content.value = props.initialToml;
+  saveStatus.value = "idle";
 }
 
 function copyToClipboard() {
   navigator.clipboard.writeText(content.value);
+}
+
+async function save() {
+  saving.value = true;
+  saveStatus.value = "idle";
+  try {
+    const res = await api.saveConfig(content.value);
+    saveStatus.value = "saved";
+    saveMessage.value = res.note;
+  } catch (e: unknown) {
+    saveStatus.value = "error";
+    saveMessage.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    saving.value = false;
+  }
 }
 </script>
 
@@ -33,7 +53,10 @@ function copyToClipboard() {
       <div class="editor-actions">
         <button class="action-btn" @click="copyToClipboard">Copy</button>
         <button class="action-btn" @click="reset">Reset</button>
-        <button class="action-btn primary" @click="download">Download</button>
+        <button class="action-btn" @click="download">Download</button>
+        <button class="action-btn save" :disabled="saving" @click="save">
+          {{ saving ? "Saving..." : "Save to Server" }}
+        </button>
       </div>
     </div>
     <textarea
@@ -41,8 +64,14 @@ function copyToClipboard() {
       class="editor-textarea"
       spellcheck="false"
     ></textarea>
-    <div class="editor-hint dim">
-      Edit the TOML above, then download to replace your config.toml. A server restart is required for changes to take effect.
+    <div v-if="saveStatus === 'saved'" class="editor-hint status-ok">
+      Saved. {{ saveMessage }}
+    </div>
+    <div v-else-if="saveStatus === 'error'" class="editor-hint status-err">
+      Save failed: {{ saveMessage }}
+    </div>
+    <div v-else class="editor-hint dim">
+      Edit the TOML above and save to server. A restart is required for changes to take effect.
     </div>
   </div>
 </template>
@@ -81,13 +110,17 @@ function copyToClipboard() {
   color: var(--text);
   border-color: var(--text-dim);
 }
-.action-btn.primary {
+.action-btn.save {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
 }
-.action-btn.primary:hover {
+.action-btn.save:hover {
   opacity: 0.9;
+}
+.action-btn.save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .editor-textarea {
   width: 100%;
@@ -111,4 +144,6 @@ function copyToClipboard() {
   font-size: 0.75rem;
 }
 .dim { color: var(--text-dim); }
+.status-ok { color: #4caf50; }
+.status-err { color: #f44336; }
 </style>

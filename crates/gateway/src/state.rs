@@ -104,8 +104,12 @@ pub struct AppState {
     pub dedupe: Arc<DedupeStore>,
 
     // ── Admin & import ────────────────────────────────────────────────
+    /// Path to config.toml (resolved at startup from `SA_CONFIG` env).
+    pub config_path: PathBuf,
     /// Root directory for import staging (e.g. `./data/import`).
     pub import_root: PathBuf,
+    /// Shutdown signal sender — triggers graceful server restart.
+    pub shutdown_tx: Arc<tokio::sync::Notify>,
 
     // ── Security (startup-computed) ───────────────────────────────────
     /// SHA-256 hash of the API bearer token (read once at startup).

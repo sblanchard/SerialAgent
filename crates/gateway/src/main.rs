@@ -24,9 +24,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         // Default to serve when no subcommand is given.
         None | Some(Command::Serve) => {
-            let (config, _config_path) = sa_gateway::cli::load_config()?;
+            let (config, config_path) = sa_gateway::cli::load_config()?;
             let _tracer_provider = init_tracing(&config.observability);
-            run_server(Arc::new(config), _tracer_provider).await
+            run_server(Arc::new(config), config_path, _tracer_provider).await
         }
         Some(Command::Doctor) => {
             let (config, config_path) = sa_gateway::cli::load_config()?;
@@ -182,12 +182,14 @@ fn init_cli_tracing() {
 /// Start the gateway server with the given configuration.
 async fn run_server(
     config: Arc<Config>,
+    config_path: String,
     tracer_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
 ) -> anyhow::Result<()> {
     tracing::info!("SerialAgent starting");
 
     // ── Build shared state & spawn background loops ──────────────────
-    let state = bootstrap::build_app_state(config.clone()).await?;
+    let shutdown_tx = Arc::new(tokio::sync::Notify::new());
+    let state = bootstrap::build_app_state(config.clone(), config_path, shutdown_tx.clone()).await?;
     bootstrap::spawn_background_tasks(&state);
 
     // ── CORS layer (config-aware) ────────────────────────────────────
@@ -270,7 +272,7 @@ async fn run_server(
     tracing::info!(addr = %addr, "SerialAgent listening");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(shutdown_tx))
         .await
         .context("axum server error")?;
 
@@ -300,10 +302,11 @@ async fn run_server(
     Ok(())
 }
 
-/// Wait for SIGINT (Ctrl+C) or SIGTERM, then return to trigger graceful
-/// shutdown of the Axum server.
-async fn shutdown_signal() {
+/// Wait for SIGINT, SIGTERM, or an API-triggered restart, then return to
+/// trigger graceful shutdown of the Axum server.
+async fn shutdown_signal(notify: Arc<tokio::sync::Notify>) {
     let ctrl_c = tokio::signal::ctrl_c();
+    let api_restart = notify.notified();
 
     #[cfg(unix)]
     {
@@ -315,13 +318,16 @@ async fn shutdown_signal() {
         tokio::select! {
             _ = ctrl_c => tracing::info!("received SIGINT, shutting down"),
             _ = sigterm.recv() => tracing::info!("received SIGTERM, shutting down"),
+            _ = api_restart => tracing::info!("restart requested via API, shutting down"),
         }
     }
 
     #[cfg(not(unix))]
     {
-        ctrl_c.await.ok();
-        tracing::info!("received SIGINT, shutting down");
+        tokio::select! {
+            _ = ctrl_c => tracing::info!("received SIGINT, shutting down"),
+            _ = api_restart => tracing::info!("restart requested via API, shutting down"),
+        }
     }
 }
 

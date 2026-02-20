@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
-import { api, ApiError } from "@/api/client";
+import { api, ApiError, setApiToken, getApiToken } from "@/api/client";
 import type { SystemInfo, ReadinessResponse } from "@/api/client";
 import Card from "@/components/Card.vue";
 import LoadingPanel from "@/components/LoadingPanel.vue";
@@ -13,6 +13,13 @@ const loading = ref(true);
 const error = ref("");
 const editorMode = ref<"view" | "edit">("view");
 
+// API token input
+const tokenInput = ref(getApiToken() ?? "");
+const tokenSaved = ref(false);
+
+// Restart
+const restarting = ref(false);
+
 const generatedToml = computed(() => {
   if (!sysInfo.value || !readiness.value) return "";
   return configToToml(sysInfo.value, readiness.value);
@@ -20,6 +27,24 @@ const generatedToml = computed(() => {
 
 function toggleMode() {
   editorMode.value = editorMode.value === "view" ? "edit" : "view";
+}
+
+function saveToken() {
+  setApiToken(tokenInput.value.trim());
+  tokenSaved.value = true;
+  setTimeout(() => { tokenSaved.value = false; }, 2000);
+}
+
+async function restart() {
+  if (!confirm("This will shut down the server. A process manager (systemd) is needed to auto-restart. Continue?")) {
+    return;
+  }
+  restarting.value = true;
+  try {
+    await api.restartServer();
+  } catch {
+    // Expected — server shuts down mid-response
+  }
 }
 
 async function load() {
@@ -46,9 +71,14 @@ onMounted(load);
   <div>
     <div class="settings-header">
       <h1 class="page-title">Settings</h1>
-      <button v-if="!loading" class="secondary" @click="toggleMode">
-        {{ editorMode === "view" ? "Edit Config" : "View Info" }}
-      </button>
+      <div class="header-actions">
+        <button v-if="!loading" class="secondary" @click="toggleMode">
+          {{ editorMode === "view" ? "Edit Config" : "View Info" }}
+        </button>
+        <button class="secondary danger" :disabled="restarting" @click="restart">
+          {{ restarting ? "Shutting down..." : "Restart Server" }}
+        </button>
+      </div>
     </div>
 
     <p v-if="error" class="error">{{ error }}</p>
@@ -59,6 +89,25 @@ onMounted(load);
 
     <!-- View mode: existing read-only cards -->
     <template v-if="!loading && editorMode === 'view'">
+
+      <!-- API Token input -->
+      <Card title="API Access Token">
+        <div class="token-row">
+          <input
+            v-model="tokenInput"
+            type="password"
+            class="token-input"
+            placeholder="Paste your SA_API_TOKEN here"
+          />
+          <button class="action-btn save" @click="saveToken">
+            {{ tokenSaved ? "Saved" : "Set Token" }}
+          </button>
+        </div>
+        <div class="editor-hint dim">
+          Stored in browser localStorage. Required when server.api_token is set.
+        </div>
+      </Card>
+
       <template v-if="sysInfo">
         <Card title="System">
           <div class="settings-grid">
@@ -139,13 +188,51 @@ onMounted(load);
 .settings-header {
   display: flex;
   align-items: center;
-  gap: 0.8rem;
+  justify-content: space-between;
   margin-bottom: 1.5rem;
+}
+.header-actions {
+  display: flex;
+  gap: 0.5rem;
 }
 .page-title { font-size: 1.5rem; color: var(--accent); margin: 0; }
 .error { color: var(--red); margin-bottom: 1rem; }
 .dim { color: var(--text-dim); font-size: 0.85rem; }
 .mono { font-family: var(--mono); font-size: 0.82rem; }
+
+/* Token input */
+.token-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.4rem;
+}
+.token-input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 4px;
+}
+.token-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.action-btn.save {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+  padding: 0.4rem 0.8rem;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.action-btn.save:hover { opacity: 0.9; }
+.editor-hint { font-size: 0.75rem; }
 
 .settings-grid {
   display: grid;
@@ -207,4 +294,7 @@ button.secondary {
   cursor: pointer;
 }
 button.secondary:hover { color: var(--text); border-color: var(--text-dim); }
+button.secondary.danger { border-color: var(--red); color: var(--red); }
+button.secondary.danger:hover { background: var(--red); color: #fff; }
+button.secondary.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>
