@@ -10,7 +10,7 @@ use tracing_subscriber::EnvFilter;
 use sa_domain::config::Config;
 use sa_gateway::api;
 use sa_gateway::bootstrap;
-use sa_gateway::cli::{Cli, Command, ConfigCommand, ImportCommand, SystemdCommand};
+use sa_gateway::cli::{Cli, Command, ConfigCommand, SystemdCommand};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
