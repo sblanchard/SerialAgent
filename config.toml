@@ -1,19 +1,12 @@
-# SerialAgent Configuration
-# All values shown are defaults — uncomment and modify as needed.
-
 [context]
-bootstrap_max_chars = 20000         # Max chars per workspace file before truncation
-bootstrap_total_max_chars = 24000   # Max total chars across all injected files
-user_facts_max_chars = 4000         # Max chars for USER_FACTS from SerialMemory
-skills_index_max_chars = 2000       # Max chars for compact skills index
+bootstrap_max_chars = 20000
+bootstrap_total_max_chars = 24000
+user_facts_max_chars = 4000
+skills_index_max_chars = 2000
 
 [serial_memory]
 base_url = "http://localhost:4545/mcp"
-# api_key = "sm_your_api_key_here"  # Your SerialMemory API key (use env var in production)
-transport = "rest"                   # rest | mcp | hybrid
-
-# mcp_endpoint = "stdio://serialmemory-mcp"
-# workspace_id = "serial-assistant"  # Set to isolate from VS Code tenant
+transport = "rest"
 timeout_ms = 8000
 max_retries = 3
 default_user_id = "default_user"
@@ -21,20 +14,19 @@ default_user_id = "default_user"
 [server]
 port = 3210
 host = "127.0.0.1"
+# API bearer token — generate with: openssl rand -hex 32
+# api_token = ""
+api_token_env = "SA_API_TOKEN"
 
-# ── CORS ──────────────────────────────────────────────────────────────
-# allowed_origins: list of origins for CORS. Default: localhost only.
-# Use ["*"] for permissive (NOT recommended for production).
-# [server.cors]
-# allowed_origins = ["http://localhost:3000", "https://myapp.com"]
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Admin
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Admin token env var for gated endpoints (ClawHub install/update/uninstall).
-# Set SA_ADMIN_TOKEN in your environment to enable these endpoints.
+# Admin bearer token — generate with: openssl rand -hex 32
 # [admin]
-# token_env = "SA_ADMIN_TOKEN"
+# token = ""
+
+[server.cors]
+allowed_origins = [
+    "http://localhost:*",
+    "http://127.0.0.1:*",
+]
 
 [workspace]
 path = "./workspace"
@@ -43,319 +35,292 @@ state_path = "./data/state"
 [skills]
 path = "./skills"
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Session Management (OpenClaw-aligned)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Session keys follow the OpenClaw sessionKey model:
-#   agent:<agentId>:<channel>:dm:<peerId>   (per_channel_peer default)
-#   agent:<agentId>:<channel>:group:<groupId>
-#
-# dm_scope: main | per_peer | per_channel_peer | per_account_channel_peer
-#   "per_channel_peer" is the secure default for multi-user inboxes
-#   (prevents cross-user context leakage).
-#
-# Session state persists in {workspace.state_path}/sessions/
-
-[sessions]
-agent_id = "serial-agent"
-dm_scope = "per_channel_peer"
-
-# ── Session lifecycle ─────────────────────────────────────────────
-# daily_reset_hour: 0–23 (local gateway time), null disables daily reset
-# idle_minutes: reset after N minutes of inactivity, null disables
-[sessions.lifecycle]
-daily_reset_hour = 4
-# idle_minutes = 120
-
-# Per-type overrides (keys: "direct", "group", "thread")
-# [sessions.lifecycle.reset_by_type.group]
-# daily_reset_hour = 6
-# idle_minutes = 60
-
-# Per-channel overrides (keys: "discord", "telegram", "whatsapp", …)
-# [sessions.lifecycle.reset_by_channel.discord]
-# idle_minutes = 180
-
-# ── Identity linking ─────────────────────────────────────────────
-# Collapse the same person across channels into one canonical identity.
-# Peer IDs should be prefixed: telegram:123, discord:987, whatsapp:+33…
-#
-# [[sessions.identity_links]]
-# canonical = "alice"
-# peer_ids = ["telegram:123", "discord:987", "whatsapp:+33612345678"]
-#
-# [[sessions.identity_links]]
-# canonical = "bob"
-# peer_ids = ["discord:456", "slack:U12345"]
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Tools (exec / process)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# exec: spawn commands foreground or auto-background after yield time
-# process: manage background sessions (list/poll/log/write/kill/clear/remove)
-
-[tools.exec]
-background_ms = 10000          # ms before auto-backgrounding (0 = always foreground)
-timeout_sec = 1800             # hard timeout for foreground commands
-cleanup_ms = 1800000           # TTL for finished sessions before cleanup (30 min)
-max_output_chars = 1000000     # max output chars kept per process session
-# pending_max_output_chars = 500000
-notify_on_exit = true          # notify when background process exits
-# notify_on_exit_empty_success = false
-
-# ── Exec Security ──────────────────────────────────────────────────────
-# [tools.exec_security]
-# audit_log = true
-# denied_patterns = ["rm\\s+-rf\\s+/", "mkfs\\.", "dd\\s+if=.+of=/dev/"]
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Context Pruning (OpenClaw cache-ttl model)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Trims oversized tool results before sending to the LLM.
-# mode: "off" (disabled) or "cache-ttl" (prune stale tool results)
-# Only prunes Tool-role messages; never touches user/assistant content.
-# Protects tool results for the last N assistant messages.
-
-[pruning]
-mode = "off"                   # "off" or "cache-ttl"
-# ttl_seconds = 300            # skip pruning if last LLM call was recent
-# keep_last_assistants = 3     # protect tool results for N recent assistants
-# min_prunable_chars = 50000   # only prune results longer than this
-
-# [pruning.soft_trim]
-# max_chars = 4000             # max chars after soft-trim
-# head_chars = 1500            # chars to keep from head
-# tail_chars = 1500            # chars to keep from tail
-
-# [pruning.hard_clear]
-# enabled = true
-# placeholder = "[Old tool result content cleared]"
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# LLM Provider System
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# require_provider: if true, abort startup when no LLM providers init.
-#   Default false — gateway boots without API keys (dashboard/nodes/
-#   sessions still work). Override with SA_REQUIRE_LLM=1 env var.
-#   DEPRECATED: prefer startup_policy for finer control.
-#
-# startup_policy: controls what happens when LLM providers fail to init.
-#   "allow_none" (default) — gateway boots without LLM; dashboard/nodes/
-#   sessions all work. Init errors surfaced in /v1/models/readiness.
-#   "require_one" — abort startup if no providers init (production).
-#
-# router_mode: "capability" (auto-select based on requirements) or "fixed"
-# Each role maps to "provider_id/model_name"
-
 [llm]
-require_provider = false
-startup_policy = "allow_none"
 router_mode = "capability"
 default_timeout_ms = 20000
 max_retries = 2
-
-# ── Role assignments ──────────────────────────────────────────────────
-# Format: "provider_id/model_name"
-# The router resolves provider_id to the matching [[llm.providers]] entry.
-
-[llm.roles.planner]
-model = "openai/gpt-4o"
-require_tools = true
-require_streaming = true
-
-[llm.roles.executor]
-model = "openai/gpt-4o"
-require_tools = true
-require_streaming = true
-[[llm.roles.executor.fallbacks]]
-model = "anthropic/claude-sonnet-4-20250514"
-require_tools = true
+require_provider = false
+startup_policy = "allow_none"
 
 [llm.roles.summarizer]
 model = "openai/gpt-4o-mini"
 require_tools = false
+require_json = false
 require_streaming = false
+fallbacks = []
 
 [llm.roles.embedder]
 model = "openai/text-embedding-3-small"
 require_tools = false
+require_json = false
 require_streaming = false
+fallbacks = []
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Provider Registry
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# kind: openai_compat | anthropic | google | openai_codex_oauth
-# auth.mode: api_key | query_param | aws_sigv4 | oauth_device | none
-# auth.env: environment variable name containing the API key
-# auth.key: direct key (prefer auth.env or auth profiles in production)
+[llm.roles.planner]
+model = "openai/gpt-4o"
+require_tools = true
+require_json = false
+require_streaming = true
+fallbacks = []
 
-# ── OpenAI ────────────────────────────────────────────────────────────
+[llm.roles.executor]
+model = "openai/gpt-4o"
+require_tools = true
+require_json = false
+require_streaming = true
+
+[[llm.roles.executor.fallbacks]]
+model = "anthropic/claude-sonnet-4-20250514"
+require_tools = true
+require_json = false
+
 [[llm.providers]]
 id = "openai"
 kind = "openai_compat"
 base_url = "https://api.openai.com/v1"
 default_model = "gpt-4o"
+
 [llm.providers.auth]
 mode = "api_key"
 env = "OPENAI_API_KEY"
+keys = []
 
-# ── Anthropic ─────────────────────────────────────────────────────────
 [[llm.providers]]
 id = "anthropic"
 kind = "anthropic"
 base_url = "https://api.anthropic.com"
 default_model = "claude-sonnet-4-20250514"
+
 [llm.providers.auth]
 mode = "api_key"
 header = "x-api-key"
 prefix = ""
 env = "ANTHROPIC_API_KEY"
+keys = []
 
-# ── Google Gemini ─────────────────────────────────────────────────────
 [[llm.providers]]
 id = "google"
 kind = "google"
 base_url = "https://generativelanguage.googleapis.com/v1beta"
 default_model = "gemini-2.0-flash"
+
 [llm.providers.auth]
 mode = "api_key"
 env = "GOOGLE_API_KEY"
+keys = []
 
-# ── OpenAI Codex (OAuth) ──────────────────────────────────────────────
-# Authenticate via ChatGPT account (no API key needed).
-# Run `serialagent config login openai-codex` to authenticate.
-# [[llm.providers]]
-# id = "openai-codex"
-# kind = "openai_codex_oauth"
-# base_url = "https://api.openai.com/v1"
-# default_model = "gpt-5.2-codex"
-# [llm.providers.auth]
-# mode = "oauth_device"
+[[llm.providers]]
+id = "cc"
+kind = "openai_compat"
+base_url = "http://localhost:3456/v1"
+default_model = "claude-sonnet-4"
 
-# ── OpenRouter (OpenAI-compatible) ────────────────────────────────────
-# [[llm.providers]]
-# id = "openrouter"
-# kind = "openai_compat"
-# base_url = "https://openrouter.ai/api/v1"
-# default_model = "openai/gpt-4o"
-# [llm.providers.auth]
-# mode = "api_key"
-# env = "OPENROUTER_API_KEY"
+[llm.providers.auth]
+mode = "api_key"
+key = "no_key_required"
+keys = []
 
-# ── Together AI ───────────────────────────────────────────────────────
-# [[llm.providers]]
-# id = "together"
-# kind = "openai_compat"
-# base_url = "https://api.together.xyz/v1"
-# default_model = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
-# [llm.providers.auth]
-# mode = "api_key"
-# env = "TOGETHER_API_KEY"
+[[llm.providers]]
+id = "custom-api-deepseek-com"
+kind = "openai_compat"
+base_url = "https://api.deepseek.com/v1"
+default_model = "deepseek-chat"
 
-# ── Chutes ────────────────────────────────────────────────────────────
-# [[llm.providers]]
-# id = "chutes"
-# kind = "openai_compat"
-# base_url = "https://llm.chutes.ai/v1"
-# default_model = "deepseek-ai/DeepSeek-V3-0324"
-# [llm.providers.auth]
-# mode = "api_key"
-# env = "CHUTES_API_KEY"
+[llm.providers.auth]
+mode = "api_key"
+key = "REDACTED_DEEPSEEK_KEY"
+keys = []
 
-# ── xAI (Grok) ───────────────────────────────────────────────────────
-# [[llm.providers]]
-# id = "xai"
-# kind = "openai_compat"
-# base_url = "https://api.x.ai/v1"
-# default_model = "grok-3"
-# [llm.providers.auth]
-# mode = "api_key"
-# env = "XAI_API_KEY"
+[[llm.providers]]
+id = "deepseek"
+kind = "openai_compat"
+base_url = "https://api.deepseek.com/v1"
+default_model = "deepseek-chat"
 
-# ── Ollama (local) ────────────────────────────────────────────────────
-# [[llm.providers]]
-# id = "ollama"
-# kind = "openai_compat"
-# base_url = "http://localhost:11434/v1"
-# default_model = "llama3.1:8b"
-# [llm.providers.auth]
-# mode = "none"
+[llm.providers.auth]
+mode = "api_key"
+key = "REDACTED_DEEPSEEK_KEY"
+keys = []
 
-# ── vLLM (local) ──────────────────────────────────────────────────────
-# [[llm.providers]]
-# id = "vllm"
-# kind = "openai_compat"
-# base_url = "http://localhost:8000/v1"
-# default_model = "meta-llama/Meta-Llama-3.1-70B-Instruct"
-# [llm.providers.auth]
-# mode = "none"
+[[llm.providers]]
+id = "nvidia"
+kind = "openai_compat"
+base_url = "https://integrate.api.nvidia.com/v1"
+default_model = "nvidia/llama-3.1-nemotron-70b-instruct"
 
-# ── Qwen (Alibaba) ───────────────────────────────────────────────────
-# [[llm.providers]]
-# id = "qwen"
-# kind = "openai_compat"
-# base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-# default_model = "qwen-plus"
-# [llm.providers.auth]
-# mode = "api_key"
-# env = "DASHSCOPE_API_KEY"
+[llm.providers.auth]
+mode = "api_key"
+key = "NVIDIA_API_KEY"
+keys = []
 
-# ── MiniMax ───────────────────────────────────────────────────────────
-# [[llm.providers]]
-# id = "minimax"
-# kind = "openai_compat"
-# base_url = "https://api.minimax.chat/v1"
-# default_model = "abab6.5s-chat"
-# [llm.providers.auth]
-# mode = "api_key"
-# env = "MINIMAX_API_KEY"
+[[llm.providers]]
+id = "venice"
+kind = "openai_compat"
+base_url = "https://api.venice.ai/api/v1"
+default_model = "venice-uncensored"
 
-# ── Moonshot ──────────────────────────────────────────────────────────
-# [[llm.providers]]
-# id = "moonshot"
-# kind = "openai_compat"
-# base_url = "https://api.moonshot.cn/v1"
-# default_model = "moonshot-v1-8k"
-# [llm.providers.auth]
-# mode = "api_key"
-# env = "MOONSHOT_API_KEY"
+[llm.providers.auth]
+mode = "api_key"
+key = "REDACTED_VENICE_KEY"
+keys = []
 
-# ── HuggingFace Inference ────────────────────────────────────────────
-# [[llm.providers]]
-# id = "huggingface"
-# kind = "openai_compat"
-# base_url = "https://api-inference.huggingface.co/v1"
-# default_model = "meta-llama/Meta-Llama-3.1-70B-Instruct"
-# [llm.providers.auth]
-# mode = "api_key"
-# env = "HF_TOKEN"
+[llm.pricing]
 
-# ── Venice AI ─────────────────────────────────────────────────────────
-# [[llm.providers]]
-# id = "venice"
-# kind = "openai_compat"
-# base_url = "https://api.venice.ai/api/v1"
-# default_model = "llama-3.3-70b"
-# [llm.providers.auth]
-# mode = "api_key"
-# env = "VENICE_API_KEY"
+[sessions]
+agent_id = "claude-agent"
+dm_scope = "per_channel_peer"
+identity_links = []
 
-# ── LiteLLM proxy ────────────────────────────────────────────────────
-# [[llm.providers]]
-# id = "litellm"
-# kind = "openai_compat"
-# base_url = "http://localhost:4000/v1"
-# default_model = "gpt-4o"
-# [llm.providers.auth]
-# mode = "api_key"
-# env = "LITELLM_API_KEY"
+[sessions.lifecycle]
+daily_reset_hour = 4
 
-# ── Cloudflare Workers AI ────────────────────────────────────────────
-# [[llm.providers]]
-# id = "cloudflare"
-# kind = "openai_compat"
-# base_url = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
-# default_model = "@cf/meta/llama-3.1-70b-instruct"
-# [llm.providers.auth]
-# mode = "api_key"
-# env = "CLOUDFLARE_API_KEY"
+[sessions.lifecycle.reset_by_type]
+
+[sessions.lifecycle.reset_by_channel]
+
+[sessions.send_policy]
+default = "allow"
+deny_groups = true
+
+[sessions.send_policy.channel_overrides]
+
+[tools.exec]
+background_ms = 10000
+timeout_sec = 1800
+cleanup_ms = 1800000
+max_output_chars = 1000000
+pending_max_output_chars = 500000
+notify_on_exit = true
+notify_on_exit_empty_success = false
+
+[tools.exec_security]
+audit_log = true
+denied_patterns = [
+    'rm\s+(-[a-zA-Z]*[rR][a-zA-Z]*\s+|--recursive\s+).*(/|~)',
+    'rm\s+-rf\s+/',
+    'mkfs\.',
+    'dd\s+if=.+of=/dev/',
+    '\b(shutdown|reboot|poweroff|halt|init\s+[0-6])\b',
+    'chmod\s+(-[a-zA-Z]*\s+)*(0?777|a\+rwx)\s+/',
+    'chown\s+(-[a-zA-Z]*\s+)*root[:\s]',
+    'curl\s+.*\|\s*(ba)?sh',
+    'wget\s+.*\|\s*(ba)?sh',
+    'curl\s+.*\|\s*python',
+    'wget\s+.*\|\s*python',
+    ':\(\)\s*\{.*\}',
+    "/dev/tcp/",
+    'nc\s+(-[a-zA-Z]*\s+)*-e',
+    'ncat\s+(-[a-zA-Z]*\s+)*-e',
+    '\bfdisk\s+/dev/',
+    '\bparted\s+/dev/',
+    '\bshred\s+',
+]
+approval_patterns = []
+approval_timeout_sec = 300
+
+[pruning]
+mode = "off"
+ttl_seconds = 300
+keep_last_assistants = 3
+min_prunable_chars = 50000
+soft_trim_ratio = 0.3
+hard_clear_ratio = 0.5
+
+[pruning.soft_trim]
+max_chars = 4000
+head_chars = 1500
+tail_chars = 1500
+
+[pruning.hard_clear]
+enabled = true
+placeholder = "[Old tool result content cleared]"
+
+[compaction]
+auto = true
+max_turns = 80
+keep_last_turns = 12
+
+[memory_lifecycle]
+auto_capture = true
+capture_on_compaction = true
+
+[admin]
+token_env = "SA_ADMIN_TOKEN"
+
+[mcp]
+servers = []
+
+[mcp.presets.browser]
+enabled = false
+
+[mcp.presets.filesystem]
+enabled = false
+
+[tasks]
+max_concurrent = 5
+
+[agents.kimi-agent]
+memory_mode = "shared"
+compaction_enabled = false
+
+[agents.kimi-agent.tool_policy]
+allow = []
+deny = []
+
+[agents.kimi-agent.models]
+
+[agents.kimi-agent.limits]
+max_depth = 3
+max_children_per_turn = 5
+max_duration_ms = 30000
+
+[agents.ollama]
+memory_mode = "shared"
+compaction_enabled = false
+
+[agents.ollama.tool_policy]
+allow = []
+deny = []
+
+[agents.ollama.models]
+
+[agents.ollama.limits]
+max_depth = 3
+max_children_per_turn = 5
+max_duration_ms = 30000
+
+[agents.main]
+memory_mode = "shared"
+compaction_enabled = false
+
+[agents.main.tool_policy]
+allow = []
+deny = []
+
+[agents.main.models]
+
+[agents.main.limits]
+max_depth = 3
+max_children_per_turn = 5
+max_duration_ms = 30000
+
+[agents.claude-agent]
+memory_mode = "shared"
+compaction_enabled = false
+
+[agents.claude-agent.tool_policy]
+allow = []
+deny = []
+
+[agents.claude-agent.models]
+
+[agents.claude-agent.limits]
+max_depth = 3
+max_children_per_turn = 5
+max_duration_ms = 30000
+
+[observability]
+service_name = "serialagent"
+sample_rate = 1.0
+
+[quota.per_agent]

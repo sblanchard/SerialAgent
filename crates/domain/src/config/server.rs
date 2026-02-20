@@ -14,10 +14,13 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default)]
     pub cors: CorsConfig,
-    /// Environment variable holding the API bearer token for protected endpoints.
-    /// If the env var is set and non-empty, all API endpoints (except health/readiness)
-    /// require `Authorization: Bearer <token>`.
-    /// If unset, the server logs a warning and allows unauthenticated access.
+    /// API bearer token for protected endpoints.  If set, all API endpoints
+    /// (except health/readiness) require `Authorization: Bearer <token>`.
+    /// Checked first; if `None`, falls back to the env var named by
+    /// `api_token_env`.  If neither is set, auth is DISABLED (dev mode).
+    #[serde(default)]
+    pub api_token: Option<String>,
+    /// Environment variable holding the API bearer token (fallback).
     #[serde(default = "d_api_token_env")]
     pub api_token_env: String,
     /// Per-IP token-bucket rate limiting configuration.
@@ -38,6 +41,7 @@ impl Default for ServerConfig {
             port: 3210,
             host: "127.0.0.1".into(),
             cors: CorsConfig::default(),
+            api_token: None,
             api_token_env: d_api_token_env(),
             rate_limit: None,
             pid_file: None,

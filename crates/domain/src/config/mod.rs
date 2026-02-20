@@ -85,8 +85,12 @@ pub struct Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminConfig {
-    /// Environment variable holding the admin bearer token.
-    /// If the env var is unset, admin endpoints are **disabled** (403).
+    /// Admin bearer token.  Checked first; if `None`, falls back to the
+    /// env var named by `token_env`.  If neither is set, admin endpoints
+    /// are disabled (403 for ClawHub, open for others in dev mode).
+    #[serde(default)]
+    pub token: Option<String>,
+    /// Environment variable holding the admin bearer token (fallback).
     #[serde(default = "d_admin_token_env")]
     pub token_env: String,
 }
@@ -94,6 +98,7 @@ pub struct AdminConfig {
 impl Default for AdminConfig {
     fn default() -> Self {
         Self {
+            token: None,
             token_env: d_admin_token_env(),
         }
     }
