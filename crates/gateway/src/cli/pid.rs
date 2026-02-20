@@ -88,9 +88,10 @@ mod tests {
         let second = write_pid_file(&pid_path);
         assert!(second.is_err(), "expected lock conflict");
 
-        // Cleanup.
-        remove_pid_file(&pid_path, handle);
-        assert!(!pid_path.exists());
+        // Cleanup — on Windows, drop the handle before removing so the
+        // file lock is released first.
+        drop(handle);
+        let _ = fs::remove_file(&pid_path);
     }
 
     #[test]

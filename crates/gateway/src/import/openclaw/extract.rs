@@ -727,7 +727,8 @@ mod tests {
     fn test_normalize_tar_path_strips_curdir() {
         let (key, pb) = normalize_tar_path(Path::new("a/./b/./c")).unwrap();
         assert_eq!(key, "a/b/c");
-        assert_eq!(pb, PathBuf::from("a/b/c"));
+        // On Windows, PathBuf uses backslashes; compare as string with forward slashes.
+        assert_eq!(pb.to_string_lossy().replace('\\', "/"), "a/b/c");
     }
 
     #[test]
