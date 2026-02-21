@@ -93,7 +93,7 @@ fi
 if [ "$TAURI" = true ]; then
     # Build gateway (Tauri dev needs it running separately)
     log "Building gateway..."
-    cargo build -p sa-gateway 2>&1 | tail -1
+    cargo build --release -p sa-gateway 2>&1 | tail -1
     ok "Gateway built"
 
     # Stop old gateway if running
@@ -105,7 +105,7 @@ if [ "$TAURI" = true ]; then
 
     # Start gateway in background
     log "Starting gateway..."
-    nohup ./target/debug/serialagent serve > "$LOG_DIR/gateway.log" 2>&1 &
+    nohup ./target/release/serialagent serve > "$LOG_DIR/gateway.log" 2>&1 &
 
     for i in $(seq 1 10); do
         if ss -tlnp 2>/dev/null | grep -q ":${GATEWAY_PORT} "; then break; fi
@@ -131,7 +131,7 @@ ok "Dashboard built"
 
 # ── 3. Build gateway ─────────────────────────────────────────────────
 log "Building gateway..."
-cargo build -p sa-gateway 2>&1 | tail -1
+cargo build --release -p sa-gateway 2>&1 | tail -1
 ok "Gateway built"
 
 # ── 4. Stop old gateway if running ───────────────────────────────────
@@ -143,7 +143,7 @@ fi
 
 # ── 5. Start gateway ─────────────────────────────────────────────────
 log "Starting gateway..."
-nohup ./target/debug/serialagent serve > "$LOG_DIR/gateway.log" 2>&1 &
+nohup ./target/release/serialagent serve > "$LOG_DIR/gateway.log" 2>&1 &
 GATEWAY_PID=$!
 
 # Wait for it to bind

@@ -54,8 +54,11 @@ function flushThoughtBuffer() {
 async function loadUnreadDeliveries() {
   try {
     const data = await api.getDeliveries(10, 0);
-    for (const d of data.deliveries) {
-      if (seenDeliveryIds.has(d.id)) continue;
+    // API returns newest first — reverse so oldest appear at top, newest at bottom.
+    const newDeliveries = data.deliveries
+      .filter((d) => !seenDeliveryIds.has(d.id))
+      .reverse();
+    for (const d of newDeliveries) {
       seenDeliveryIds.add(d.id);
       messages.value.push({
         role: "delivery",
@@ -66,8 +69,8 @@ async function loadUnreadDeliveries() {
       });
       // Mark as read
       api.markDeliveryRead(d.id).catch(() => {});
-      scrollToBottom();
     }
+    if (newDeliveries.length > 0) scrollToBottom();
   } catch {
     // Silently skip — deliveries are non-critical
   }
