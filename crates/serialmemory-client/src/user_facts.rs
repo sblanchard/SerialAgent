@@ -81,6 +81,7 @@ impl<'a> UserFactsBuilder<'a> {
                 self.provider.search(RagSearchRequest {
                     query: query.clone(),
                     limit: Some(5),
+                    ..Default::default()
                 })
             })
             .collect();

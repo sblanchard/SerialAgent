@@ -20,6 +20,7 @@ pub async fn search(
     let req = RagSearchRequest {
         query: body.query,
         limit: body.limit,
+        ..Default::default()
     };
 
     match state.memory.search(req).await {

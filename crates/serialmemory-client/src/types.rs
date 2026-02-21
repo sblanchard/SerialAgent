@@ -18,6 +18,24 @@ pub struct RagSearchRequest {
     pub query: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// Minimum similarity threshold (0.0-1.0). SerialMemory defaults to 0.7
+    /// which is often too strict. We default to 0.3 for broader recall.
+    #[serde(default = "default_threshold")]
+    pub threshold: f64,
+}
+
+fn default_threshold() -> f64 {
+    0.3
+}
+
+impl Default for RagSearchRequest {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            limit: None,
+            threshold: default_threshold(),
+        }
+    }
 }
 
 /// POST /api/rag/search — response body.
@@ -87,8 +105,9 @@ pub struct RetrievedMemoryDto {
     pub similarity: Option<f64>,
     #[serde(default)]
     pub rank: Option<f64>,
+    /// Timestamp string from SerialMemory (may lack timezone suffix).
     #[serde(default)]
-    pub created_at: Option<DateTime<Utc>>,
+    pub created_at: Option<String>,
     #[serde(default)]
     pub metadata: Option<HashMap<String, serde_json::Value>>,
     #[serde(default)]

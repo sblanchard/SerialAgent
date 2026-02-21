@@ -258,7 +258,14 @@ impl SerialMemoryProvider for McpSerialMemoryClient {
         }
         if val.is_array() {
             let memories: Vec<crate::types::RetrievedMemoryDto> =
-                serde_json::from_value(val).unwrap_or_default();
+                serde_json::from_value(val.clone()).unwrap_or_else(|e| {
+                    tracing::warn!(
+                        error = %e,
+                        raw_len = val.as_array().map(|a| a.len()).unwrap_or(0),
+                        "failed to parse search results into RetrievedMemoryDto, returning raw"
+                    );
+                    Vec::new()
+                });
             let count = memories.len() as u32;
             return Ok(RagSearchResponse {
                 query: req.query,

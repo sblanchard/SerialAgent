@@ -700,7 +700,7 @@ async fn dispatch_memory_search(state: &AppState, arguments: &Value) -> (String,
         .and_then(|v| v.as_u64())
         .map(|v| v as u32);
 
-    let req = sa_memory::RagSearchRequest { query, limit };
+    let req = sa_memory::RagSearchRequest { query, limit, ..Default::default() };
 
     match state.memory.search(req).await {
         Ok(results) => {
