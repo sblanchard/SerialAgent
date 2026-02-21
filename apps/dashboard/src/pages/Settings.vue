@@ -202,53 +202,58 @@ onMounted(() => {
       </template>
 
       <!-- LLM Router -->
-      <Card v-if="routerStatus" title="LLM Router">
-        <div class="readiness-header">
-          <span :class="routerStatus.enabled ? 'status-ok' : 'status-warn'">
-            {{ routerStatus.enabled ? "Enabled" : "Disabled" }}
-          </span>
-          <span class="profile-badge">{{ routerStatus.default_profile }}</span>
-        </div>
-
-        <!-- Classifier Status -->
-        <div class="sub-heading">Classifier</div>
-        <div class="settings-grid">
-          <div><span class="label">Provider</span> <span class="mono val">{{ routerStatus.classifier.provider }}</span></div>
-          <div><span class="label">Model</span> <span class="mono val">{{ routerStatus.classifier.model }}</span></div>
-          <div><span class="label">Status</span>
-            <span :class="routerStatus.classifier.connected ? 'status-ok' : 'status-warn'">
-              {{ routerStatus.classifier.connected ? "Connected" : "Disconnected" }}
+      <Card v-if="routerLoading && !routerStatus" title="LLM Router">
+        <LoadingPanel message="Loading router status..." />
+      </Card>
+      <Card v-if="routerStatus || routerError" title="LLM Router">
+        <template v-if="routerStatus">
+          <div class="readiness-header">
+            <span :class="routerStatus.enabled ? 'status-ok' : 'status-warn'">
+              {{ routerStatus.enabled ? "Enabled" : "Disabled" }}
             </span>
+            <span class="profile-badge">{{ routerStatus.default_profile }}</span>
           </div>
-          <div v-if="routerStatus.classifier.avg_latency_ms != null">
-            <span class="label">Avg Latency</span>
-            <span class="mono val">{{ routerStatus.classifier.avg_latency_ms }}ms</span>
-          </div>
-        </div>
 
-        <!-- Tier Assignments -->
-        <div class="sub-heading" style="margin-top: 0.8rem">Tier Assignments</div>
-        <div v-for="(models, tier) in routerStatus.tiers" :key="tier" class="tier-row">
-          <span class="tier-label">{{ tier }}</span>
-          <span class="mono val">{{ models.join(", ") || "\u2014" }}</span>
-        </div>
-
-        <!-- Recent Decisions (collapsible) -->
-        <div class="sub-heading clickable" style="margin-top: 0.8rem" @click="decisionsExpanded = !decisionsExpanded">
-          Recent Decisions {{ decisionsExpanded ? "\u25BE" : "\u25B8" }}
-        </div>
-        <div v-if="decisionsExpanded && routerDecisions.length > 0" class="decisions-log">
-          <div v-for="d in routerDecisions" :key="d.timestamp" class="decision-row">
-            <span class="dim">{{ new Date(d.timestamp).toLocaleTimeString() }}</span>
-            <span class="tier-badge" :class="'tier-' + d.tier">{{ d.tier }}</span>
-            <span class="mono">{{ d.model }}</span>
-            <span class="dim">{{ d.latency_ms }}ms</span>
-            <span class="dim decision-snippet">{{ d.prompt_snippet }}</span>
+          <!-- Classifier Status -->
+          <div class="sub-heading">Classifier</div>
+          <div class="settings-grid">
+            <div><span class="label">Provider</span> <span class="mono val">{{ routerStatus.classifier.provider }}</span></div>
+            <div><span class="label">Model</span> <span class="mono val">{{ routerStatus.classifier.model }}</span></div>
+            <div><span class="label">Status</span>
+              <span :class="routerStatus.classifier.connected ? 'status-ok' : 'status-warn'">
+                {{ routerStatus.classifier.connected ? "Connected" : "Disconnected" }}
+              </span>
+            </div>
+            <div v-if="routerStatus.classifier.avg_latency_ms != null">
+              <span class="label">Avg Latency</span>
+              <span class="mono val">{{ routerStatus.classifier.avg_latency_ms }}ms</span>
+            </div>
           </div>
-        </div>
-        <div v-if="decisionsExpanded && routerDecisions.length === 0" class="dim">
-          No routing decisions recorded yet.
-        </div>
+
+          <!-- Tier Assignments -->
+          <div class="sub-heading" style="margin-top: 0.8rem">Tier Assignments</div>
+          <div v-for="(models, tier) in routerStatus.tiers" :key="tier" class="tier-row">
+            <span class="tier-label">{{ tier }}</span>
+            <span class="mono val">{{ models.join(", ") || "\u2014" }}</span>
+          </div>
+
+          <!-- Recent Decisions (collapsible) -->
+          <div class="sub-heading clickable" style="margin-top: 0.8rem" @click="decisionsExpanded = !decisionsExpanded">
+            Recent Decisions {{ decisionsExpanded ? "\u25BE" : "\u25B8" }}
+          </div>
+          <div v-if="decisionsExpanded && routerDecisions.length > 0" class="decisions-log">
+            <div v-for="(d, idx) in routerDecisions" :key="idx" class="decision-row">
+              <span class="dim">{{ new Date(d.timestamp).toLocaleTimeString() }}</span>
+              <span class="tier-badge" :class="'tier-' + d.tier">{{ d.tier }}</span>
+              <span class="mono">{{ d.model }}</span>
+              <span class="dim">{{ d.latency_ms }}ms</span>
+              <span class="dim decision-snippet">{{ d.prompt_snippet }}</span>
+            </div>
+          </div>
+          <div v-if="decisionsExpanded && routerDecisions.length === 0" class="dim">
+            No routing decisions recorded yet.
+          </div>
+        </template>
 
         <p v-if="routerError" class="error">{{ routerError }}</p>
       </Card>
