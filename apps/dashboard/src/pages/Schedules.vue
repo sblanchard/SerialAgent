@@ -123,7 +123,7 @@ async function submitForm() {
     digest_mode: formDigestMode.value,
     max_concurrency: formMaxConcurrency.value,
     max_catchup_runs: formMaxCatchupRuns.value,
-    routing_profile: formRoutingProfile.value || undefined,
+    routing_profile: formRoutingProfile.value === "" ? undefined : formRoutingProfile.value,
   };
 
   formSubmitting.value = true;

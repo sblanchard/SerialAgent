@@ -85,7 +85,7 @@ async function submitEdit() {
     digest_mode: editDigestMode.value,
     max_concurrency: editMaxConcurrency.value,
     max_catchup_runs: editMaxCatchupRuns.value,
-    routing_profile: editRoutingProfile.value || undefined,
+    routing_profile: editRoutingProfile.value === "" ? null : editRoutingProfile.value,
     timeout_ms: editTimeoutMs.value,
   };
 

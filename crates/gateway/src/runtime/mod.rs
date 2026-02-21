@@ -110,6 +110,16 @@ pub(super) fn resolve_provider(
                 let provider_id = model_spec.split('/').next().unwrap_or(model_spec);
                 if let Some(p) = state.llm.get(provider_id) {
                     let model_name = model_spec.split_once('/').map(|(_, m)| m.to_string());
+                    // Record the routing decision for observability.
+                    router.decisions.record(sa_providers::decisions::Decision {
+                        timestamp: chrono::Utc::now(),
+                        prompt_snippet: String::new(), // populated by caller
+                        profile,
+                        tier,
+                        model: model_spec.to_string(),
+                        latency_ms: 0,
+                        bypassed: false,
+                    });
                     return Ok((p, model_name));
                 }
             }

@@ -143,6 +143,13 @@ pub async fn create_schedule(
         }
     }
 
+    // Validate routing_profile if set
+    if let Some(ref rp) = req.routing_profile {
+        if !matches!(rp.as_str(), "auto" | "eco" | "premium" | "free" | "reasoning") {
+            return api_error(StatusCode::BAD_REQUEST, format!("invalid routing_profile: '{rp}'"));
+        }
+    }
+
     let now = chrono::Utc::now();
     let schedule = crate::runtime::schedules::Schedule {
         id: uuid::Uuid::new_v4(),
@@ -252,6 +259,13 @@ pub async fn update_schedule(
                     return api_error(StatusCode::BAD_REQUEST, format!("invalid webhook URL '{}': {}", url, msg));
                 }
             }
+        }
+    }
+
+    // Validate routing_profile if provided
+    if let Some(Some(ref rp)) = req.routing_profile {
+        if !matches!(rp.as_str(), "auto" | "eco" | "premium" | "free" | "reasoning") {
+            return api_error(StatusCode::BAD_REQUEST, format!("invalid routing_profile: '{rp}'"));
         }
     }
 
