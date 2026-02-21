@@ -112,6 +112,7 @@ pub async fn create_task(
         model: body.model,
         response_format: None,
         agent: None,
+        routing_profile: None,
     };
 
     // Enqueue the task for execution.

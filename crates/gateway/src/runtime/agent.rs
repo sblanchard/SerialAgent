@@ -298,6 +298,7 @@ pub async fn run_agent(
         model,
         response_format: None,
         agent: Some(ctx),
+        routing_profile: None,
     };
 
     let (_run_id, mut rx) = run_turn((*state).clone(), input);

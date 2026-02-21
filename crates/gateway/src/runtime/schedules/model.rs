@@ -168,6 +168,12 @@ pub struct Schedule {
     #[serde(default)]
     pub cooldown_until: Option<DateTime<Utc>>,
 
+    // ── LLM routing ────────────────────────────────────────────────────
+    /// Routing profile override for this schedule (e.g. "auto", "eco", "premium").
+    /// None = use default profile from router config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_profile: Option<String>,
+
     // ── Webhook trigger ───────────────────────────────────────────────
     /// HMAC-SHA256 secret for webhook trigger authentication.
     /// When set, `POST /v1/schedules/:id/trigger` additionally verifies
@@ -287,6 +293,7 @@ mod tests {
             last_error_at: None,
             consecutive_failures,
             cooldown_until: None,
+            routing_profile: None,
             webhook_secret: None,
             total_input_tokens: 0,
             total_output_tokens: 0,

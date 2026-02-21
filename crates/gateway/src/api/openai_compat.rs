@@ -170,6 +170,7 @@ async fn chat_completions_blocking(
         model: Some(body.model),
         response_format: body.response_format,
         agent: None,
+        routing_profile: None,
     };
 
     let (_run_id, mut rx) = run_turn(state, input);
@@ -285,6 +286,7 @@ async fn chat_completions_stream(state: AppState, body: OpenAIChatRequest) -> im
         model: Some(body.model),
         response_format: body.response_format,
         agent: None,
+        routing_profile: None,
     };
 
     let (_run_id, rx) = run_turn(state, input);

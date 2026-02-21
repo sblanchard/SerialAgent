@@ -118,6 +118,8 @@ pub struct TurnInput {
     pub response_format: Option<sa_providers::ResponseFormat>,
     /// When running as a sub-agent, carries agent-scoped overrides.
     pub agent: Option<agent::AgentContext>,
+    /// Routing profile override. None = use default.
+    pub routing_profile: Option<sa_domain::config::RoutingProfile>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -845,7 +847,7 @@ async fn prepare_turn_context(
     input: &TurnInput,
 ) -> Result<TurnContext, Box<dyn std::error::Error + Send + Sync>> {
     // 1. Resolve the LLM provider (explicit -> router -> agent models -> global roles -> any).
-    let (provider, resolved_model) = resolve_provider(state, input.model.as_deref(), input.agent.as_ref(), None)?;
+    let (provider, resolved_model) = resolve_provider(state, input.model.as_deref(), input.agent.as_ref(), input.routing_profile)?;
 
     // 2. Build system context (agent-scoped workspace/skills if present).
     let system_prompt = build_system_context(state, input.agent.as_ref()).await;
