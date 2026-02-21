@@ -1,3 +1,7 @@
+<script lang="ts">
+export default { name: "ChatPage" };
+</script>
+
 <script setup lang="ts">
 import { ref, nextTick, onMounted, onUnmounted } from "vue";
 import { api, ApiError } from "@/api/client";
@@ -51,7 +55,7 @@ async function loadUnreadDeliveries() {
   try {
     const data = await api.getDeliveries(10, 0);
     for (const d of data.deliveries) {
-      if (d.read || seenDeliveryIds.has(d.id)) continue;
+      if (seenDeliveryIds.has(d.id)) continue;
       seenDeliveryIds.add(d.id);
       messages.value.push({
         role: "delivery",
