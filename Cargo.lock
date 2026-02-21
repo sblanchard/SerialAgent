@@ -3929,6 +3929,7 @@ dependencies = [
  "fs2",
  "futures-core",
  "keyring",
+ "parking_lot",
  "reqwest 0.12.28",
  "sa-domain",
  "serde",
