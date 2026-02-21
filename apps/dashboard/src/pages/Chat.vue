@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { ref, nextTick, onUnmounted } from "vue";
+import { ref, nextTick, onMounted, onUnmounted } from "vue";
 import { api, ApiError } from "@/api/client";
+import type { Delivery } from "@/api/client";
 import Card from "@/components/Card.vue";
 import ThoughtBubble from "@/components/ThoughtBubble.vue";
 
 type ChatMessage = {
-  role: "user" | "assistant" | "tool_call" | "tool_result" | "error" | "thought";
+  role: "user" | "assistant" | "tool_call" | "tool_result" | "error" | "thought" | "delivery";
   content: string;
   tool_name?: string;
   timestamp: string;
+  delivery_id?: string;
+  delivery_title?: string;
 };
 
 const messages = ref<ChatMessage[]>([]);
@@ -19,6 +22,10 @@ const streamingContent = ref("");
 const isStreaming = ref(false);
 const showThoughts = ref(localStorage.getItem("sa_show_thoughts") !== "false");
 const thoughtBuffer = ref("");
+
+// Track seen delivery IDs to avoid duplicates
+const seenDeliveryIds = new Set<string>();
+let deliveryPollTimer: ReturnType<typeof setInterval> | null = null;
 
 function now(): string {
   return new Date().toLocaleTimeString();
@@ -37,6 +44,28 @@ function flushThoughtBuffer() {
       timestamp: now(),
     });
     thoughtBuffer.value = "";
+  }
+}
+
+async function loadUnreadDeliveries() {
+  try {
+    const data = await api.getDeliveries(10, 0);
+    for (const d of data.deliveries) {
+      if (d.read || seenDeliveryIds.has(d.id)) continue;
+      seenDeliveryIds.add(d.id);
+      messages.value.push({
+        role: "delivery",
+        content: d.body,
+        timestamp: new Date(d.created_at).toLocaleTimeString(),
+        delivery_id: d.id,
+        delivery_title: d.schedule_name ?? "Scheduled Report",
+      });
+      // Mark as read
+      api.markDeliveryRead(d.id).catch(() => {});
+      scrollToBottom();
+    }
+  } catch {
+    // Silently skip — deliveries are non-critical
   }
 }
 
@@ -105,7 +134,6 @@ async function send() {
             thoughtBuffer.value += event.content;
             scrollToBottom();
           } else {
-            // Flush accumulated thoughts before handling non-thought events
             flushThoughtBuffer();
 
             if (event.type === "assistant_delta") {
@@ -150,7 +178,6 @@ async function send() {
       }
     }
 
-    // Flush remaining thought buffer and streaming content
     flushThoughtBuffer();
     if (streamingContent.value) {
       messages.value.push({
@@ -182,7 +209,9 @@ function scrollToBottom() {
 
 function newSession() {
   messages.value = [];
+  seenDeliveryIds.clear();
   sessionKey.value = "chat:dashboard:" + Date.now();
+  loadUnreadDeliveries();
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -192,8 +221,14 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
+onMounted(() => {
+  loadUnreadDeliveries();
+  // Poll for new deliveries every 30 seconds
+  deliveryPollTimer = setInterval(loadUnreadDeliveries, 30_000);
+});
+
 onUnmounted(() => {
-  // Cleanup handled by fetch abort in future
+  if (deliveryPollTimer) clearInterval(deliveryPollTimer);
 });
 </script>
 
@@ -211,7 +246,7 @@ onUnmounted(() => {
     <Card title="Conversation" class="chat-card">
       <div class="chat-messages">
         <div v-if="messages.length === 0 && !isStreaming" class="empty-chat dim">
-          Send a message to start a conversation. Tool calls and results will appear inline.
+          Send a message to start a conversation. Scheduled reports will appear here automatically.
         </div>
 
         <template v-for="(msg, i) in messages" :key="i">
@@ -220,6 +255,14 @@ onUnmounted(() => {
             :content="msg.content"
             :timestamp="msg.timestamp"
           />
+          <!-- Delivery notification -->
+          <div v-else-if="msg.role === 'delivery'" class="chat-msg delivery">
+            <div class="msg-header">
+              <span class="msg-role delivery-badge">{{ msg.delivery_title }}</span>
+              <span class="msg-time dim">{{ msg.timestamp }}</span>
+            </div>
+            <div class="msg-body">{{ msg.content }}</div>
+          </div>
           <div
             v-else-if="msg.role !== 'thought'"
             class="chat-msg"
@@ -314,6 +357,22 @@ onUnmounted(() => {
 .chat-msg.tool_result { background: rgba(139, 148, 158, 0.06); border-left: 2px solid var(--text-dim); }
 .chat-msg.error { background: rgba(248, 81, 73, 0.06); border-left: 2px solid var(--red); }
 .chat-msg.streaming { opacity: 0.8; }
+.chat-msg.delivery {
+  background: rgba(163, 113, 247, 0.06);
+  border-left: 2px solid #a371f7;
+  margin-bottom: 0.6rem;
+}
+
+.delivery-badge {
+  background: rgba(163, 113, 247, 0.15);
+  color: #a371f7;
+  padding: 0.1rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 
 .chat-msg.thought-streaming {
   background: rgba(139, 148, 158, 0.04);
