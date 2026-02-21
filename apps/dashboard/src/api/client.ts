@@ -636,6 +636,7 @@ export type Schedule = {
   max_concurrency: number;
   timeout_ms?: number;
   digest_mode: DigestMode;
+  routing_profile?: string;
   fetch_config: FetchConfig;
   source_states: Record<string, SourceState>;
   max_catchup_runs: number;
@@ -671,6 +672,7 @@ export type CreateScheduleRequest = {
   max_concurrency?: number;
   timeout_ms?: number;
   digest_mode?: DigestMode;
+  routing_profile?: string;
   fetch_config?: Partial<FetchConfig>;
   max_catchup_runs?: number;
 };
@@ -688,6 +690,7 @@ export type UpdateScheduleRequest = {
   max_concurrency?: number;
   timeout_ms?: number | null;
   digest_mode?: DigestMode;
+  routing_profile?: string;
   fetch_config?: Partial<FetchConfig>;
   max_catchup_runs?: number;
 };

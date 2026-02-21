@@ -33,6 +33,7 @@ const editMissedPolicy = ref<MissedPolicy>("run_once");
 const editDigestMode = ref<DigestMode>("full");
 const editMaxConcurrency = ref(1);
 const editMaxCatchupRuns = ref(5);
+const editRoutingProfile = ref("");
 const editTimeoutMs = ref<number | null>(null);
 const editSubmitting = ref(false);
 const editError = ref("");
@@ -49,6 +50,7 @@ function startEdit() {
   editDigestMode.value = s.digest_mode;
   editMaxConcurrency.value = s.max_concurrency;
   editMaxCatchupRuns.value = s.max_catchup_runs;
+  editRoutingProfile.value = s.routing_profile ?? "";
   editTimeoutMs.value = s.timeout_ms ?? null;
   editError.value = "";
   editing.value = true;
@@ -83,6 +85,7 @@ async function submitEdit() {
     digest_mode: editDigestMode.value,
     max_concurrency: editMaxConcurrency.value,
     max_catchup_runs: editMaxCatchupRuns.value,
+    routing_profile: editRoutingProfile.value || undefined,
     timeout_ms: editTimeoutMs.value,
   };
 
@@ -367,6 +370,17 @@ function goToRun(runId?: string) {
           <div class="edit-field">
             <label>Max Catch-up Runs</label>
             <input type="number" v-model.number="editMaxCatchupRuns" min="1" max="100" />
+          </div>
+          <div class="edit-field">
+            <label>Routing Profile</label>
+            <select v-model="editRoutingProfile">
+              <option value="">Default (inherit)</option>
+              <option value="auto">Auto</option>
+              <option value="eco">Eco</option>
+              <option value="premium">Premium</option>
+              <option value="free">Free</option>
+              <option value="reasoning">Reasoning</option>
+            </select>
           </div>
         </div>
 
