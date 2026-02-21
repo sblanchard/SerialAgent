@@ -358,14 +358,21 @@ pub async fn import_schedules(
             _ => continue,
         };
 
-        // Dedup: skip if schedule with same name already exists
+        let timeout_ms = job.payload.timeout_seconds.map(|s| s * 1000);
+
+        // Upsert: if schedule with same name exists, update it in place
         let existing = schedule_store.list().await;
-        if existing.iter().any(|s| s.name == job.name) {
-            tracing::debug!(name = %job.name, "schedule already exists, skipping");
+        if let Some(existing_sched) = existing.iter().find(|s| s.name == job.name) {
+            let existing_id = existing_sched.id;
+            schedule_store.update(&existing_id, |s| {
+                s.cron = cron_expr.clone();
+                s.prompt_template = job.payload.message.clone();
+                s.timeout_ms = timeout_ms;
+            }).await;
+            tracing::info!(name = %job.name, "updated existing schedule from import (upsert)");
+            imported.push(job.name.clone());
             continue;
         }
-
-        let timeout_ms = job.payload.timeout_seconds.map(|s| s * 1000);
 
         let schedule = crate::runtime::schedules::model::Schedule {
             id: uuid::Uuid::new_v4(),
@@ -387,6 +394,7 @@ pub async fn import_schedules(
             missed_policy: Default::default(),
             max_concurrency: 1,
             timeout_ms,
+            model: None,
             digest_mode: Default::default(),
             fetch_config: Default::default(),
             source_states: Default::default(),

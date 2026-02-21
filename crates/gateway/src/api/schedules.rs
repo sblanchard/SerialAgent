@@ -80,6 +80,8 @@ pub struct CreateScheduleRequest {
     #[serde(default)]
     pub timeout_ms: Option<u64>,
     #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
     pub digest_mode: DigestMode,
     #[serde(default)]
     pub fetch_config: FetchConfig,
@@ -169,6 +171,7 @@ pub async fn create_schedule(
         missed_policy: req.missed_policy,
         max_concurrency: req.max_concurrency,
         timeout_ms: req.timeout_ms,
+        model: req.model,
         digest_mode: req.digest_mode,
         fetch_config: req.fetch_config,
         max_catchup_runs: req.max_catchup_runs,
@@ -209,6 +212,7 @@ pub struct UpdateScheduleRequest {
     pub missed_policy: Option<MissedPolicy>,
     pub max_concurrency: Option<u32>,
     pub timeout_ms: Option<Option<u64>>,
+    pub model: Option<Option<String>>,
     pub digest_mode: Option<DigestMode>,
     pub fetch_config: Option<FetchConfig>,
     pub max_catchup_runs: Option<usize>,
@@ -304,6 +308,9 @@ pub async fn update_schedule(
             }
             if let Some(tm) = req.timeout_ms {
                 s.timeout_ms = tm;
+            }
+            if let Some(m) = req.model {
+                s.model = m;
             }
             if let Some(dm) = req.digest_mode {
                 s.digest_mode = dm;

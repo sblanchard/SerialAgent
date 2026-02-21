@@ -196,7 +196,7 @@ pub enum MergeStrategy {
 }
 
 fn default_merge() -> MergeStrategy {
-    MergeStrategy::MergeSafe
+    MergeStrategy::Replace
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

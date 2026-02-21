@@ -273,7 +273,7 @@ pub async fn spawn_scheduled_run(
         session_key,
         session_id,
         user_message: user_prompt,
-        model: None,
+        model: schedule.model.clone(),
         response_format: None,
         agent: None,
         routing_profile,

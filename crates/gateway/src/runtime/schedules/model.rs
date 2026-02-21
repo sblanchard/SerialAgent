@@ -137,6 +137,10 @@ pub struct Schedule {
     /// Per-run timeout in milliseconds (None = no timeout).
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// LLM model override for this schedule (e.g. "google/gemini-2.0-flash").
+    /// None = use default role-based routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// How to compile multi-source content (default: full).
     #[serde(default)]
     pub digest_mode: DigestMode,
@@ -281,6 +285,7 @@ mod tests {
             missed_policy: MissedPolicy::default(),
             max_concurrency: 1,
             timeout_ms: None,
+            model: None,
             digest_mode: DigestMode::default(),
             fetch_config: FetchConfig::default(),
             max_catchup_runs: 5,

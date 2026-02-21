@@ -397,6 +397,7 @@ mod tests {
             missed_policy: MissedPolicy::default(),
             max_concurrency: 1,
             timeout_ms: None,
+            model: None,
             digest_mode: mode,
             fetch_config: FetchConfig::default(),
             max_catchup_runs: 5,
