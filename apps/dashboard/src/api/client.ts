@@ -765,7 +765,7 @@ export type RouterStatus = {
     provider: string;
     model: string;
     connected: boolean;
-    avg_latency_ms: number;
+    avg_latency_ms?: number;
   };
   tiers: Record<string, string[]>;
   thresholds: Record<string, number>;
@@ -909,5 +909,5 @@ export const api = {
   classifyPrompt: (prompt: string) =>
     post<ClassifyResult>("/v1/router/classify", { prompt }),
   routerDecisions: (limit = 100) =>
-    get<RouterDecision[]>(`/v1/router/decisions?limit=${limit}`),
+    get<{ decisions: RouterDecision[]; count: number }>(`/v1/router/decisions?limit=${limit}`),
 };
