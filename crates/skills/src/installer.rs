@@ -359,7 +359,7 @@ fn walkdir_inner(
                 .strip_prefix(root)
                 .unwrap_or(&path)
                 .to_string_lossy()
-                .to_string();
+                .replace('\\', "/");
             let size = entry.metadata()?.len();
             entries.push((rel, size));
         }

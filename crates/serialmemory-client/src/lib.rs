@@ -32,6 +32,7 @@
 //!     .search(RagSearchRequest {
 //!         query: "user's favourite language".into(),
 //!         limit: Some(5),
+//!         ..Default::default()
 //!     })
 //!     .await?;
 //!

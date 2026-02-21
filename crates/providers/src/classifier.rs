@@ -253,7 +253,7 @@ impl EmbeddingClassifier {
         let mut tier_embeddings: HashMap<ModelTier, Vec<Vec<f32>>> = HashMap::new();
 
         for (tier, prompts) in &reference_prompts {
-            let texts: Vec<&str> = prompts.iter().copied().collect();
+            let texts: Vec<&str> = prompts.to_vec();
             let embeddings = Self::fetch_embeddings_batch(&http, &config, &texts).await?;
             tier_embeddings.insert(*tier, embeddings);
         }

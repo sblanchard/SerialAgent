@@ -407,7 +407,9 @@ mod tests {
     #[test]
     fn validate_path_rejects_absolute_path() {
         let ws = tmp_workspace();
-        let result = validate_path(ws.path(), "/etc/passwd");
+        // On Windows, "/etc/passwd" is not absolute; use a drive-letter path instead.
+        let abs_path = if cfg!(windows) { "C:\\Windows\\System32" } else { "/etc/passwd" };
+        let result = validate_path(ws.path(), abs_path);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("absolute paths are not allowed"));
     }

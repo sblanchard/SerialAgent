@@ -85,6 +85,7 @@ pub(super) fn fire_auto_capture(state: &AppState, input: &turn::TurnInput, final
 ///
 /// Returns the provider and an optional model name (when the router
 /// selects a specific model within the provider).
+#[allow(clippy::type_complexity)]
 pub(super) fn resolve_provider(
     state: &AppState,
     model_override: Option<&str>,

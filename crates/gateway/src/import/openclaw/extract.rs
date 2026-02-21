@@ -346,7 +346,8 @@ fn normalize_tar_path(path: &Path) -> Result<(String, PathBuf), OpenClawImportEr
     }
 
     let normalized: PathBuf = parts.iter().collect();
-    let key = normalized.to_string_lossy().to_string();
+    // Use forward slashes for the key regardless of platform (tar paths are always `/`).
+    let key = parts.join("/");
     Ok((key, normalized))
 }
 

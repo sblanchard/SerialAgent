@@ -3,7 +3,6 @@
 //! Field names use `camelCase` on the wire (matching the .NET API) and
 //! `snake_case` in Rust code via `#[serde(rename_all = "camelCase")]`.
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

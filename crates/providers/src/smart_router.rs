@@ -36,7 +36,7 @@ pub fn profile_to_tier(profile: RoutingProfile) -> Option<ModelTier> {
 }
 
 /// Get the first available model from a tier.
-pub fn resolve_tier_model<'a>(tier: ModelTier, tiers: &'a TierConfig) -> Option<&'a str> {
+pub fn resolve_tier_model(tier: ModelTier, tiers: &TierConfig) -> Option<&str> {
     let models = match tier {
         ModelTier::Simple => &tiers.simple,
         ModelTier::Complex => &tiers.complex,

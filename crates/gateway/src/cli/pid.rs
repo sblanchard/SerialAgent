@@ -74,13 +74,19 @@ mod tests {
 
     #[test]
     fn write_and_remove_pid_file() {
+        use std::io::{Read, Seek, SeekFrom};
+
         let dir = tempfile::tempdir().unwrap();
         let pid_path = dir.path().join("test.pid");
 
-        let handle = write_pid_file(&pid_path).unwrap();
+        let mut handle = write_pid_file(&pid_path).unwrap();
 
         // File exists and contains our PID.
-        let content = fs::read_to_string(&pid_path).unwrap();
+        // On Windows the exclusive lock prevents re-opening, so read via
+        // the already-open handle instead of fs::read_to_string.
+        handle.seek(SeekFrom::Start(0)).unwrap();
+        let mut content = String::new();
+        handle.read_to_string(&mut content).unwrap();
         let stored_pid: u32 = content.trim().parse().unwrap();
         assert_eq!(stored_pid, std::process::id());
 
