@@ -221,6 +221,22 @@ impl SerialMemoryProvider for McpSerialMemoryClient {
     async fn search(&self, req: RagSearchRequest) -> Result<RagSearchResponse> {
         let args = serde_json::to_value(&req).map_err(|e| Error::SerialMemory(e.to_string()))?;
         let val = self.call_tool("memory_search", args).await?;
+
+        // MCP memory_search returns a flat array of results.
+        // Wrap into the RagSearchResponse envelope that the rest of the
+        // codebase expects.
+        if val.is_array() {
+            let memories: Vec<crate::types::RetrievedMemoryDto> =
+                serde_json::from_value(val)
+                    .map_err(|e| Error::SerialMemory(format!("search results parse: {e}")))?;
+            let count = memories.len() as u32;
+            return Ok(RagSearchResponse {
+                query: req.query,
+                memories,
+                count,
+            });
+        }
+
         serde_json::from_value(val)
             .map_err(|e| Error::SerialMemory(format!("search response parse: {e}")))
     }

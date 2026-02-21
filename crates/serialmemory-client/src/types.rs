@@ -86,9 +86,13 @@ pub struct RetrievedMemoryDto {
     #[serde(default)]
     pub similarity: Option<f64>,
     #[serde(default)]
+    pub rank: Option<f64>,
+    #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub metadata: Option<HashMap<String, serde_json::Value>>,
+    #[serde(default)]
+    pub entities: Option<Vec<serde_json::Value>>,
     #[serde(default)]
     pub memory_type: Option<String>,
     #[serde(default)]
@@ -120,10 +124,12 @@ pub struct MemoryIngestRequest {
 pub struct IngestResponse {
     #[serde(alias = "memory_id")]
     pub memory_id: String,
-    #[serde(default)]
+    #[serde(default, alias = "entitiesCreated")]
     pub entities_extracted: Option<u32>,
     #[serde(default)]
     pub message: Option<String>,
+    #[serde(default)]
+    pub content_hash: Option<String>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
