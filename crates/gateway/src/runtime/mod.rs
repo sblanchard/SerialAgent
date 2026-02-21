@@ -78,40 +78,64 @@ pub(super) fn fire_auto_capture(state: &AppState, input: &turn::TurnInput, final
 
 /// Provider resolution order:
 /// 1. Explicit model override (from API request / agent.run)
-/// 2. Agent-level model mapping (per sub-agent config)
-/// 3. Global role defaults (planner/executor/summarizer)
-/// 4. Any available provider
+/// 2. Smart router (when enabled and no explicit override)
+/// 3. Agent-level model mapping (per sub-agent config)
+/// 4. Global role defaults (planner/executor/summarizer)
+/// 5. Any available provider
+///
+/// Returns the provider and an optional model name (when the router
+/// selects a specific model within the provider).
 pub(super) fn resolve_provider(
     state: &AppState,
     model_override: Option<&str>,
     agent_ctx: Option<&agent::AgentContext>,
-) -> Result<Arc<dyn sa_providers::LlmProvider>, Box<dyn std::error::Error + Send + Sync>> {
+    routing_profile: Option<sa_domain::config::RoutingProfile>,
+) -> Result<(Arc<dyn sa_providers::LlmProvider>, Option<String>), Box<dyn std::error::Error + Send + Sync>> {
     // 1. Explicit override.
     if let Some(spec) = model_override {
         let provider_id = spec.split('/').next().unwrap_or(spec);
         if let Some(p) = state.llm.get(provider_id) {
-            return Ok(p);
+            let model_name = spec.split_once('/').map(|(_, m)| m.to_string());
+            return Ok((p, model_name));
         }
     }
 
-    // 2. Agent-level model mapping.
+    // 2. Smart router (when enabled and no explicit override).
+    if let Some(router) = &state.smart_router {
+        let profile = routing_profile.unwrap_or(router.default_profile);
+        // For non-Auto profiles, resolve tier directly (no classifier needed).
+        let tier = sa_providers::smart_router::profile_to_tier(profile);
+        if let Some(tier) = tier {
+            if let Some(model_spec) = sa_providers::smart_router::resolve_tier_model(tier, &router.tiers) {
+                let provider_id = model_spec.split('/').next().unwrap_or(model_spec);
+                if let Some(p) = state.llm.get(provider_id) {
+                    let model_name = model_spec.split_once('/').map(|(_, m)| m.to_string());
+                    return Ok((p, model_name));
+                }
+            }
+        }
+        // Auto profile without classifier falls through to role-based routing.
+    }
+
+    // 3. Agent-level model mapping.
     if let Some(ctx) = agent_ctx {
         if let Some(spec) = ctx.models.get("executor") {
             let provider_id = spec.split('/').next().unwrap_or(spec);
             if let Some(p) = state.llm.get(provider_id) {
-                return Ok(p);
+                let model_name = spec.split_once('/').map(|(_, m)| m.to_string());
+                return Ok((p, model_name));
             }
         }
     }
 
-    // 3. Global role defaults.
+    // 4. Global role defaults.
     if let Some(p) = state.llm.for_role("executor") {
-        return Ok(p);
+        return Ok((p, None));
     }
 
-    // 4. Any available provider.
+    // 5. Any available provider.
     if let Some((_, p)) = state.llm.iter().next() {
-        return Ok(p.clone());
+        return Ok((p.clone(), None));
     }
 
     Err("no_provider_configured: no LLM providers available. \

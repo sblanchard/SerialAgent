@@ -297,6 +297,7 @@ pub async fn build_app_state(
         workspace,
         bootstrap,
         llm,
+        smart_router: None,
         sessions,
         identity,
         lifecycle,

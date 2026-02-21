@@ -41,6 +41,8 @@ pub(super) struct TurnContext {
     provider: Arc<dyn sa_providers::LlmProvider>,
     messages: Vec<Message>,
     tool_defs: Arc<Vec<ToolDefinition>>,
+    /// Model name selected by the smart router (if any).
+    router_model: Option<String>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -399,6 +401,7 @@ async fn run_turn_inner(
         provider,
         mut messages,
         tool_defs,
+        router_model,
     } = ctx;
 
     // ── Phase 2: Tool loop ───────────────────────────────────────────────
@@ -461,6 +464,17 @@ async fn run_turn_inner(
         );
 
         // Call LLM (streaming).
+        // Determine which model name to send on the request:
+        //   - Explicit model override (provider/model) takes priority.
+        //   - Router-selected model is used when no explicit override is present.
+        let effective_model = if let Some(ref m) = input.model {
+            // Extract the model name from "provider/model" format.
+            m.split_once('/').map(|(_, model_name)| model_name.to_string())
+                .or_else(|| Some(m.clone()))
+        } else {
+            router_model.clone()
+        };
+
         let req = sa_providers::ChatRequest {
             messages: messages.clone(),
             tools: (*tool_defs).clone(),
@@ -470,7 +484,7 @@ async fn run_turn_inner(
                 .response_format
                 .clone()
                 .unwrap_or_default(),
-            model: input.model.clone(),
+            model: effective_model,
         };
 
         let llm_call_span = tracing::info_span!(
@@ -830,8 +844,8 @@ async fn prepare_turn_context(
     state: &AppState,
     input: &TurnInput,
 ) -> Result<TurnContext, Box<dyn std::error::Error + Send + Sync>> {
-    // 1. Resolve the LLM provider (agent models -> global roles -> any).
-    let provider = resolve_provider(state, input.model.as_deref(), input.agent.as_ref())?;
+    // 1. Resolve the LLM provider (explicit -> router -> agent models -> global roles -> any).
+    let (provider, resolved_model) = resolve_provider(state, input.model.as_deref(), input.agent.as_ref(), None)?;
 
     // 2. Build system context (agent-scoped workspace/skills if present).
     let system_prompt = build_system_context(state, input.agent.as_ref()).await;
@@ -927,5 +941,6 @@ async fn prepare_turn_context(
         provider,
         messages,
         tool_defs,
+        router_model: resolved_model,
     })
 }
