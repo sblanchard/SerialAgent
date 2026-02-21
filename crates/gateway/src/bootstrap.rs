@@ -289,6 +289,47 @@ pub async fn build_app_state(
         );
     }
 
+    // ── Smart router ──────────────────────────────────────────────────
+    let smart_router = if let Some(ref router_cfg) = config.llm.router {
+        if router_cfg.enabled {
+            let classifier = match sa_providers::classifier::EmbeddingClassifier::initialize(
+                router_cfg.classifier.clone(),
+                router_cfg.thresholds.clone(),
+            )
+            .await
+            {
+                Ok(c) => {
+                    tracing::info!(
+                        provider = %router_cfg.classifier.provider,
+                        model = %router_cfg.classifier.model,
+                        "smart router classifier initialized"
+                    );
+                    Some(c)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "smart router classifier failed to initialize, \
+                         routing will use fixed profiles only"
+                    );
+                    None
+                }
+            };
+
+            Some(Arc::new(crate::state::SmartRouterState {
+                classifier,
+                tiers: router_cfg.tiers.clone(),
+                default_profile: router_cfg.default_profile,
+                decisions: sa_providers::decisions::DecisionLog::new(100),
+            }))
+        } else {
+            tracing::debug!("smart router configured but disabled");
+            None
+        }
+    } else {
+        None
+    };
+
     // ── App state (without agents — needed for AgentManager init) ───
     let mut state = AppState {
         config: config.clone(),
@@ -297,6 +338,7 @@ pub async fn build_app_state(
         workspace,
         bootstrap,
         llm,
+        smart_router,
         sessions,
         identity,
         lifecycle,

@@ -257,6 +257,18 @@ pub async fn spawn_scheduled_run(
         Utc::now().format("%Y%m%d%H%M%S")
     );
 
+    let routing_profile = schedule.routing_profile.as_deref()
+        .and_then(|s| {
+            match s {
+                "auto" => Some(sa_domain::config::RoutingProfile::Auto),
+                "eco" => Some(sa_domain::config::RoutingProfile::Eco),
+                "premium" => Some(sa_domain::config::RoutingProfile::Premium),
+                "free" => Some(sa_domain::config::RoutingProfile::Free),
+                "reasoning" => Some(sa_domain::config::RoutingProfile::Reasoning),
+                _ => None,
+            }
+        });
+
     let input = crate::runtime::TurnInput {
         session_key,
         session_id,
@@ -264,6 +276,7 @@ pub async fn spawn_scheduled_run(
         model: None,
         response_format: None,
         agent: None,
+        routing_profile,
     };
 
     let (run_id, mut rx) = crate::runtime::run_turn(state.clone(), input);

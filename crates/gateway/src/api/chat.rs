@@ -85,6 +85,7 @@ pub async fn chat(
         model: body.model,
         response_format: body.response_format,
         agent: None,
+        routing_profile: None,
     };
 
     let (_run_id, mut rx) = run_turn(state.clone(), input);
@@ -209,6 +210,7 @@ pub async fn chat_stream(
         model: body.model,
         response_format: body.response_format,
         agent: None,
+        routing_profile: None,
     };
 
     let (_run_id, rx) = run_turn(state.clone(), input);

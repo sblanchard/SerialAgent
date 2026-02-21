@@ -34,6 +34,7 @@ const formMissedPolicy = ref<"skip" | "run_once" | "catch_up">("run_once");
 const formDigestMode = ref<"full" | "changes_only">("full");
 const formMaxConcurrency = ref(1);
 const formMaxCatchupRuns = ref(5);
+const formRoutingProfile = ref("");
 const formSubmitting = ref(false);
 const formError = ref("");
 
@@ -90,6 +91,7 @@ function openForm() {
   formDigestMode.value = "full";
   formMaxConcurrency.value = 1;
   formMaxCatchupRuns.value = 5;
+  formRoutingProfile.value = "";
   formError.value = "";
 }
 
@@ -121,6 +123,7 @@ async function submitForm() {
     digest_mode: formDigestMode.value,
     max_concurrency: formMaxConcurrency.value,
     max_catchup_runs: formMaxCatchupRuns.value,
+    routing_profile: formRoutingProfile.value === "" ? undefined : formRoutingProfile.value,
   };
 
   formSubmitting.value = true;
@@ -298,6 +301,17 @@ function goToSchedule(id: string) {
         <div class="field">
           <label>Max Catch-up Runs</label>
           <input type="number" v-model.number="formMaxCatchupRuns" min="1" max="100" />
+        </div>
+        <div class="field">
+          <label>Routing Profile</label>
+          <select v-model="formRoutingProfile">
+            <option value="">Default (inherit)</option>
+            <option value="auto">Auto</option>
+            <option value="eco">Eco</option>
+            <option value="premium">Premium</option>
+            <option value="free">Free</option>
+            <option value="reasoning">Reasoning</option>
+          </select>
         </div>
       </div>
 

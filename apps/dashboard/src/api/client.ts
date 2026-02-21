@@ -636,6 +636,7 @@ export type Schedule = {
   max_concurrency: number;
   timeout_ms?: number;
   digest_mode: DigestMode;
+  routing_profile?: string;
   fetch_config: FetchConfig;
   source_states: Record<string, SourceState>;
   max_catchup_runs: number;
@@ -671,6 +672,7 @@ export type CreateScheduleRequest = {
   max_concurrency?: number;
   timeout_ms?: number;
   digest_mode?: DigestMode;
+  routing_profile?: string;
   fetch_config?: Partial<FetchConfig>;
   max_catchup_runs?: number;
 };
@@ -688,6 +690,7 @@ export type UpdateScheduleRequest = {
   max_concurrency?: number;
   timeout_ms?: number | null;
   digest_mode?: DigestMode;
+  routing_profile?: string;
   fetch_config?: Partial<FetchConfig>;
   max_catchup_runs?: number;
 };
@@ -754,6 +757,38 @@ export type QuotaStatus = {
 
 export type QuotaListResponse = {
   quotas: QuotaStatus[];
+};
+
+// ── Router types ────────────────────────────────────────────────────
+
+export type RouterStatus = {
+  enabled: boolean;
+  default_profile: string;
+  classifier: {
+    provider: string;
+    model: string;
+    connected: boolean;
+    avg_latency_ms?: number;
+  };
+  tiers: Record<string, string[]>;
+  thresholds: Record<string, number>;
+};
+
+export type ClassifyResult = {
+  tier: string;
+  scores: Record<string, number>;
+  resolved_model: string;
+  latency_ms: number;
+};
+
+export type RouterDecision = {
+  timestamp: string;
+  prompt_snippet: string;
+  profile: string;
+  tier: string;
+  model: string;
+  latency_ms: number;
+  bypassed: boolean;
 };
 
 // ── API functions ──────────────────────────────────────────────────
@@ -871,4 +906,11 @@ export const api = {
   // Provider listing
   providers: () => get<{ providers: string[]; count: number }>("/v1/models"),
   roles: () => get<{ roles: Record<string, string> }>("/v1/models/roles"),
+
+  // Router
+  routerStatus: () => get<RouterStatus>("/v1/router/status"),
+  classifyPrompt: (prompt: string) =>
+    post<ClassifyResult>("/v1/router/classify", { prompt }),
+  routerDecisions: (limit = 100) =>
+    get<{ decisions: RouterDecision[]; count: number }>(`/v1/router/decisions?limit=${limit}`),
 };

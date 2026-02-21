@@ -43,6 +43,7 @@ pub async fn run(
         model,
         response_format: None,
         agent: None,
+        routing_profile: None,
     };
 
     // 4. Run the turn and obtain the event receiver.

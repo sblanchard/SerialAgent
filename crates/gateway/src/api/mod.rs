@@ -13,6 +13,7 @@ pub mod nodes;
 pub mod openai_compat;
 pub mod providers;
 pub mod quota;
+pub mod router;
 pub mod runs;
 pub mod schedules;
 pub mod sessions;
@@ -109,6 +110,11 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/v1/tasks/:id/events", get(tasks::task_events_sse))
         // Quotas (per-agent daily usage limits)
         .route("/v1/quotas", get(quota::get_quotas))
+        // Smart router
+        .route("/v1/router/status", get(router::status))
+        .route("/v1/router/config", put(router::update_config))
+        .route("/v1/router/classify", post(router::classify))
+        .route("/v1/router/decisions", get(router::decisions))
         // Runs (execution tracking)
         .route("/v1/runs", get(runs::list_runs))
         .route("/v1/runs/:id", get(runs::get_run))

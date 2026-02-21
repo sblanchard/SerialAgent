@@ -4,8 +4,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use parking_lot::RwLock;
-use sa_domain::config::Config;
+use sa_domain::config::{Config, RoutingProfile, TierConfig};
 use sa_memory::provider::SerialMemoryProvider;
+use sa_providers::classifier::EmbeddingClassifier;
+use sa_providers::decisions::DecisionLog;
 use sa_providers::registry::ProviderRegistry;
 use sa_sessions::{IdentityResolver, LifecycleManager, SessionStore, TranscriptWriter};
 use sa_skills::registry::SkillsRegistry;
@@ -43,6 +45,14 @@ pub struct CachedToolDefs {
     pub policy_key: String,
 }
 
+/// Smart router state (None when [llm.router] is not configured or disabled).
+pub struct SmartRouterState {
+    pub classifier: Option<EmbeddingClassifier>,
+    pub tiers: TierConfig,
+    pub default_profile: RoutingProfile,
+    pub decisions: DecisionLog,
+}
+
 /// Shared application state passed to all API handlers.
 ///
 /// Fields are grouped by concern:
@@ -58,6 +68,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub memory: Arc<dyn SerialMemoryProvider>,
     pub llm: Arc<ProviderRegistry>,
+    /// Smart LLM router (None when [llm.router] is absent or disabled).
+    pub smart_router: Option<Arc<SmartRouterState>>,
 
     // ── Session management ────────────────────────────────────────────
     pub sessions: Arc<SessionStore>,

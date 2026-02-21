@@ -460,6 +460,7 @@ pub async fn inbound(
         model: body.model,
         response_format: None,
         agent: None,
+        routing_profile: None,
     };
 
     let (_run_id, mut rx) = run_turn(state.clone(), input);

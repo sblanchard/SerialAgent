@@ -1,11 +1,14 @@
 pub mod anthropic;
 pub mod auth;
 pub mod bedrock;
+pub mod classifier;
+pub mod decisions;
 pub mod google;
 pub mod oauth;
 pub mod openai_compat;
 pub mod registry;
 pub mod router;
+pub mod smart_router;
 pub mod traits;
 pub(crate) mod sse;
 pub(crate) mod util;
