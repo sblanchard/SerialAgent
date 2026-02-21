@@ -39,6 +39,9 @@ pub struct LlmConfig {
     /// Per-model pricing for cost estimation (key = model name, e.g. "gpt-4o").
     #[serde(default)]
     pub pricing: HashMap<String, ModelPricing>,
+    /// Smart router configuration (optional).
+    #[serde(default)]
+    pub router: Option<RouterConfig>,
 }
 
 impl Default for LlmConfig {
@@ -52,6 +55,7 @@ impl Default for LlmConfig {
             roles: HashMap::new(),
             providers: Vec::new(),
             pricing: HashMap::new(),
+            router: None,
         }
     }
 }
@@ -194,6 +198,104 @@ fn d_2() -> u32 {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Smart router types
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Routing profile determines how the smart router selects a model tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RoutingProfile {
+    #[default]
+    Auto,
+    Eco,
+    Premium,
+    Free,
+    Reasoning,
+}
+
+/// Model tier for router classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelTier {
+    Simple,
+    Complex,
+    Reasoning,
+    Free,
+}
+
+/// Smart router configuration (optional section under [llm]).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RouterConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub default_profile: RoutingProfile,
+    #[serde(default)]
+    pub classifier: ClassifierConfig,
+    #[serde(default)]
+    pub tiers: TierConfig,
+    #[serde(default)]
+    pub thresholds: RouterThresholds,
+}
+
+/// Embedding classifier configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassifierConfig {
+    pub provider: String,
+    pub model: String,
+    pub endpoint: String,
+    pub cache_ttl_secs: u64,
+}
+
+impl Default for ClassifierConfig {
+    fn default() -> Self {
+        Self {
+            provider: "ollama".into(),
+            model: "nomic-embed-text".into(),
+            endpoint: "http://localhost:11434".into(),
+            cache_ttl_secs: 300,
+        }
+    }
+}
+
+/// Per-tier ordered list of provider/model strings.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TierConfig {
+    #[serde(default)]
+    pub simple: Vec<String>,
+    #[serde(default)]
+    pub complex: Vec<String>,
+    #[serde(default)]
+    pub reasoning: Vec<String>,
+    #[serde(default)]
+    pub free: Vec<String>,
+}
+
+/// Cosine similarity thresholds for the classifier.
+///
+/// Each score is compared independently against the embedding centroid
+/// for that tier. A prompt is assigned to the highest-scoring tier
+/// that exceeds its threshold. Values are not required to be ordered.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouterThresholds {
+    pub simple_min_score: f64,
+    pub complex_min_score: f64,
+    pub reasoning_min_score: f64,
+    pub escalate_token_threshold: usize,
+}
+
+impl Default for RouterThresholds {
+    fn default() -> Self {
+        Self {
+            simple_min_score: 0.6,
+            complex_min_score: 0.5,
+            reasoning_min_score: 0.55,
+            escalate_token_threshold: 8000,
+        }
+    }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Tests
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -257,5 +359,67 @@ mod tests {
         let gpt4o = config.pricing.get("gpt-4o").unwrap();
         assert!((gpt4o.input_per_1m - 2.50).abs() < 1e-10);
         assert!((gpt4o.output_per_1m - 10.00).abs() < 1e-10);
+    }
+
+    #[test]
+    fn router_config_deserializes() {
+        let json = r#"{
+            "router": {
+                "enabled": true,
+                "default_profile": "auto",
+                "classifier": {
+                    "provider": "ollama",
+                    "model": "nomic-embed-text",
+                    "endpoint": "http://localhost:11434",
+                    "cache_ttl_secs": 300
+                },
+                "tiers": {
+                    "simple": ["deepseek/deepseek-chat"],
+                    "complex": ["anthropic/claude-sonnet-4-20250514"],
+                    "reasoning": ["anthropic/claude-opus-4-6"],
+                    "free": ["venice/venice-uncensored"]
+                },
+                "thresholds": {
+                    "simple_min_score": 0.6,
+                    "complex_min_score": 0.5,
+                    "reasoning_min_score": 0.55,
+                    "escalate_token_threshold": 8000
+                }
+            }
+        }"#;
+        let config: LlmConfig = serde_json::from_str(json).unwrap();
+        let router = config.router.unwrap();
+        assert!(router.enabled);
+        assert_eq!(router.default_profile, RoutingProfile::Auto);
+        assert_eq!(router.classifier.model, "nomic-embed-text");
+        assert_eq!(router.tiers.simple.len(), 1);
+        assert!((router.thresholds.simple_min_score - 0.6).abs() < 1e-10);
+    }
+
+    #[test]
+    fn router_config_defaults_when_absent() {
+        let json = r#"{}"#;
+        let config: LlmConfig = serde_json::from_str(json).unwrap();
+        assert!(config.router.is_none());
+    }
+
+    #[test]
+    fn routing_profile_serde_roundtrip() {
+        for profile in &["auto", "eco", "premium", "free", "reasoning"] {
+            let json = format!("\"{}\"", profile);
+            let parsed: RoutingProfile = serde_json::from_str(&json).unwrap();
+            let back = serde_json::to_string(&parsed).unwrap();
+            assert_eq!(back, json);
+        }
+    }
+
+    #[test]
+    fn model_tier_serde_roundtrip() {
+        for tier in &["simple", "complex", "reasoning", "free"] {
+            let json = format!("\"{}\"", tier);
+            let parsed: ModelTier = serde_json::from_str(&json).unwrap();
+            let back = serde_json::to_string(&parsed).unwrap();
+            assert_eq!(back, json);
+        }
     }
 }
