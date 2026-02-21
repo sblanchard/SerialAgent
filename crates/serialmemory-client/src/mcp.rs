@@ -220,15 +220,26 @@ impl McpSerialMemoryClient {
 impl SerialMemoryProvider for McpSerialMemoryClient {
     async fn search(&self, req: RagSearchRequest) -> Result<RagSearchResponse> {
         let args = serde_json::to_value(&req).map_err(|e| Error::SerialMemory(e.to_string()))?;
-        let val = self.call_tool("memory_search", args).await?;
+        let val = match self.call_tool("memory_search", args).await {
+            Ok(v) => v,
+            Err(e) => {
+                // On parse/network errors, return empty results instead of
+                // propagating — lets the agent continue without memory.
+                tracing::warn!(error = %e, "memory search failed, returning empty results");
+                return Ok(RagSearchResponse {
+                    query: req.query,
+                    memories: Vec::new(),
+                    count: 0,
+                });
+            }
+        };
 
         // MCP memory_search returns a flat array of results.
         // Wrap into the RagSearchResponse envelope that the rest of the
         // codebase expects.
         if val.is_array() {
             let memories: Vec<crate::types::RetrievedMemoryDto> =
-                serde_json::from_value(val)
-                    .map_err(|e| Error::SerialMemory(format!("search results parse: {e}")))?;
+                serde_json::from_value(val).unwrap_or_default();
             let count = memories.len() as u32;
             return Ok(RagSearchResponse {
                 query: req.query,
@@ -237,8 +248,12 @@ impl SerialMemoryProvider for McpSerialMemoryClient {
             });
         }
 
-        serde_json::from_value(val)
-            .map_err(|e| Error::SerialMemory(format!("search response parse: {e}")))
+        // Fallback: try parsing as the full envelope format.
+        Ok(serde_json::from_value(val).unwrap_or_else(|_| RagSearchResponse {
+            query: req.query,
+            memories: Vec::new(),
+            count: 0,
+        }))
     }
 
     async fn answer(&self, req: RagAnswerRequest) -> Result<RagAnswerResponse> {
