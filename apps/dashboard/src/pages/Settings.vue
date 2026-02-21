@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from "vue";
 import { api, ApiError, setApiToken, getApiToken } from "@/api/client";
 import type { SystemInfo, ReadinessResponse } from "@/api/client";
+import type { RouterStatus, RouterDecision } from "@/api/client";
 import Card from "@/components/Card.vue";
 import LoadingPanel from "@/components/LoadingPanel.vue";
 import ConfigEditor from "@/components/ConfigEditor.vue";
@@ -19,6 +20,27 @@ const tokenSaved = ref(false);
 
 // Restart
 const restarting = ref(false);
+
+// Router
+const routerStatus = ref<RouterStatus | null>(null);
+const routerDecisions = ref<RouterDecision[]>([]);
+const routerLoading = ref(false);
+const routerError = ref("");
+const decisionsExpanded = ref(false);
+
+async function loadRouter() {
+  routerLoading.value = true;
+  routerError.value = "";
+  try {
+    routerStatus.value = await api.routerStatus();
+    const res = await api.routerDecisions(20);
+    routerDecisions.value = res.decisions;
+  } catch (e: unknown) {
+    routerError.value = e instanceof ApiError ? e.friendly : String(e);
+  } finally {
+    routerLoading.value = false;
+  }
+}
 
 const generatedToml = computed(() => {
   if (!sysInfo.value || !readiness.value) return "";
@@ -64,7 +86,10 @@ async function load() {
   }
 }
 
-onMounted(load);
+onMounted(() => {
+  load();
+  loadRouter();
+});
 </script>
 
 <template>
@@ -175,6 +200,58 @@ onMounted(load);
           </div>
         </Card>
       </template>
+
+      <!-- LLM Router -->
+      <Card v-if="routerStatus" title="LLM Router">
+        <div class="readiness-header">
+          <span :class="routerStatus.enabled ? 'status-ok' : 'status-warn'">
+            {{ routerStatus.enabled ? "Enabled" : "Disabled" }}
+          </span>
+          <span class="profile-badge">{{ routerStatus.default_profile }}</span>
+        </div>
+
+        <!-- Classifier Status -->
+        <div class="sub-heading">Classifier</div>
+        <div class="settings-grid">
+          <div><span class="label">Provider</span> <span class="mono val">{{ routerStatus.classifier.provider }}</span></div>
+          <div><span class="label">Model</span> <span class="mono val">{{ routerStatus.classifier.model }}</span></div>
+          <div><span class="label">Status</span>
+            <span :class="routerStatus.classifier.connected ? 'status-ok' : 'status-warn'">
+              {{ routerStatus.classifier.connected ? "Connected" : "Disconnected" }}
+            </span>
+          </div>
+          <div v-if="routerStatus.classifier.avg_latency_ms != null">
+            <span class="label">Avg Latency</span>
+            <span class="mono val">{{ routerStatus.classifier.avg_latency_ms }}ms</span>
+          </div>
+        </div>
+
+        <!-- Tier Assignments -->
+        <div class="sub-heading" style="margin-top: 0.8rem">Tier Assignments</div>
+        <div v-for="(models, tier) in routerStatus.tiers" :key="tier" class="tier-row">
+          <span class="tier-label">{{ tier }}</span>
+          <span class="mono val">{{ models.join(", ") || "\u2014" }}</span>
+        </div>
+
+        <!-- Recent Decisions (collapsible) -->
+        <div class="sub-heading clickable" style="margin-top: 0.8rem" @click="decisionsExpanded = !decisionsExpanded">
+          Recent Decisions {{ decisionsExpanded ? "\u25BE" : "\u25B8" }}
+        </div>
+        <div v-if="decisionsExpanded && routerDecisions.length > 0" class="decisions-log">
+          <div v-for="d in routerDecisions" :key="d.timestamp" class="decision-row">
+            <span class="dim">{{ new Date(d.timestamp).toLocaleTimeString() }}</span>
+            <span class="tier-badge" :class="'tier-' + d.tier">{{ d.tier }}</span>
+            <span class="mono">{{ d.model }}</span>
+            <span class="dim">{{ d.latency_ms }}ms</span>
+            <span class="dim decision-snippet">{{ d.prompt_snippet }}</span>
+          </div>
+        </div>
+        <div v-if="decisionsExpanded && routerDecisions.length === 0" class="dim">
+          No routing decisions recorded yet.
+        </div>
+
+        <p v-if="routerError" class="error">{{ routerError }}</p>
+      </Card>
     </template>
 
     <!-- Edit mode: TOML config editor -->
@@ -297,4 +374,58 @@ button.secondary:hover { color: var(--text); border-color: var(--text-dim); }
 button.secondary.danger { border-color: var(--red); color: var(--red); }
 button.secondary.danger:hover { background: var(--red); color: #fff; }
 button.secondary.danger:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Router card */
+.profile-badge {
+  background: var(--accent);
+  color: #fff;
+  padding: 0.15rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.tier-row {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.2rem 0;
+  font-size: 0.82rem;
+}
+.tier-label {
+  min-width: 5rem;
+  color: var(--text-dim);
+  font-weight: 500;
+  text-transform: capitalize;
+}
+.clickable { cursor: pointer; user-select: none; }
+.decisions-log {
+  max-height: 300px;
+  overflow-y: auto;
+  font-size: 0.78rem;
+}
+.decision-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.2rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.decision-snippet {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tier-badge {
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.tier-simple { background: var(--green); color: #000; }
+.tier-complex { background: var(--accent); color: #fff; }
+.tier-reasoning { background: var(--red); color: #fff; }
+.tier-free { background: var(--text-dim); color: #fff; }
 </style>
