@@ -208,9 +208,21 @@ impl McpSerialMemoryClient {
             .find_map(|c| c.text)
             .unwrap_or_else(|| "{}".to_string());
 
+        if text.is_empty() {
+            tracing::debug!("MCP {tool_name}: empty text content, returning null");
+            return Ok(serde_json::Value::Null);
+        }
+
         serde_json::from_str(&text).map_err(|e| {
+            tracing::warn!(
+                tool = %tool_name,
+                text_len = text.len(),
+                text_start = %&text[..text.len().min(200)],
+                error = %e,
+                "MCP content parse error"
+            );
             Error::SerialMemory(format!(
-                "MCP {tool_name} content parse error: {e}: {text}"
+                "MCP {tool_name} content parse error: {e}"
             ))
         })
     }
@@ -237,6 +249,13 @@ impl SerialMemoryProvider for McpSerialMemoryClient {
         // MCP memory_search returns a flat array of results.
         // Wrap into the RagSearchResponse envelope that the rest of the
         // codebase expects.
+        if val.is_null() {
+            return Ok(RagSearchResponse {
+                query: req.query,
+                memories: Vec::new(),
+                count: 0,
+            });
+        }
         if val.is_array() {
             let memories: Vec<crate::types::RetrievedMemoryDto> =
                 serde_json::from_value(val).unwrap_or_default();
