@@ -7,6 +7,7 @@ pub mod oauth;
 pub mod openai_compat;
 pub mod registry;
 pub mod router;
+pub mod smart_router;
 pub mod traits;
 pub(crate) mod sse;
 pub(crate) mod util;
