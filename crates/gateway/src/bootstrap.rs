@@ -215,36 +215,6 @@ pub async fn build_app_state(
         }
     };
 
-    // ── Admin token (read once, hash for constant-time comparison) ──
-    // Priority: config.admin.token > env var (config.admin.token_env)
-    let admin_token_hash = {
-        let env_var = &config.admin.token_env;
-        let token = config
-            .admin
-            .token
-            .as_deref()
-            .filter(|t| !t.is_empty())
-            .map(|t| ("config".to_string(), t.to_string()))
-            .or_else(|| {
-                std::env::var(env_var)
-                    .ok()
-                    .filter(|t| !t.is_empty())
-                    .map(|t| (format!("env:{env_var}"), t))
-            });
-        match token {
-            Some((source, t)) => {
-                tracing::info!(source = %source, "admin bearer-token auth enabled");
-                Some(Sha256::digest(t.as_bytes()).to_vec())
-            }
-            None => {
-                tracing::warn!(
-                    "admin bearer-token auth DISABLED — set admin.token in config.toml or {env_var} env var"
-                );
-                None
-            }
-        }
-    };
-
     // ── Compile exec denied-patterns at startup ──────────────────────
     let denied_command_set = Arc::new(
         regex::RegexSet::new(&config.tools.exec_security.denied_patterns)
@@ -364,7 +334,6 @@ pub async fn build_app_state(
         user_facts_cache: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
         tool_defs_cache: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
         api_token_hash,
-        admin_token_hash,
         denied_command_set,
         approval_command_set,
         approval_store,

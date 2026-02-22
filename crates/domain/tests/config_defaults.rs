@@ -47,12 +47,6 @@ allowed_origins = ["http://localhost:*"]
 }
 
 #[test]
-fn admin_token_env_default() {
-    let config = Config::default();
-    assert_eq!(config.admin.token_env, "SA_ADMIN_TOKEN");
-}
-
-#[test]
 fn exec_security_defaults_have_denylist() {
     let config = Config::default();
     assert!(config.tools.exec_security.audit_log);

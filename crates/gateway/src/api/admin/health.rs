@@ -6,7 +6,6 @@ use axum::response::{IntoResponse, Json};
 
 use crate::state::AppState;
 
-use super::guard::AdminGuard;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // GET /v1/health — lightweight health probe (public, no auth)
@@ -340,10 +339,9 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub async fn system_info(
-    _guard: AdminGuard,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let admin_token_set = state.admin_token_hash.is_some();
+    let admin_token_set = state.api_token_hash.is_some();
 
     Json(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -367,7 +365,6 @@ pub async fn system_info(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub async fn save_config(
-    _guard: AdminGuard,
     State(state): State<AppState>,
     body: String,
 ) -> impl IntoResponse {
@@ -443,7 +440,6 @@ pub async fn save_config(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub async fn restart(
-    _guard: AdminGuard,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     tracing::info!("restart requested via API");

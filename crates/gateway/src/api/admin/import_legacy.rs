@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use crate::import::openclaw::sanitize::sanitize_ident;
 use crate::state::AppState;
 
-use super::guard::AdminGuard;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Types
@@ -224,7 +223,6 @@ fn scan_openclaw_dir(root: &Path) -> ScanResult {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub async fn scan_openclaw(
-    _guard: AdminGuard,
     State(state): State<AppState>,
     Json(body): Json<ScanRequest>,
 ) -> impl IntoResponse {
@@ -255,7 +253,6 @@ pub async fn scan_openclaw(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub async fn apply_openclaw_import(
-    _guard: AdminGuard,
     State(state): State<AppState>,
     Json(body): Json<ImportApplyRequest>,
 ) -> impl IntoResponse {

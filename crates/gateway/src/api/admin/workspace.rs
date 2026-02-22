@@ -5,14 +5,12 @@ use axum::response::{IntoResponse, Json};
 
 use crate::state::AppState;
 
-use super::guard::AdminGuard;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // GET /v1/admin/workspace/files — list workspace files with content
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub async fn list_workspace_files(
-    _guard: AdminGuard,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     let present = state.workspace.list_present_files();
@@ -41,7 +39,6 @@ pub async fn list_workspace_files(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub async fn list_skills_detailed(
-    _guard: AdminGuard,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     let skills = state.skills.list();

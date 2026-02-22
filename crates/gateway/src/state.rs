@@ -127,9 +127,6 @@ pub struct AppState {
     /// SHA-256 hash of the API bearer token (read once at startup).
     /// `None` = dev mode (no auth enforced).
     pub api_token_hash: Option<Vec<u8>>,
-    /// SHA-256 hash of the admin bearer token (read once at startup).
-    /// `None` = dev mode (admin endpoints accessible without auth).
-    pub admin_token_hash: Option<Vec<u8>>,
     /// Precompiled exec denied-pattern regexes (compiled once at startup).
     pub denied_command_set: Arc<regex::RegexSet>,
     /// Precompiled exec approval-pattern regexes (compiled once at startup).

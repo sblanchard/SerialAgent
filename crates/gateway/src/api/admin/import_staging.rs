@@ -8,14 +8,11 @@ use serde::Deserialize;
 use crate::api::import_openclaw::SshAuth;
 use crate::state::AppState;
 
-use super::guard::AdminGuard;
-
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // POST /v1/import/openclaw/preview — staging-based preview
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub async fn import_openclaw_preview(
-    _guard: AdminGuard,
     State(state): State<AppState>,
     Json(req): Json<crate::api::import_openclaw::ImportPreviewRequest>,
 ) -> impl IntoResponse {
@@ -42,7 +39,6 @@ pub async fn import_openclaw_preview(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub async fn import_openclaw_apply_v2(
-    _guard: AdminGuard,
     State(state): State<AppState>,
     Json(req): Json<crate::api::import_openclaw::ImportApplyRequest>,
 ) -> impl IntoResponse {
@@ -151,7 +147,6 @@ pub struct TestSshRequest {
 }
 
 pub async fn import_openclaw_test_ssh(
-    _guard: AdminGuard,
     State(state): State<AppState>,
     Json(req): Json<TestSshRequest>,
 ) -> impl IntoResponse {
@@ -255,7 +250,6 @@ pub async fn import_openclaw_test_ssh(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub async fn import_openclaw_list_staging(
-    _guard: AdminGuard,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     match crate::import::openclaw::list_staging(&state.import_root).await {
@@ -277,7 +271,6 @@ pub async fn import_openclaw_list_staging(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub async fn import_openclaw_delete_staging(
-    _guard: AdminGuard,
     State(state): State<AppState>,
     axum::extract::Path(staging_id): axum::extract::Path<uuid::Uuid>,
 ) -> impl IntoResponse {

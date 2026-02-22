@@ -1,17 +1,12 @@
 //! Admin endpoints — health, metrics, system info, OpenClaw import, workspace.
 //!
-//! All admin-guarded endpoints use the `AdminGuard` extractor (see `guard.rs`),
-//! which enforces `SA_ADMIN_TOKEN` auth.  If the env var is unset, endpoints
-//! are accessible without auth (dev mode).
+//! All admin endpoints sit behind the API token middleware layer (`auth.rs`).
+//! No separate admin token is required.
 
-mod guard;
 mod health;
 mod import_legacy;
 mod import_staging;
 mod workspace;
-
-// Re-export the guard for use by other modules if needed.
-pub use guard::AdminGuard;
 
 // Re-export handler functions so `admin::function_name` paths remain valid.
 pub use health::{health, metrics, openapi_spec, restart, save_config, system_info};

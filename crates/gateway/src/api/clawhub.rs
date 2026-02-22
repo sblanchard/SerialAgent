@@ -20,8 +20,7 @@ use crate::state::AppState;
 ///
 /// Uses the pre-computed SHA-256 hash from `AppState` and constant-time
 /// comparison via `subtle::ConstantTimeEq` to prevent timing side-channel
-/// attacks.  Unlike `AdminGuard`, this returns 403 when no admin token is
-/// configured (ClawHub endpoints must always be gated).
+/// attacks.  Returns 403 when no API token is configured.
 fn verify_admin_token(
     headers: &HeaderMap,
     expected_hash: &Option<Vec<u8>>,
@@ -32,7 +31,7 @@ fn verify_admin_token(
             return Err((
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!({
-                    "error": "admin endpoints are disabled (SA_ADMIN_TOKEN not set)"
+                    "error": "admin endpoints are disabled (api_token not set)"
                 })),
             ));
         }
@@ -94,7 +93,7 @@ pub async fn install_pack(
     headers: HeaderMap,
     Json(body): Json<PackRef>,
 ) -> impl IntoResponse {
-    if let Err(resp) = verify_admin_token(&headers, &state.admin_token_hash) {
+    if let Err(resp) = verify_admin_token(&headers, &state.api_token_hash) {
         return resp.into_response();
     }
     let skills_root = &state.config.skills.path;
@@ -130,7 +129,7 @@ pub async fn update_pack(
     headers: HeaderMap,
     Json(body): Json<PackRef>,
 ) -> impl IntoResponse {
-    if let Err(resp) = verify_admin_token(&headers, &state.admin_token_hash) {
+    if let Err(resp) = verify_admin_token(&headers, &state.api_token_hash) {
         return resp.into_response();
     }
     let skills_root = &state.config.skills.path;
@@ -169,7 +168,7 @@ pub async fn uninstall_pack(
     headers: HeaderMap,
     Json(body): Json<PackRef>,
 ) -> impl IntoResponse {
-    if let Err(resp) = verify_admin_token(&headers, &state.admin_token_hash) {
+    if let Err(resp) = verify_admin_token(&headers, &state.api_token_hash) {
         return resp.into_response();
     }
     let skills_root = &state.config.skills.path;

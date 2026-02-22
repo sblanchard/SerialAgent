@@ -80,32 +80,18 @@ pub struct Config {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Admin
+// Admin (legacy — kept for config.toml backward compatibility)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Legacy admin config section. Admin auth now uses the API token.
+/// This struct exists only so existing `[admin]` sections in config.toml
+/// don't cause deserialization errors.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AdminConfig {
-    /// Admin bearer token.  Checked first; if `None`, falls back to the
-    /// env var named by `token_env`.  If neither is set, admin endpoints
-    /// are disabled (403 for ClawHub, open for others in dev mode).
     #[serde(default)]
     pub token: Option<String>,
-    /// Environment variable holding the admin bearer token (fallback).
-    #[serde(default = "d_admin_token_env")]
-    pub token_env: String,
-}
-
-impl Default for AdminConfig {
-    fn default() -> Self {
-        Self {
-            token: None,
-            token_env: d_admin_token_env(),
-        }
-    }
-}
-
-fn d_admin_token_env() -> String {
-    "SA_ADMIN_TOKEN".into()
+    #[serde(default)]
+    pub token_env: Option<String>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
