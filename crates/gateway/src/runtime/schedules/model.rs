@@ -141,6 +141,10 @@ pub struct Schedule {
     /// None = use default role-based routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Maximum tool-call loop iterations for this schedule.
+    /// None = use global default (50).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_loops: Option<usize>,
     /// How to compile multi-source content (default: full).
     #[serde(default)]
     pub digest_mode: DigestMode,
@@ -300,6 +304,7 @@ mod tests {
             cooldown_until: None,
             routing_profile: None,
             webhook_secret: None,
+            max_tool_loops: None,
             total_input_tokens: 0,
             total_output_tokens: 0,
             total_runs: 0,

@@ -91,6 +91,8 @@ pub struct CreateScheduleRequest {
     pub webhook_secret: Option<String>,
     #[serde(default)]
     pub routing_profile: Option<String>,
+    #[serde(default)]
+    pub max_tool_loops: Option<usize>,
 }
 
 fn default_max_catchup_runs() -> usize {
@@ -177,6 +179,7 @@ pub async fn create_schedule(
         max_catchup_runs: req.max_catchup_runs,
         webhook_secret: req.webhook_secret,
         routing_profile: req.routing_profile,
+        max_tool_loops: req.max_tool_loops,
         source_states: std::collections::HashMap::new(),
         last_error: None,
         last_error_at: None,
@@ -218,6 +221,7 @@ pub struct UpdateScheduleRequest {
     pub max_catchup_runs: Option<usize>,
     pub webhook_secret: Option<Option<String>>,
     pub routing_profile: Option<Option<String>>,
+    pub max_tool_loops: Option<Option<usize>>,
 }
 
 pub async fn update_schedule(
@@ -326,6 +330,9 @@ pub async fn update_schedule(
             }
             if let Some(rp) = req.routing_profile {
                 s.routing_profile = rp;
+            }
+            if let Some(mtl) = req.max_tool_loops {
+                s.max_tool_loops = mtl;
             }
         })
         .await

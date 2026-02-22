@@ -277,6 +277,7 @@ pub async fn spawn_scheduled_run(
         response_format: None,
         agent: None,
         routing_profile,
+        max_tool_loops: schedule.max_tool_loops,
     };
 
     let (run_id, mut rx) = crate::runtime::run_turn(state.clone(), input);

@@ -44,6 +44,7 @@ pub async fn run(
         response_format: None,
         agent: None,
         routing_profile: None,
+        max_tool_loops: None,
     };
 
     // 4. Run the turn and obtain the event receiver.

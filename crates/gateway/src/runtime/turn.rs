@@ -28,8 +28,8 @@ use super::{
     truncate_str,
 };
 
-/// Maximum number of tool-call loops before we force-stop.
-const MAX_TOOL_LOOPS: usize = 25;
+/// Default maximum number of tool-call loops before we force-stop.
+const DEFAULT_MAX_TOOL_LOOPS: usize = 50;
 
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -120,6 +120,8 @@ pub struct TurnInput {
     pub agent: Option<agent::AgentContext>,
     /// Routing profile override. None = use default.
     pub routing_profile: Option<sa_domain::config::RoutingProfile>,
+    /// Maximum tool-call loop iterations. None = use global default.
+    pub max_tool_loops: Option<usize>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -413,7 +415,8 @@ async fn run_turn_inner(
         total_tokens: 0,
     };
 
-    for loop_idx in 0..MAX_TOOL_LOOPS {
+    let max_loops = input.max_tool_loops.unwrap_or(DEFAULT_MAX_TOOL_LOOPS);
+    for loop_idx in 0..max_loops {
         tracing::debug!(loop_idx, "tool loop iteration");
         // ── Check cancellation before each LLM call ──────────────
         // (lightweight: no run-store update since we haven't started yet)
@@ -822,10 +825,10 @@ async fn run_turn_inner(
             .await;
         }
 
-        if loop_idx == MAX_TOOL_LOOPS - 1 {
+        if loop_idx == max_loops - 1 {
             let _ = tx
                 .send(TurnEvent::Error {
-                    message: format!("tool loop limit reached ({MAX_TOOL_LOOPS} iterations)"),
+                    message: format!("tool loop limit reached ({max_loops} iterations)"),
                 })
                 .await;
         }

@@ -113,6 +113,7 @@ pub async fn create_task(
         response_format: None,
         agent: None,
         routing_profile: None,
+        max_tool_loops: None,
     };
 
     // Enqueue the task for execution.

@@ -405,6 +405,7 @@ pub async fn import_schedules(
             cooldown_until: None,
             routing_profile: None,
             webhook_secret: None,
+            max_tool_loops: None,
             total_input_tokens: 0,
             total_output_tokens: 0,
             total_runs: 0,

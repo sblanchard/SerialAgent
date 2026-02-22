@@ -206,6 +206,7 @@ async fn send_message(
         response_format: None,
         agent: None,
         routing_profile: None,
+        max_tool_loops: None,
     };
 
     let (_run_id, mut rx) = run_turn(state.clone(), input);
